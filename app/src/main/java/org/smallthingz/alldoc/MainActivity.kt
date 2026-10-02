@@ -125,10 +125,11 @@ internal fun Workspace(
   val snackbar = remember { SnackbarHostState() }
   val searchFocus = remember { FocusRequester() }
   val focusManager = LocalFocusManager.current
-  LaunchedEffect(searchVisible, showHome) {
-    if (searchVisible && !showHome) searchFocus.requestFocus() else focusManager.clearFocus()
-  }
   val hasDocument = model.name.isNotEmpty() && !showHome
+  LaunchedEffect(searchVisible, hasDocument, model.pdfPages) {
+    if (searchVisible && hasDocument && model.pdfPages == 0) searchFocus.requestFocus()
+    else focusManager.clearFocus()
+  }
   val open =
     rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
       uri?.let {

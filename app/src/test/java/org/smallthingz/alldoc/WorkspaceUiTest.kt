@@ -19,6 +19,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.Density
 import java.io.File
@@ -38,6 +39,7 @@ import org.robolectric.shadows.ShadowContentResolver
 class WorkspaceUiTest {
   @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
   private lateinit var model: DocumentModel
+  private lateinit var restoration: StateRestorationTester
   private var incoming by mutableStateOf<Uri?>(null)
   private var uiFontScale by mutableFloatStateOf(1f)
   private lateinit var exportedFile: File
@@ -53,7 +55,8 @@ class WorkspaceUiTest {
       .commit()
     model = DocumentModel(app)
     compose.activity.viewModelStore.put("test-document", model)
-    compose.setContent {
+    restoration = StateRestorationTester(compose)
+    restoration.setContent {
       val density = LocalDensity.current
       CompositionLocalProvider(LocalDensity provides Density(density.density, uiFontScale)) {
         AlldocTheme { Workspace(model, incoming) { incoming = null } }
@@ -202,6 +205,23 @@ class WorkspaceUiTest {
     compose.onNodeWithText("Find content").assertDoesNotExist()
     compose.onNodeWithText("notes.txt").assertIsDisplayed()
     compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+  }
+
+  @Test
+  fun restoredSearchWaitsForAvailableDocumentBeforeRequestingFocus() {
+    openFixture("notes.txt")
+    compose.onNodeWithText("Find").performClick()
+    compose.onNode(hasSetTextAction()).assertIsFocused()
+    compose.runOnIdle {
+      compose.activity.viewModelStore.clear()
+      File(compose.activity.filesDir, "recovery").deleteRecursively()
+      model = DocumentModel(compose.activity.application)
+      compose.activity.viewModelStore.put("test-document", model)
+    }
+    restoration.emulateSavedInstanceStateRestore()
+    ready()
+    compose.onNodeWithText("Open a document").assertIsDisplayed()
+    compose.onNodeWithText("Find content").assertDoesNotExist()
   }
 
   @Test

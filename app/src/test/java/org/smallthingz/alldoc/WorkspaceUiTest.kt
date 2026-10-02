@@ -174,6 +174,23 @@ class WorkspaceUiTest {
     compose.runOnIdle {
       org.junit.Assert.assertTrue(model.edits.values.contains("Retained cell"))
     }
+    val recoveryIndex = File(compose.activity.filesDir, "recovery/session.json")
+    val deadline = System.nanoTime() + 10_000_000_000L
+    var durable = false
+    while (!durable && System.nanoTime() < deadline) {
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+      durable =
+        runCatching {
+            org.json
+              .JSONObject(recoveryIndex.readText())
+              .getJSONObject("edits")
+              .toString()
+              .contains("Retained cell")
+          }
+          .getOrDefault(false)
+      if (!durable) Thread.sleep(10)
+    }
+    org.junit.Assert.assertTrue("Cell edit was not committed to recovery", durable)
   }
 
   @Test

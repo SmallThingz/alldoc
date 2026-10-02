@@ -16,9 +16,9 @@ android {
     applicationId = "org.smallthingz.alldoc"
     minSdk = 26
     targetSdk = 36
-    versionCode = 1
-    versionName = "0.1.0"
-    resValue("string","app_name","alldoc")
+    versionCode = 2
+    versionName = "0.1.1"
+    resValue("string", "app_name", "alldoc")
   }
   buildFeatures {
     compose = true

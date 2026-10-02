@@ -27,12 +27,13 @@ fun SheetCanvas(
   onEdit: (String, String) -> Unit,
   modifier: Modifier = Modifier,
   enabled: Boolean = true,
+  resetVersion: Int = 0,
 ) {
   val sheets = remember(session) { session.blocks.map { it.section }.distinct() }
   var sheet by remember(session) { mutableStateOf(sheets.firstOrNull().orEmpty()) }
-  var selected by remember(session) { mutableStateOf<DocumentEngine.Block?>(null) }
-  var initialValue by remember { mutableStateOf("") }
-  var confirmRevert by remember { mutableStateOf(false) }
+  var selected by remember(session, resetVersion) { mutableStateOf<DocumentEngine.Block?>(null) }
+  var initialValue by remember(session, resetVersion) { mutableStateOf("") }
+  var confirmRevert by remember(session, resetVersion) { mutableStateOf(false) }
   var firstColumn by remember(session, sheet, query) { mutableIntStateOf(0) }
   fun address(block: DocumentEngine.Block) = block.label.substringBefore(' ')
   val cells =
@@ -172,9 +173,11 @@ fun SheetCanvas(
                                 else if (!block.editable) "Read-only" else "Editable"
                             }
                             .clickable {
-                              selected = block
-                              initialValue = text
-                              confirmRevert = false
+                              if (selected?.id != block.id) {
+                                selected = block
+                                initialValue = text
+                                confirmRevert = false
+                              }
                             }
                         else Modifier
                       ),

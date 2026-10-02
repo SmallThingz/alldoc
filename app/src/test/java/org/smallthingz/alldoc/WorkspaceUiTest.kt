@@ -197,6 +197,41 @@ class WorkspaceUiTest {
   }
 
   @Test
+  fun sameCellTapKeepsRevertAndGlobalDiscardCannotRestoreDiscardedText() {
+    openFixture("budget.xlsx")
+    val address = model.session!!.blocks.first { it.original == "Paper" }.label.substringBefore(' ')
+    compose.onNodeWithText("Paper").performClick()
+    compose.onNodeWithContentDescription("Cell value").performTextReplacement("First change")
+    compose.onNodeWithContentDescription("$address: First change").performClick()
+    compose.onNodeWithText("Revert").performClick()
+    compose.onNodeWithText("Revert cell").performClick()
+    compose.onNodeWithText("Paper").assertIsDisplayed()
+    compose.onNodeWithText("Paper").performClick()
+    compose.onNodeWithContentDescription("Cell value").performTextReplacement("Earlier draft")
+    compose.onNodeWithText("Done").performClick()
+    compose.onNodeWithText("Earlier draft").performClick()
+    compose.onNodeWithText("Discard").performClick()
+    compose.onNodeWithText("Discard edits").performClick()
+    compose.onNodeWithContentDescription("Cell value").assertDoesNotExist()
+    compose.onNodeWithText("Revert").assertDoesNotExist()
+    compose.onNodeWithText("Paper").assertIsDisplayed()
+    compose.runOnIdle { org.junit.Assert.assertTrue(model.edits.isEmpty()) }
+  }
+
+  @Test
+  fun cellLiveDraftExportsWithoutClosingEditor() {
+    openFixture("budget.xlsx")
+    compose.onNodeWithText("Paper").performClick()
+    compose.onNodeWithContentDescription("Cell value").performTextReplacement("Exported live cell")
+    compose.runOnUiThread { model.export(Uri.parse("content://alldoc.tests/saved-copy")) }
+    ready()
+    val result =
+      org.smallthingz.alldoc.core.DocumentEngine.open("copy.xlsx", exportedFile.readBytes())
+    org.junit.Assert.assertTrue(result.blocks.any { it.original == "Exported live cell" })
+    compose.onNodeWithContentDescription("Cell value").assertIsDisplayed()
+  }
+
+  @Test
   fun searchRequestsFocusAndBackClosesSearchBeforeDocument() {
     openFixture("notes.txt")
     compose.onNodeWithText("Find").performClick()

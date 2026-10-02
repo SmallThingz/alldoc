@@ -580,6 +580,7 @@ internal fun Workspace(
               model::edit,
               Modifier.weight(1f).fillMaxWidth(),
               enabled = !model.busy,
+              resetVersion = model.editorResetVersion,
             )
           editMode ->
             EditorCanvas(

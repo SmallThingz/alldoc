@@ -31,6 +31,9 @@ class DocumentModel(application: Application) : AndroidViewModel(application) {
   var hasExportedCurrentDraft by mutableStateOf(false)
     private set
 
+  var editorResetVersion by mutableIntStateOf(0)
+    private set
+
   val edits = mutableStateMapOf<String, String>()
   val recentDocuments = mutableStateListOf<RecentDocument>()
   private val recentStore = RecentDocuments(application)
@@ -369,6 +372,7 @@ class DocumentModel(application: Application) : AndroidViewModel(application) {
 
   fun discardEdits() {
     if (!busy) {
+      editorResetVersion++
       edits.clear()
       hasExportedCurrentDraft = false
       checkpoint()

@@ -40,10 +40,10 @@
    https://developer.android.com/about/versions/12/backup-restore#xml-changes
    https://goo.gle/DataExtractionRules
 
-/workspace/scratch/443c242dcc32/alldoc/app/src/main/java/org/smallthingz/alldoc/MainActivity.kt:398: Warning: Use the KTX extension function String.toUri instead? [UseKtx]
+/workspace/scratch/443c242dcc32/alldoc/app/src/main/java/org/smallthingz/alldoc/MainActivity.kt:407: Warning: Use the KTX extension function String.toUri instead? [UseKtx]
                 else if (model.edits.isNotEmpty()) recentConfirmation = Uri.parse(recent.uri)
                                                                         ~~~~~~~~~~~~~~~~~~~~~
-/workspace/scratch/443c242dcc32/alldoc/app/src/main/java/org/smallthingz/alldoc/MainActivity.kt:404: Warning: Use the KTX extension function String.toUri instead? [UseKtx]
+/workspace/scratch/443c242dcc32/alldoc/app/src/main/java/org/smallthingz/alldoc/MainActivity.kt:413: Warning: Use the KTX extension function String.toUri instead? [UseKtx]
                   model.open(Uri.parse(recent.uri))
                              ~~~~~~~~~~~~~~~~~~~~~
 /workspace/scratch/443c242dcc32/alldoc/app/src/main/java/org/smallthingz/alldoc/PdfService.kt:46: Warning: Use the KTX function createBitmap instead? [UseKtx]

@@ -19,3 +19,11 @@ The optional Collabora experiment remains separate from main. Its official APK w
 - SHA-256: `368294143b70ab571b1741620d562259e2abe3b02779bd5bc07c9479a16eb3fd`
 - APK v2 signature and 16 KiB ZIP alignment checks passed
 - Package: `org.smallthingz.alldoc.preview`; development-signed evaluation build
+
+## Validated 0.1.1 preview
+
+- APK: **1,433,399 bytes (1.37 MiB)**, unchanged compressed size after alignment
+- Expanded ZIP entries: 2,702,081 bytes (+2,786 bytes; not installed footprint)
+- SHA-256: `817a9df0788b9f8cae4dbfc3b06fdd501f5626225f7f4fa66da71d91bc82a796`
+- VersionCode 2; same package and development signing certificate as 0.1.0
+- Signature and 16 KiB ZIP alignment checks passed

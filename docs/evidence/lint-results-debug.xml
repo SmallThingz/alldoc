@@ -49,7 +49,7 @@
         errorLine2="                                                                        ~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="/workspace/scratch/443c242dcc32/alldoc/app/src/main/java/org/smallthingz/alldoc/MainActivity.kt"
-            line="398"
+            line="407"
             column="73"/>
     </issue>
 
@@ -65,7 +65,7 @@
         errorLine2="                             ~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="/workspace/scratch/443c242dcc32/alldoc/app/src/main/java/org/smallthingz/alldoc/MainActivity.kt"
-            line="404"
+            line="413"
             column="30"/>
     </issue>
 

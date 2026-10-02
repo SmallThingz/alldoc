@@ -1,5 +1,16 @@
 # Verification log
 
+## 2026-10-02 version 0.1.1 follow-up
+
+- Full suite: **68 passed** (41 engine, 11 Android safety/recovery, 16 UI), zero failures/errors
+- Full lint: **0 errors, 8 warnings**; fresh minified preview assembly and lint-vital passed
+- APK remains **1,433,399 bytes**; expanded payload 2,702,081 bytes
+- VersionCode 2, same package and signing certificate as 0.1.0; signature and 16 KiB ZIP alignment verified
+- SHA-256: `817a9df0788b9f8cae4dbfc3b06fdd501f5626225f7f4fa66da71d91bc82a796`
+- Independent read-only review found two Revert-state defects; both were fixed and regression-tested before packaging
+
+Additional tests cover live cell draft persistence, same-cell reselection, global discard clearing editor state, Back/outside-cell tap/sheet/home navigation, both open-document guards, export before Done, search focus and saved-state restoration when no document is available. Tests include committed recovery metadata, not a real killed-device process. PDF forms remain research only. Device/IME/TalkBack/WebView/native PDF limitations below still apply.
+
 ## 2026-10-02 compact preview milestone
 
 Current-source tests passed on Linux / JDK21 / Android SDK37:

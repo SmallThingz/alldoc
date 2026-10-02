@@ -9,3 +9,5 @@
 - CreateDocument requests a new file; identical source URI is blocked. Unusual providers may alias paths. Always use a new filename.
 - Draft originals and edits remain in private application storage to support crash recovery; Android backup is disabled. Clearing app storage removes them.
 - Current XML/render engines have size limits; pathological XML nesting and extreme PDFs require further fuzz/device testing before production distribution.
+
+Additional hardening: aggregate XML budget 100,000 nodes/events, depth 128, 128 attributes per element, 4 Mi-character cumulative edit budget; all XML/RELS parts are checked before preview. A SAX preflight compatible with Android rejects DTDs before DOM parsing. Preview packages normalize ZIP names to eliminate local/central-directory parser disagreement. Recovery snapshots carry monotonic revision tokens so late writers cannot resurrect stale drafts. Original and recovery data are fsynced, commit bytes verified, and uncertain commit candidates retained.

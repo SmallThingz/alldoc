@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.smallthingz.alldoc.core.DocumentEngineTest" tests="41" skipped="0" failures="0" errors="0" timestamp="2026-10-02T18:40:41.711Z" hostname="caefec3535ea" time="0.444">
+  <properties/>
+  <testcase name="odsFormulaHeadingsAndRepeatedCellsAreReadOnly" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.005"/>
+  <testcase name="traversalRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="previewNormalizesCentralDirectoryAliasesButExportKeepsOriginal" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.006"/>
+  <testcase name="sharedStringEditDoesNotChangeOtherCell" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.006"/>
+  <testcase name="serializedPartCannotGrowBeyondReimportLimit" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.125"/>
+  <testcase name="nodeBudgetIsAggregateAcrossParts" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.03"/>
+  <testcase name="combinedEditsBoundedBeforeSerialization" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.01"/>
+  <testcase name="inputArrayCannotMutateOriginal" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="repeatedExportsAreIndependent" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.009"/>
+  <testcase name="malformedArchiveFailsClosed" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="invalidUtf8Rejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.002"/>
+  <testcase name="unsupportedLegacyNeverPretendsText" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="utf16AndLineEndingsPreserved" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="unchangedIsByteIdentical" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.002"/>
+  <testcase name="deepXmlRejectedBeforeDomAllocation" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="emptyNodeBombRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.018"/>
+  <testcase name="macroRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="odfMimetypeMovesToFirstStoredEntryOnEditedExport" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.004"/>
+  <testcase name="signatureRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="unknownEditRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.0"/>
+  <testcase name="namespaceAliasedTraversalRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="wordEditPreservesOtherPartsAndOriginal" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.005"/>
+  <testcase name="runsKeepStableIndependentTargetsWithinParagraphs" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.005"/>
+  <testcase name="alternateOdfSignatureMembersAreRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.002"/>
+  <testcase name="hiddenDoctypeRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="renamedXmlSignatureIsRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="syntheticCorpusReopensAfterPreviewNormalization" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.071"/>
+  <testcase name="partExpansionBombRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.075"/>
+  <testcase name="plainTextExportBoundedByEncodedBytes" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.021"/>
+  <testcase name="odfTextPreservesSpanAndAsset" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.011"/>
+  <testcase name="slideOrderIsNumeric" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.003"/>
+  <testcase name="complexityBudgetIncludesHiddenParts" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.009"/>
+  <testcase name="xmlWhitespaceAndCdataRemainUsable" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="invalidUnicodeEditDoesNotPoisonSession" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.003"/>
+  <testcase name="macroContentTypeRejectedEvenWithRenamedPart" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.0"/>
+  <testcase name="contentTypeSelectedXmlCannotHideBehindDatExtension" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.002"/>
+  <testcase name="formulaEditRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="doctypeRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.001"/>
+  <testcase name="odfInlineScriptRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.0"/>
+  <testcase name="binaryTextRejected" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.0"/>
+  <testcase name="relationshipSelectedXmlCannotHideBehindDatExtension" classname="org.smallthingz.alldoc.core.DocumentEngineTest" time="0.004"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

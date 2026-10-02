@@ -1,0 +1,249 @@
+package org.smallthingz.alldoc
+
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import org.smallthingz.alldoc.core.DocumentEngine
+
+/** Virtualized rows and a bounded column window avoid giant layouts on sparse workbooks. */
+@Composable
+fun SheetCanvas(
+  session: DocumentEngine.Session,
+  edits: Map<String, String>,
+  query: String,
+  onEdit: (String, String) -> Unit,
+  modifier: Modifier = Modifier,
+  enabled: Boolean = true,
+) {
+  val sheets = remember(session) { session.blocks.map { it.section }.distinct() }
+  var sheet by remember(session) { mutableStateOf(sheets.firstOrNull().orEmpty()) }
+  var selected by remember(session) { mutableStateOf<DocumentEngine.Block?>(null) }
+  var input by remember { mutableStateOf("") }
+  var firstColumn by remember(session, sheet, query) { mutableIntStateOf(0) }
+  fun address(block: DocumentEngine.Block) = block.label.substringBefore(' ')
+  val cells =
+    remember(session, sheet, query, edits) {
+      session.blocks.filter {
+        it.section == sheet &&
+          (query.isBlank() ||
+            it.label.contains(query, true) ||
+            (edits[it.id] ?: it.original).contains(query, true))
+      }
+    }
+  val columns =
+    remember(cells) {
+      cells
+        .map { address(it).takeWhile(Char::isLetter) }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .sortedWith(compareBy<String> { it.length }.thenBy { it })
+    }
+  val rows =
+    remember(cells) {
+      cells.groupBy { address(it).dropWhile(Char::isLetter).toIntOrNull() ?: 0 }.toSortedMap()
+    }
+  Column(modifier) {
+    val current = selected
+    if (current != null) {
+      CellEditor(
+        current,
+        sheet,
+        input,
+        { input = it },
+        enabled,
+        {
+          if (current.editable) onEdit(current.id, input)
+          selected = null
+        },
+        { selected = null },
+      )
+    } else {
+      Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        sheets.forEach { name ->
+          FilterChip(selected = name == sheet, onClick = { sheet = name }, label = { Text(name) })
+        }
+      }
+      Text(
+        "Tap a cell to inspect or edit · empty rows and columns omitted",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.secondary,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+      )
+    }
+    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+      val count = ((maxWidth.value - 48) / 140).toInt().coerceIn(2, 6)
+      val start = firstColumn.coerceAtMost((columns.size - 1).coerceAtLeast(0))
+      val visible = columns.drop(start).take(count)
+      Column(Modifier.fillMaxSize()) {
+        if (columns.size > count)
+          Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            TextButton(
+              onClick = { firstColumn = (start - count).coerceAtLeast(0) },
+              enabled = start > 0,
+            ) {
+              Text("Previous columns")
+            }
+            Text(
+              "${visible.firstOrNull().orEmpty()}–${visible.lastOrNull().orEmpty()}",
+              style = MaterialTheme.typography.labelMedium,
+            )
+            TextButton(
+              onClick = { firstColumn = start + count },
+              enabled = start + count < columns.size,
+            ) {
+              Text("Next columns")
+            }
+          }
+        Row(
+          Modifier.fillMaxWidth()
+            .height(36.dp)
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+        ) {
+          Box(Modifier.width(48.dp).fillMaxHeight(), contentAlignment = Alignment.Center) {
+            Text("#", style = MaterialTheme.typography.labelSmall)
+          }
+          visible.forEach { column ->
+            Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+              Text(
+                column,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+              )
+            }
+          }
+        }
+        if (rows.isEmpty()) Text("No matching cells", Modifier.padding(24.dp))
+        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+          items(rows.entries.toList(), key = { it.key }) { (row, blocks) ->
+            val byColumn = blocks.associateBy { address(it).takeWhile(Char::isLetter) }
+            Row(Modifier.fillMaxWidth().height(56.dp)) {
+              Box(
+                Modifier.width(48.dp)
+                  .fillMaxHeight()
+                  .background(MaterialTheme.colorScheme.secondaryContainer),
+                contentAlignment = Alignment.Center,
+              ) {
+                Text(row.toString(), style = MaterialTheme.typography.labelSmall)
+              }
+              visible.forEach { column ->
+                val block = byColumn[column]
+                val text = block?.let { edits[it.id] ?: it.original }.orEmpty()
+                val edited = block != null && edits.containsKey(block.id)
+                Surface(
+                  modifier =
+                    Modifier.weight(1f)
+                      .fillMaxHeight()
+                      .padding(end = 1.dp, bottom = 1.dp)
+                      .then(
+                        if (block != null && enabled)
+                          Modifier.semantics {
+                              contentDescription = "$column$row: ${text.take(2000)}"
+                              stateDescription =
+                                if (edited) "Edited"
+                                else if (!block.editable) "Read-only" else "Editable"
+                            }
+                            .clickable {
+                              selected = block
+                              input = text
+                            }
+                        else Modifier
+                      ),
+                  color =
+                    if (edited) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surface,
+                ) {
+                  Box(
+                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.CenterStart,
+                  ) {
+                    Text(
+                      text,
+                      maxLines = 2,
+                      overflow = TextOverflow.Ellipsis,
+                      style = MaterialTheme.typography.bodyMedium,
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun CellEditor(
+  block: DocumentEngine.Block,
+  sheet: String,
+  input: String,
+  onInput: (String) -> Unit,
+  enabled: Boolean,
+  apply: () -> Unit,
+  cancel: () -> Unit,
+) {
+  Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+    Column(
+      Modifier.fillMaxWidth()
+        .heightIn(max = 260.dp)
+        .verticalScroll(rememberScrollState())
+        .padding(16.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Text(
+        "$sheet · ${block.label.substringBefore(' ')}",
+        style = MaterialTheme.typography.titleSmall,
+      )
+      if (block.editable) {
+        BasicTextField(
+          value = input,
+          onValueChange = onInput,
+          enabled = enabled,
+          minLines = 1,
+          maxLines = 4,
+          modifier =
+            Modifier.fillMaxWidth()
+              .heightIn(min = 48.dp, max = 112.dp)
+              .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+              .padding(12.dp)
+              .semantics { contentDescription = "Cell value" },
+          textStyle =
+            MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+          cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+        )
+        Text(
+          "Stored as text. Formulas are not recalculated.",
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.secondary,
+        )
+      } else {
+        Text(block.original.take(8000), style = MaterialTheme.typography.bodyMedium)
+        Text("Formula · read-only", style = MaterialTheme.typography.labelSmall)
+      }
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        if (block.editable) TextButton(onClick = cancel) { Text("Cancel") }
+        Button(onClick = apply, enabled = enabled) { Text(if (block.editable) "Apply" else "Done") }
+      }
+    }
+  }
+}

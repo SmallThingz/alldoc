@@ -1,0 +1,9 @@
+{
+  "file": "app-preview.apk",
+  "apk_bytes": 1433399,
+  "zip_expanded_bytes": 2699295,
+  "budget_bytes": 5242880,
+  "sha256": "368294143b70ab571b1741620d562259e2abe3b02779bd5bc07c9479a16eb3fd",
+  "installed_bytes": null,
+  "installed_note": "Not measured; ZIP expansion is not Android installed size."
+}

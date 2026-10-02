@@ -1,0 +1,14 @@
+alldoc
+Copyright 2026 SmallThingz. Apache License 2.0.
+
+AndroidX / Jetpack Compose: The Android Open Source Project, Apache License 2.0
+Kotlin and kotlinx.coroutines: JetBrains and contributors, Apache License 2.0
+
+docx-preview 0.3.6: Volodymyr Baydalka, Apache License 2.0
+https://github.com/VolodymyrBaydalka/docxjs
+
+JSZip 3.10.1: Stuart Knightley, David Duponchel, Franz Buchinger, António Afonso
+Used under the MIT license option.
+https://github.com/Stuk/jszip
+
+Full licenses follow. No affiliation with WPS, Kingsoft or Collabora is implied.

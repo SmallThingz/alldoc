@@ -18,9 +18,12 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -120,6 +123,11 @@ internal fun Workspace(
   var menuOpen by remember { mutableStateOf(false) }
   var pdfZoom by rememberSaveable { mutableFloatStateOf(1f) }
   val snackbar = remember { SnackbarHostState() }
+  val searchFocus = remember { FocusRequester() }
+  val focusManager = LocalFocusManager.current
+  LaunchedEffect(searchVisible, showHome) {
+    if (searchVisible && !showHome) searchFocus.requestFocus() else focusManager.clearFocus()
+  }
   val hasDocument = model.name.isNotEmpty() && !showHome
   val open =
     rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -538,7 +546,10 @@ internal fun Workspace(
             onValueChange = { search = it },
             label = { Text("Find content") },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            modifier =
+              Modifier.fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .focusRequester(searchFocus),
             trailingIcon = {
               TextButton(
                 onClick = {

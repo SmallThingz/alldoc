@@ -126,15 +126,65 @@ class WorkspaceUiTest {
     openFixture("budget.xlsx")
     capture("worksheet-grid")
     compose.onNodeWithText("Paper").performClick()
-    compose.onNodeWithText("Cancel").performClick()
+    compose.onNodeWithText("Done").performClick()
     compose.onNodeWithText("Paper").assertIsDisplayed()
-    capture("worksheet-grid")
     compose.onNodeWithText("Paper").performClick()
-    compose.onAllNodes(hasSetTextAction()).onLast().performTextReplacement("Recycled paper")
-    compose.onNodeWithText("Apply").performClick()
+    compose.onNodeWithContentDescription("Cell value").performTextReplacement("Temporary")
+    compose.onNodeWithText("Revert").performClick()
+    compose.onNodeWithText("Revert this cell?").assertIsDisplayed()
+    compose.onNodeWithText("Keep editing").performClick()
+    compose.onNodeWithContentDescription("Cell value").assertTextEquals("Temporary")
+    compose.onNodeWithText("Revert").performClick()
+    compose.onNodeWithText("Revert cell").performClick()
+    compose.onNodeWithText("Paper").assertIsDisplayed()
+    compose.onNodeWithText("Paper").performClick()
+    compose.onNodeWithContentDescription("Cell value").performTextReplacement("Recycled paper")
+    compose.onNodeWithText("Done").performClick()
     compose.onNodeWithText("Recycled paper").assertIsDisplayed()
     compose.onNodeWithText("Pens").assertIsDisplayed()
     capture("worksheet-edited")
+  }
+
+  @Test
+  fun cellDraftSurvivesBackOutsideTapSheetSwitchAndIncomingOpen() {
+    openFixture("budget.xlsx")
+    compose.onNodeWithText("Paper").performClick()
+    compose.onNodeWithContentDescription("Cell value").performTextReplacement("Retained cell")
+    // A tap outside the editor selecting another cell cannot discard the live draft.
+    compose.onNodeWithText("Pens").performClick()
+    compose.onNodeWithText("Done").performClick()
+    compose.onNodeWithText("Retained cell").performClick()
+    compose.onNodeWithContentDescription("Cell value").assertIsDisplayed()
+    compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+    compose.onNodeWithText("Retained cell").assertIsDisplayed()
+    val sheets = model.session!!.blocks.map { it.section }.distinct()
+    compose.onNodeWithText(sheets.last()).performClick()
+    compose.onNodeWithText(sheets.first()).performClick()
+    compose.onNodeWithText("Retained cell").assertIsDisplayed()
+    compose.onNodeWithContentDescription("Back to library").performClick()
+    compose.onNodeWithContentDescription("Resume current document").performClick()
+    compose.onNodeWithText("Retained cell").assertIsDisplayed()
+    compose.onNodeWithContentDescription("More options").performClick()
+    compose.onNodeWithText("Open another document").performClick()
+    compose.onNodeWithText("Leave these edits?").assertIsDisplayed()
+    compose.onNodeWithText("Keep editing").performClick()
+    compose.runOnUiThread { incoming = Uri.parse("content://alldoc.tests/incoming") }
+    compose.onNodeWithText("Open the incoming document?").assertIsDisplayed()
+    compose.onNode(hasText("Keep this draft") and hasClickAction()).performClick()
+    compose.runOnIdle {
+      org.junit.Assert.assertTrue(model.edits.values.contains("Retained cell"))
+    }
+  }
+
+  @Test
+  fun searchRequestsFocusAndBackClosesSearchBeforeDocument() {
+    openFixture("notes.txt")
+    compose.onNodeWithText("Find").performClick()
+    compose.onNode(hasSetTextAction()).assertIsFocused()
+    compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+    compose.onNodeWithText("Find content").assertDoesNotExist()
+    compose.onNodeWithText("notes.txt").assertIsDisplayed()
+    compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
   }
 
   @Test

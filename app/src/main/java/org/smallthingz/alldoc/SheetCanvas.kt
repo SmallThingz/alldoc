@@ -1,5 +1,6 @@
 package org.smallthingz.alldoc
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -30,7 +31,8 @@ fun SheetCanvas(
   val sheets = remember(session) { session.blocks.map { it.section }.distinct() }
   var sheet by remember(session) { mutableStateOf(sheets.firstOrNull().orEmpty()) }
   var selected by remember(session) { mutableStateOf<DocumentEngine.Block?>(null) }
-  var input by remember { mutableStateOf("") }
+  var initialValue by remember { mutableStateOf("") }
+  var confirmRevert by remember { mutableStateOf(false) }
   var firstColumn by remember(session, sheet, query) { mutableIntStateOf(0) }
   fun address(block: DocumentEngine.Block) = block.label.substringBefore(' ')
   val cells =
@@ -54,20 +56,28 @@ fun SheetCanvas(
     remember(cells) {
       cells.groupBy { address(it).dropWhile(Char::isLetter).toIntOrNull() ?: 0 }.toSortedMap()
     }
+  BackHandler(selected != null) {
+    if (confirmRevert) confirmRevert = false else selected = null
+  }
   Column(modifier) {
     val current = selected
     if (current != null) {
       CellEditor(
         current,
         sheet,
-        input,
-        { input = it },
+        edits[current.id] ?: current.original,
+        { onEdit(current.id, it) },
         enabled,
+        { selected = null },
+        { confirmRevert = true },
+        (edits[current.id] ?: current.original) != initialValue,
+        confirmRevert,
         {
-          if (current.editable) onEdit(current.id, input)
+          onEdit(current.id, initialValue)
+          confirmRevert = false
           selected = null
         },
-        { selected = null },
+        { confirmRevert = false },
       )
     } else {
       Row(
@@ -163,7 +173,8 @@ fun SheetCanvas(
                             }
                             .clickable {
                               selected = block
-                              input = text
+                              initialValue = text
+                              confirmRevert = false
                             }
                         else Modifier
                       ),
@@ -201,6 +212,10 @@ private fun CellEditor(
   enabled: Boolean,
   apply: () -> Unit,
   cancel: () -> Unit,
+  changed: Boolean,
+  confirmRevert: Boolean,
+  revert: () -> Unit,
+  keepEditing: () -> Unit,
 ) {
   Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
     Column(
@@ -214,7 +229,14 @@ private fun CellEditor(
         "$sheet · ${block.label.substringBefore(' ')}",
         style = MaterialTheme.typography.titleSmall,
       )
-      if (block.editable) {
+      if (confirmRevert) {
+        Text("Revert this cell?", style = MaterialTheme.typography.titleMedium)
+        Text("Restore the value from when you opened this cell. Other draft edits stay unchanged.")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+          TextButton(onClick = keepEditing) { Text("Keep editing") }
+          Button(onClick = revert, enabled = enabled) { Text("Revert cell") }
+        }
+      } else if (block.editable) {
         BasicTextField(
           value = input,
           onValueChange = onInput,
@@ -232,7 +254,7 @@ private fun CellEditor(
           cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
         )
         Text(
-          "Stored as text. Formulas are not recalculated.",
+          "Saved to your draft as you type. Stored as text; formulas are not recalculated.",
           style = MaterialTheme.typography.labelSmall,
           color = MaterialTheme.colorScheme.secondary,
         )
@@ -241,8 +263,11 @@ private fun CellEditor(
         Text("Formula · read-only", style = MaterialTheme.typography.labelSmall)
       }
       Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        if (block.editable) TextButton(onClick = cancel) { Text("Cancel") }
-        Button(onClick = apply, enabled = enabled) { Text(if (block.editable) "Apply" else "Done") }
+        if (!confirmRevert) {
+          if (block.editable && changed)
+            TextButton(onClick = cancel, enabled = enabled) { Text("Revert") }
+          Button(onClick = apply, enabled = enabled) { Text("Done") }
+        }
       }
     }
   }

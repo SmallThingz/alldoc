@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.smallthingz.alldoc.WorkspaceUiTest" tests="13" skipped="0" failures="0" errors="0" timestamp="2026-10-02T19:07:03.200Z" hostname="caefec3535ea" time="11.459">
+  <properties/>
+  <testcase name="worksheetCellEditingIsLocalAndCancelable" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="6.637"/>
+  <testcase name="textEntrySaveAndDiscardUseTheRealResultFlow" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.493"/>
+  <testcase name="wideHome" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.19"/>
+  <testcase name="narrowLargeTextAndImeInsetsKeepSaveVisible" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.308"/>
+  <testcase name="textEditCancelExportAndReturnHome" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.506"/>
+  <testcase name="formattedPreviewRefusesExternalAndFileResources" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.33"/>
+  <testcase name="documentReadingCanvasAndFailedExport" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.64"/>
+  <testcase name="searchRequestsFocusAndBackClosesSearchBeforeDocument" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.232"/>
+  <testcase name="incomingIntentCannotDiscardEditedDraftWithoutConfirmation" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.165"/>
+  <testcase name="homeAndFormatDialogRemainNavigable" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.487"/>
+  <testcase name="recentDocumentsAndRecoverableDraftAreVisible" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.402"/>
+  <testcase name="narrowDarkHome" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.086"/>
+  <testcase name="cellDraftSurvivesBackOutsideTapSheetSwitchAndIncomingOpen" classname="org.smallthingz.alldoc.WorkspaceUiTest" time="0.406"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

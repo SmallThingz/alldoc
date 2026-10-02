@@ -3,7 +3,7 @@ package org.smallthingz.alldoc
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,15 +40,21 @@ fun EditorCanvas(
       ) {
         if (blocks.isEmpty())
           item { Text("No matching text", style = MaterialTheme.typography.bodyMedium) }
-        items(paragraphs, key = { it.first().paragraphId }) { paragraph ->
+        itemsIndexed(paragraphs, key = { _, paragraph -> paragraph.first().paragraphId }) {
+          paragraphIndex,
+          paragraph ->
           Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            paragraph.forEach { block ->
+            paragraph.forEachIndexed { segmentIndex, block ->
               if (block.editable)
                 BasicTextField(
                   value = edits[block.id] ?: block.original,
                   onValueChange = { onEdit(block.id, it) },
                   enabled = enabled,
-                  modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Edit text" },
+                  modifier =
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
+                      contentDescription =
+                        "Edit paragraph ${paragraphIndex + 1}, segment ${segmentIndex + 1}"
+                    },
                   textStyle =
                     MaterialTheme.typography.bodyLarge.copy(
                       fontFamily = FontFamily.Serif,

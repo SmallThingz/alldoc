@@ -40,6 +40,7 @@ class AndroidSafetyTest {
   fun setup() {
     app = RuntimeEnvironment.getApplication()
     File(app.filesDir, "recovery").deleteRecursively()
+    File(app.filesDir, "recovered-drafts").deleteRecursively()
     root = File(app.cacheDir, "safety-${UUID.randomUUID()}").apply { mkdirs() }
   }
 

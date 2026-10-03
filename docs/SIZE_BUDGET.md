@@ -27,3 +27,11 @@ The optional Collabora experiment remains separate from main. Its official APK w
 - SHA-256: `817a9df0788b9f8cae4dbfc3b06fdd501f5626225f7f4fa66da71d91bc82a796`
 - VersionCode 2; same package and development signing certificate as 0.1.0
 - Signature and 16 KiB ZIP alignment checks passed
+
+## Validated 0.2.0 preview
+
+- APK: **2,060,250 bytes (1.96 MiB)**, +626,851 bytes over 0.1.1
+- Expanded ZIP entries: 4,615,044 bytes; Android installed footprint remains unmeasured
+- SHA-256: `5a8ad0ac526a0a171c82594cf807905fcc1df45fece2dce257f2c5b7c366a38c`
+- VersionCode 3; same package and signing certificate as 0.1.1; APK v2 signature and 16 KiB alignment pass
+- Includes the redesigned native UI, bounded legacy POI extraction, simplified slide/ODS/source improvements and platform PDF form tools. No engine download or online conversion service is present

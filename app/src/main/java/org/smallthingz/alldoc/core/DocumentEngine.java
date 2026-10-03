@@ -12,7 +12,7 @@ import java.nio.charset.*;
 import java.util.*;
 import java.util.zip.*;
 
-/** Bounded, offline structured-text engine. It deliberately does not claim page-layout fidelity. */
+/** Bounded, offline document engine. Presentation preview is a declared subset, not office rendering. */
 public final class DocumentEngine {
     public static final int MAX_FILE = 32 * 1024 * 1024;
     public static final int MAX_EXPANDED = 64 * 1024 * 1024;
@@ -36,6 +36,46 @@ public final class DocumentEngine {
     private static final String O = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
     private static final String T = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
     private static final String TABLE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
+    public static final int MAX_IMAGE_BYTES=2*1024*1024, MAX_IMAGE_TOTAL_BYTES=8*1024*1024;
+    public static final int MAX_IMAGE_DIMENSION=8192, MAX_IMAGE_PIXELS=16*1024*1024, MAX_IMAGE_TOTAL_PIXELS=32*1024*1024;
+    /** Resolved preview style. Fonts may be substituted by the host; source style XML is preserved. */
+    public static final class TextStyle {
+        public final String fontFamily, alignment;
+        public final double fontSize;
+        public final Integer color;
+        public final boolean bold, italic, underline, strike;
+        public static final TextStyle DEFAULT=new TextStyle("",-1,null,false,false,false,false,"left");
+        TextStyle(String fontFamily,double fontSize,Integer color,boolean bold,boolean italic,boolean underline,boolean strike,String alignment) {
+            this.fontFamily=fontFamily;this.fontSize=fontSize;this.color=color;this.bold=bold;this.italic=italic;this.underline=underline;this.strike=strike;this.alignment=alignment;
+        }
+    }
+    /** Bounded embedded PNG/JPEG only. bytes() never exposes the preserved package array. */
+    public static final class SlideImage {
+        public final String id,mimeType;
+        public final double x,y,width,height;
+        public final int zOrder,pixelWidth,pixelHeight;
+        private final byte[] data;
+        SlideImage(String id,String mimeType,double[] bounds,int zOrder,int pixelWidth,int pixelHeight,byte[] data) {
+            this.id=id;this.mimeType=mimeType;this.x=bounds[0];this.y=bounds[1];this.width=bounds[2];this.height=bounds[3];this.zOrder=zOrder;
+            this.pixelWidth=pixelWidth;this.pixelHeight=pixelHeight;this.data=data;
+        }
+        public byte[] bytes(){return data.clone();}
+    }
+    /** A truthful placeholder only when the omitted image has safe, untransformed bounds. */
+    public static final class SlideFill {
+        public final String id;
+        public final double x,y,width,height;
+        public final int zOrder,color;
+        SlideFill(String id,double[] bounds,int zOrder,int color){this.id=id;this.x=bounds[0];this.y=bounds[1];this.width=bounds[2];this.height=bounds[3];this.zOrder=zOrder;this.color=color;}
+    }
+    public static final class SlideOmission {
+        public final String id,reason;
+        public final double x,y,width,height;
+        public final int zOrder;
+        SlideOmission(String id,String reason,double[] bounds,int zOrder) {
+            this.id=id;this.reason=reason;this.x=bounds[0];this.y=bounds[1];this.width=bounds[2];this.height=bounds[3];this.zOrder=zOrder;
+        }
+    }
     public static final class Block {
         public final String id, paragraphId, section, label, original, shapeId, valueType, formula;
         public final boolean editable;
@@ -43,8 +83,11 @@ public final class DocumentEngine {
         public final int row, column, rowSpan, columnSpan, rowRepeat, columnRepeat;
         /** Text frame bounds in points, or -1 when layout cannot be represented reliably. */
         public final double x, y, width, height;
-        private final Node node;
-        private final String part;
+        public final TextStyle style;
+        public final int zOrder;
+        public final Integer fillColor;
+        final Node node;
+        final String part;
         Block(String id, String section, String label, String text, boolean editable, Node node, String part) {
             this(id,section,label,text,editable,node,part,0,0,1,1,1,1,"","");
         }
@@ -54,16 +97,38 @@ public final class DocumentEngine {
             this.row=row;this.column=column;this.rowSpan=rowSpan;this.columnSpan=columnSpan;this.rowRepeat=rowRepeat;this.columnRepeat=columnRepeat;this.valueType=valueType;this.formula=formula;
             Node shape=ancestorShape(node);this.shapeId=shape==null?paragraphId:nodePath(shape,part);
             double[] bounds=shapeBounds(shape);this.x=bounds[0];this.y=bounds[1];this.width=bounds[2];this.height=bounds[3];
+            this.style=TextStyle.DEFAULT;this.zOrder=0;this.fillColor=null;
         }
+        private Block(Block b,TextStyle style,double[] bounds,int zOrder,Integer fillColor,String paragraphId) {
+            this.id=b.id;this.paragraphId=paragraphId;this.section=b.section;this.label=b.label;this.original=b.original;this.editable=b.editable;
+            this.node=b.node;this.part=b.part;this.row=b.row;this.column=b.column;this.rowSpan=b.rowSpan;this.columnSpan=b.columnSpan;
+            this.rowRepeat=b.rowRepeat;this.columnRepeat=b.columnRepeat;this.valueType=b.valueType;this.formula=b.formula;this.shapeId=b.shapeId;
+            this.x=bounds[0];this.y=bounds[1];this.width=bounds[2];this.height=bounds[3];this.style=style;this.zOrder=zOrder;this.fillColor=fillColor;
+        }
+    }
+    // Copy only preview metadata; edit targets still refer to original DOM nodes.
+    static Block presentationBlock(Block b,TextStyle style,double[] bounds,int zOrder,Integer fillColor) {
+        return new Block(b,style,bounds,zOrder,fillColor,b.paragraphId);
     }
     public static final class Slide {
         public final String id, title;
         public final int number;
         public final double width, height;
         public final List<Block> blocks;
+        public final List<SlideImage> images;
+        public final List<SlideOmission> omissions;
+        public final List<SlideFill> fills;
+        public final List<String> warnings;
+        public final Integer backgroundColor;
         Slide(String id,String title,int number,double width,double height,List<Block> blocks) {
+            this(id,title,number,width,height,blocks,Collections.emptyList(),null,Collections.emptyList(),Collections.emptyList(),Collections.emptyList());
+        }
+        Slide(String id,String title,int number,double width,double height,List<Block> blocks,List<SlideImage> images,Integer backgroundColor,List<SlideOmission> omissions,List<String> warnings,List<SlideFill> fills) {
             this.id=id;this.title=title;this.number=number;this.width=width;this.height=height;
             this.blocks=Collections.unmodifiableList(new ArrayList<>(blocks));
+            this.images=Collections.unmodifiableList(new ArrayList<>(images));this.backgroundColor=backgroundColor;
+            this.omissions=Collections.unmodifiableList(new ArrayList<>(omissions));this.warnings=Collections.unmodifiableList(new ArrayList<>(warnings));
+            this.fills=Collections.unmodifiableList(new ArrayList<>(fills));
         }
     }
     public static final class Sheet {
@@ -78,6 +143,7 @@ public final class DocumentEngine {
         public final List<Sheet> sheets = new ArrayList<>();
         public final List<String> warnings = new ArrayList<>();
         private boolean flatOdf;
+        private RtfDocument rtf;
         private long extractedCharacters;
         private final byte[] originalBytes;
         public final boolean editable;
@@ -113,6 +179,7 @@ public final class DocumentEngine {
             if(!ids.containsAll(changes.keySet())) throw new IOException("Unknown edit target");
             if(actual.isEmpty() && (preserveUnchanged || !editable)) return originalBytes.clone();
             if(!editable)throw new IOException("This document is read-only");
+            if(rtf!=null)return rtf.export(actual);
             if(entries.isEmpty()) {
                 String text=actual.getOrDefault("text",blocks.get(0).original);
                 LimitedOutput out=new LimitedOutput(MAX_TEXT); out.write(bom); out.write(text.getBytes(charset));
@@ -199,6 +266,18 @@ public final class DocumentEngine {
             Session s=new Session(name,ext,(ext.equals("xml") || ext.equals("svg"))?"Validated XML source • well-formedness checked on open and export; DTDs and external entities blocked":Set.of("html","htm","css").contains(ext)?"Inert source editor • scripts, styles and external resources are never executed":"Plain-text editor • original encoding and line endings retained",bytes,true,cs,Arrays.copyOf(bytes,offset));
             s.blocks.add(new Block("text","Document",ext.equals("csv")?"CSV source (no formula execution)":"Text",text,true,null,null)); return s;
         }
+        if(ext.equals("rtf")) {
+            RtfDocument parsed=RtfDocument.open(bytes);
+            Session s=new Session(name,ext,"RTF formatted text • bounded style preview; source-preserving text edits",bytes,parsed.editable,null,null);
+            s.rtf=parsed;s.warnings.addAll(parsed.warnings);
+            for(RtfDocument.Run run:parsed.runs) {
+                Block b=new Block(run.id,"Document","Text run",run.text,run.editable,null,null);
+                TextStyle style=new TextStyle("",run.fontSizeHalfPoints/2.0,null,run.bold,run.italic,run.underline,run.strike,"left");
+                add(s,new Block(b,style,new double[]{-1,-1,-1,-1},0,null,run.paragraphId));
+            }
+            if(s.blocks.isEmpty())s.warnings.add("No visible text was found. Embedded objects and pictures remain preserved in the original.");
+            return s;
+        }
         if(Set.of("doc","xls","ppt").contains(ext)) {
             LegacyOfficeExtractor.Result extracted=LegacyOfficeExtractor.extract(ext,bytes);
             Session legacy=new Session(name,ext,"Legacy Office • read-only text extraction; original-byte copies only",bytes,false,null,null);
@@ -213,7 +292,7 @@ public final class DocumentEngine {
             flat.flatOdf=true;validateXml(bytes,flat.xmlBudget);flat.entries.put("content.xml",bytes);openOdf(flat);return flat;
         }
         if(!Set.of("docx","xlsx","pptx","odt","ods","odp").contains(ext))
-            throw new IOException("."+ext+" is not supported by the offline editor. Original is unchanged. Convert this format in a trusted office application. RTF rich-text editing is not supported by this compact engine.");
+            throw new IOException("."+ext+" is not supported by the offline editor. Original is unchanged. Convert this format in a trusted office application.");
         Session s=new Session(name,ext,"Structured content • not a page-layout preview. Export a copy; review it in your office app.",bytes,true,null,null);
         int total=0,count=0;
         try(ZipInputStream zip=new ZipInputStream(new ByteArrayInputStream(bytes))) {
@@ -264,14 +343,17 @@ public final class DocumentEngine {
             else s.warnings.add("Slide size is missing; preview uses a 16:9 canvas.");
             validateCanvas(width,height);
         }
+        PresentationReader preview=new PresentationReader(s.entries,s.documents,s.warnings);
         for(String part:parts) {
             Document doc=load(s,part);int start=s.blocks.size(),number=s.slides.size()+1;
             NodeList texts=doc.getElementsByTagNameNS(A,"t");
             for(int i=0;i<texts.getLength();i++)addTextNodes(s,texts.item(i),part,"Slide "+number,"Text run "+(i+1),!protectedPresentation);
             List<Block> blocks=new ArrayList<>(s.blocks.subList(start,s.blocks.size()));
-            s.slides.add(new Slide(part,slideTitle(blocks,"Slide "+number),number,width,height,blocks));
+            Slide slide=preview.pptx(part,slideTitle(blocks,"Slide "+number),number,width,height,blocks);
+            for(int i=0;i<slide.blocks.size();i++)s.blocks.set(start+i,slide.blocks.get(i));
+            s.slides.add(slide);
         }
-        s.warnings.add("Text-frame preview only: images, themes, diagrams, animations and inherited layouts are not rendered.");
+        s.warnings.add("Slide preview supports text styles, inherited placeholder layout and embedded PNG/JPEG. Font substitution and text wrapping may differ; vectors, charts, effects and animations require an office app.");
     }
     private static List<String> orderedParts(Session s,String main,String ns,String local,String relation,String fallback)throws Exception {
         List<String> result=new ArrayList<>();
@@ -355,13 +437,16 @@ public final class DocumentEngine {
         if(ext.endsWith("ds")){openOds(s,doc);return;}
         if(ext.endsWith("dp")) {
             NodeList pages=doc.getElementsByTagNameNS(DRAW,"page");
+            PresentationReader preview=new PresentationReader(s.entries,s.documents,s.warnings);
             for(int i=0;i<pages.getLength();i++) {
                 Element page=(Element)pages.item(i);int start=s.blocks.size();String section="Slide "+(i+1),title=page.getAttributeNS(DRAW,"name");
                 addOdfParagraphs(s,page,section);double[] size=odfPageSize(s,page);
                 List<Block> blocks=new ArrayList<>(s.blocks.subList(start,s.blocks.size()));
-                s.slides.add(new Slide("content.xml#page"+(i+1),title.isEmpty()?slideTitle(blocks,section):title,i+1,size[0],size[1],blocks));
+                Slide slide=preview.odf(page,"content.xml#page"+(i+1),title.isEmpty()?slideTitle(blocks,section):title,i+1,size[0],size[1],blocks);
+                for(int j=0;j<slide.blocks.size();j++)s.blocks.set(start+j,slide.blocks.get(j));
+                s.slides.add(slide);
             }
-            s.warnings.add("Text-frame preview only: master-page graphics, images, transitions and complex transforms are not rendered.");
+            s.warnings.add("Slide preview supports text styles and embedded PNG/JPEG. Font substitution and text wrapping may differ; master graphics, vector shapes, transitions and complex transforms require an office app.");
         } else addOdfParagraphs(s,doc,"Document");
         if(s.blocks.isEmpty() && s.slides.isEmpty())throw new IOException("No readable OpenDocument content was found");
     }
@@ -487,13 +572,13 @@ public final class DocumentEngine {
     private static Element ancestor(Node n,String ns,String local) {
         for(Node p=n;p!=null;p=p.getParentNode())if(p instanceof Element && ns.equals(p.getNamespaceURI()) && local.equals(p.getLocalName()))return (Element)p;return null;
     }
-    private static Node ancestorShape(Node n) {
+    static Node ancestorShape(Node n) {
         for(Node p=n;p!=null;p=p.getParentNode())if(p instanceof Element && (P.equals(p.getNamespaceURI()) && ("sp".equals(p.getLocalName()) || "graphicFrame".equals(p.getLocalName())) || DRAW.equals(p.getNamespaceURI()) && ("frame".equals(p.getLocalName()) || "custom-shape".equals(p.getLocalName()))))return p;return null;
     }
     private static String nodePath(Node node,String part) {
         StringBuilder path=new StringBuilder();for(Node current=node;current.getParentNode()!=null;current=current.getParentNode()){int index=0;for(Node before=current.getPreviousSibling();before!=null;before=before.getPreviousSibling())index++;path.insert(0,"/"+index);}return part+path;
     }
-    private static double[] shapeBounds(Node shape) {
+    static double[] shapeBounds(Node shape) {
         double[] unknown={-1,-1,-1,-1};if(!(shape instanceof Element))return unknown;
         Element e=(Element)shape;
         try {
@@ -518,7 +603,7 @@ public final class DocumentEngine {
         if(width<1 || height<1 || width>100000 || height>100000 || width/height<0.01 || width/height>100)
             throw new IOException("Slide canvas dimensions exceed safe preview limits");
     }
-    private static double odfLength(String value)throws IOException {
+    static double odfLength(String value)throws IOException {
         if(!value.matches("-?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(cm|mm|in|pt|pc|px)"))throw new IOException("Unsupported length");
         String unit=value.substring(value.length()-2);double n=Double.parseDouble(value.substring(0,value.length()-2));
         return n*(unit.equals("cm")?72/2.54:unit.equals("mm")?72/25.4:unit.equals("in")?72:unit.equals("pc")?12:unit.equals("px")?0.75:1);

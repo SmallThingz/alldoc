@@ -494,6 +494,44 @@ class DocumentModel(application: Application) : AndroidViewModel(application) {
         checkpoint()
     }
 
+    fun editBatch(changes: Map<String, String>) {
+        if (busy || migrationBlocked) return
+        val current = session ?: return
+        val targets = current.blocks.associateBy { it.id }
+        val candidate = edits.toMutableMap()
+        try {
+            for ((id, value) in changes) {
+                val block = targets[id] ?: error("Unknown text edit target")
+                require(block.editable || value == block.original) {
+                    "This paragraph contains protected text"
+                }
+                require(value.length <= DocumentEngine.MAX_TEXT) { "This text edit is too large" }
+                if (value == block.original) candidate.remove(id) else candidate[id] = value
+            }
+            require(
+                candidate.values.sumOf { it.length.toLong() } <= DocumentEngine.MAX_EDIT_CHARACTERS
+            ) {
+                "The combined draft is too large"
+            }
+            if (current.extension == "rtf")
+                require(
+                    current.blocks.sumOf { (candidate[it.id] ?: it.original).length.toLong() } <=
+                        org.smallthingz.alldoc.core.RtfDocument.MAX_TEXT
+                ) {
+                    "RTF text exceeds the safe document limit"
+                }
+            androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+                edits.clear()
+                edits.putAll(candidate)
+            }
+            hasExportedCurrentDraft = false
+            status = null
+            checkpoint()
+        } catch (failure: Exception) {
+            error = failure.message ?: "The text changes could not be applied safely"
+        }
+    }
+
     fun discardEdits() {
         if (!busy) {
             editorResetVersion++

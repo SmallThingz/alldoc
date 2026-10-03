@@ -6,3 +6,7 @@ local.properties
 *.keystore
 .idea/
 *.iml
+
+# Paused external corpus: keep local inputs/results, do not redistribute unreviewed files.
+/corpus/upstream/
+/corpus/results/

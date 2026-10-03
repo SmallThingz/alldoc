@@ -1,5 +1,18 @@
 # Verification log
 
+## 2026-10-03 paused 0.3.0 working tree
+
+- All **252 executed tests passed**, with **one explicit ignore**, on the final compiled source after the LocalActivity lint fix. Tests ran in 19 fresh JUnit JVMs with the exact Gradle-resolved runtime classpath, JVM options, system properties and working directory. No assertions or fixtures were removed; native graphics tests were split into smaller classes to bound runner retention.
+- Counts: 62 document engine, 18 legacy, 24 presentation fidelity, 32 RTF parser, 5 RTF run editing, 20 pure gesture gate, 8 actual Compose observer, 12 immersive UI, 22 existing workspace UI, 11 Android safety, 20 PDF codec/protection, 4 recovery migration, 3 slide geometry, 3 raster decoder, 6 shared raster cache and 2 PDF form UI-model tests.
+- Full lint used the same AGP-generated analysis models/rules in isolated CLI JVMs: **0 errors, 11 warnings**. The real Activity-cast error was corrected with LocalActivity. Remaining warnings are API-target/backup applicability, optional KTX/localization suggestions and two custom-view/modifier conventions; no error baseline was added.
+- Ordinary aggregate Gradle attempts were not successful: daemon disappearance/GC pressure occurred. One completed run had two fixture-path failures; both were corrected before the final passing isolated runs. A later stalled aggregate run was interrupted. Separate-process lint initially attempted a read-only default home; the isolated CLI used the authorized workspace home instead.
+- Preview Kotlin/Java/resource compilation passed. The minification attempt ended with a daemon-disappeared failure. **No verified 0.3 APK was produced or delivered**; the existing 0.2.0 APK is preserved unchanged.
+- Development/build/research stopped on the user's explicit commit/push-and-pause instruction. See `docs/evidence/v0.3/`, `EDGE_CASE_COVERAGE.md`, `IMMERSIVE_INTERACTION.md`, and the mature-engine feasibility report.
+
+Independent native visual review passed hidden/shown overlays without reflow, real caret taps/focus/typing, scroll/fling-stop, pinch/double tap, modern presentation modes/navigation, narrow/large-font/dark layouts, simulated IME insets, grid editing, Find and RTF. An independent safety pass found and fixed grouped geometry/style inheritance, hidden unplaced text, repeated-master expansion, and shared raster lifecycle/budget issues.
+
+The real text long-press/selection-handle path remains explicitly ignored because Robolectric's native Magnifier destroys a null Surface. Real-device/IME/TalkBack, API26 behavior, DOCX WebView rendering and native PDF fill/save/reopen remain unverified. Full Office features, including charts/formula recalculation, remain unfulfilled. The newly staged 50-file corpus is hash/provenance checked only and has **zero observed operation passes**; execution remains stopped and binary redistribution is excluded pending review.
+
 ## 2026-10-03 version 0.2.0 redesign and format expansion
 
 Final-source verification:
@@ -65,3 +78,14 @@ No emulator or physical-device run has been completed. Real IME interaction, And
 ## Initial milestone
 
 Earlier source passed assembleDebug, lintDebug and 18 engine tests. Those results are historical and do not establish final artifact validation.
+
+## Resource-constrained test runner
+
+If the Gradle coordinator plus Robolectric native graphics exceeds the executor's memory budget, the same compiled tests can run in fresh JUnit JVMs without the coordinator resident. No tests, fixtures, assertions, SDK configuration or native-graphics mode are changed:
+
+```sh
+./gradlew :app:writeLocalTestRuntime -I scripts/test-runtime.init.gradle
+python scripts/test-isolated.py
+```
+
+The metadata task first builds the actual test task's prerequisites, then records its exact runtime classpath, JVM arguments, system properties and working directory under `app/build/`. The explicit regular-suite class list excludes the paused real-format corpus harness. Each class has a 180-second process deadline. Results, failures and explicit ignores remain distinct. Metadata/logs stay in the ignored build directory and are not release artifacts. JDK 21 is required.

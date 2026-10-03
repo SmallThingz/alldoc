@@ -1,3 +1,5 @@
+import java.time.Duration
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -16,8 +18,8 @@ android {
         applicationId = "org.smallthingz.alldoc"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.3.0"
         resValue("string", "app_name", "alldoc")
     }
     packaging {
@@ -61,7 +63,12 @@ android {
             )
             it.systemProperty("user.home", testHome)
             it.doFirst { file(testHome).mkdirs() }
-            it.maxHeapSize = "1g"
+            it.maxHeapSize = "512m"
+            // Native graphics allocations are outside the JVM heap; isolate each test class.
+            it.forkEvery = 1
+            it.maxParallelForks = 1
+            it.timeout.set(Duration.ofMinutes(10))
+            if(providers.gradleProperty("verboseTests").isPresent) it.testLogging.events("started", "failed", "skipped")
         }
     }
     buildTypes {

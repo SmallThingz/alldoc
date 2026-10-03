@@ -35,8 +35,8 @@ internal fun FormatSupport(close: () -> Unit) {
                 )
                 FormatRow(
                     "PPTX · ODP · FODP",
-                    "Simplified slides · text edits",
-                    "Slide order and text positions where available. Images, charts, themes and transitions are not rendered.",
+                    "Pages or slides · text edits",
+                    "Approximate text styles, solid rectangles and PNG/JPEG images. Charts, complex shapes, media and transitions remain unsupported.",
                 )
                 FormatRow(
                     "ODT · FODT",
@@ -51,12 +51,12 @@ internal fun FormatSupport(close: () -> Unit) {
                 FormatRow(
                     "DOC · XLS · PPT",
                     "Read-only text extraction · copy export",
-                    "Legacy Office text, not document layout. XLS shows addressed values, not a formatted grid; PPT may include master or older text. Convert in an office app for editing.",
+                    "Text extraction without document layout. XLS shows addressed values; PPT follows current slide order and excludes master placeholders. Convert in an office app for editing.",
                 )
                 FormatRow(
                     "RTF",
-                    "Not yet supported",
-                    "Convert to DOCX or plain text in a full office app first.",
+                    "Body text · safe text edits",
+                    "Existing text and basic emphasis. Fields and complex/protected documents may be read-only. Images, tables and page layout are not reproduced.",
                 )
                 Text(
                     "Every export creates a separate copy. Review edited Office files in a full office app before sharing.",

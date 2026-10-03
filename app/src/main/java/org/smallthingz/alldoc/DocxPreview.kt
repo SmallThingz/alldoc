@@ -31,14 +31,9 @@ fun DocxPreview(
       error = e.message
     }
   }
+  val interactions = LocalDocumentInteraction.current
   val fallbackColor = MaterialTheme.colorScheme.onSurface.toArgb()
   Column(modifier) {
-    Text(
-      "Formatted preview · pagination may differ · pinch to zoom",
-      style = MaterialTheme.typography.labelSmall,
-      modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-      color = MaterialTheme.colorScheme.secondary,
-    )
     error?.let { Text(it, Modifier.padding(20.dp), color = MaterialTheme.colorScheme.error) }
     if (bytes == null && error == null) LinearProgressIndicator(Modifier.fillMaxWidth())
     if (error == null)
@@ -48,7 +43,7 @@ fun DocxPreview(
             modifier = Modifier.fillMaxSize(),
             factory = { context ->
               try {
-                WebView(context).apply {
+                SelectionAwareDocumentWebView(context,interactions).apply {
                   settings.javaScriptEnabled = true
                   settings.allowFileAccess = false
                   settings.allowContentAccess = false
@@ -84,7 +79,7 @@ fun DocxPreview(
                         detail: RenderProcessGoneDetail,
                       ): Boolean {
                         error =
-                          "Formatted preview stopped. Switch to Text; your original is unchanged."
+                          "Formatted preview stopped. Reveal controls and choose Edit text; your original is unchanged."
                         return true
                       }
 
@@ -137,7 +132,7 @@ fun DocxPreview(
               } catch (failure: Exception) {
                 android.widget.TextView(context).apply {
                   text =
-                    "Formatted preview is unavailable on this device. Switch to Text to read or edit the document."
+                    "Formatted preview is unavailable on this device. Reveal controls and choose Edit text to inspect the document."
                   setTextColor(fallbackColor)
                   setPadding(24, 24, 24, 24)
                 }
@@ -154,4 +149,28 @@ fun DocxPreview(
         }
       }
   }
+}
+
+private class SelectionAwareDocumentWebView(context: android.content.Context,private val interaction:DocumentInteractionState?):WebView(context) {
+    private var actionModes=0
+    init {
+        interaction?.selection(this) { actionModes>0 }
+        setOnScrollChangeListener { _,_,_,_,_->interaction?.nativeMotion() }
+    }
+    override fun startActionMode(callback:android.view.ActionMode.Callback):android.view.ActionMode? = startActionMode(callback,android.view.ActionMode.TYPE_PRIMARY)
+    override fun startActionMode(callback:android.view.ActionMode.Callback,type:Int):android.view.ActionMode? {
+        val wrapped=object:android.view.ActionMode.Callback2() {
+            override fun onCreateActionMode(mode:android.view.ActionMode,menu:android.view.Menu):Boolean {
+                val created=callback.onCreateActionMode(mode,menu);if(created)actionModes++;return created
+            }
+            override fun onPrepareActionMode(mode:android.view.ActionMode,menu:android.view.Menu)=callback.onPrepareActionMode(mode,menu)
+            override fun onActionItemClicked(mode:android.view.ActionMode,item:android.view.MenuItem)=callback.onActionItemClicked(mode,item)
+            override fun onDestroyActionMode(mode:android.view.ActionMode) {try {callback.onDestroyActionMode(mode)} finally {actionModes=(actionModes-1).coerceAtLeast(0)}}
+            override fun onGetContentRect(mode:android.view.ActionMode,view:android.view.View,outRect:android.graphics.Rect) {
+                if(callback is android.view.ActionMode.Callback2)callback.onGetContentRect(mode,view,outRect) else outRect.set(0,0,view.width,view.height)
+            }
+        }
+        return super.startActionMode(wrapped,type)
+    }
+    override fun onDetachedFromWindow() {interaction?.selection(this,null);super.onDetachedFromWindow()}
 }

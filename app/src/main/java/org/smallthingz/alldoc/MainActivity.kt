@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -18,17 +19,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private var incomingUri by mutableStateOf<Uri?>(null)
@@ -62,10 +73,40 @@ internal fun Workspace(
     consumeIncoming: () -> Unit = {},
 ) {
     val largeText = LocalDensity.current.fontScale > 1.3f
+    var controlsVisible by rememberSaveable { mutableStateOf(false) }
+    var revealEpoch by remember { mutableIntStateOf(0) }
+    var overlayHeight by remember { mutableIntStateOf(0) }
+    var presentationMode by rememberSaveable { mutableStateOf(PresentationMode.Pages) }
+    var previewWarnings by remember { mutableStateOf(emptyList<String>()) }
+    var showDocumentDetails by remember { mutableStateOf(false) }
+    val interactions = remember { DocumentInteractionState() }
+    val viewportFocus = remember { FocusRequester() }
+    val recommendedTimeout =
+        LocalAccessibilityManager.current?.calculateRecommendedTimeoutMillis(
+            4500,
+            containsIcons = true,
+            containsText = true,
+            containsControls = true,
+        ) ?: 4500L
+    var overlayHasFocus by remember { mutableStateOf(false) }
+    val accessibilityService =
+        LocalContext.current.getSystemService(android.content.Context.ACCESSIBILITY_SERVICE)
+            as android.view.accessibility.AccessibilityManager
+    var touchExploration by remember {
+        mutableStateOf(accessibilityService.isTouchExplorationEnabled)
+    }
+    DisposableEffect(accessibilityService) {
+        val listener =
+            android.view.accessibility.AccessibilityManager.TouchExplorationStateChangeListener {
+                touchExploration = it
+            }
+        accessibilityService.addTouchExplorationStateChangeListener(listener)
+        onDispose { accessibilityService.removeTouchExplorationStateChangeListener(listener) }
+    }
+    val activity = LocalActivity.current
     var showHome by rememberSaveable { mutableStateOf(incomingUri == null) }
     var search by rememberSaveable { mutableStateOf("") }
     var searchVisible by rememberSaveable { mutableStateOf(false) }
-    var formattedPreview by rememberSaveable { mutableStateOf(true) }
     var editMode by rememberSaveable { mutableStateOf(false) }
     var pendingOpen by remember { mutableStateOf(false) }
     var exitDialog by remember { mutableStateOf(false) }
@@ -80,14 +121,84 @@ internal fun Workspace(
     var menuOpen by remember { mutableStateOf(false) }
     var pdfFormMode by rememberSaveable { mutableStateOf(false) }
     var pdfZoom by rememberSaveable { mutableFloatStateOf(1f) }
-    var activeSlide by remember(model.session) { mutableIntStateOf(0) }
+    var activeSheet by
+        remember(model.session) {
+            mutableStateOf(model.session?.sheets?.firstOrNull()?.name.orEmpty())
+        }
+    var confirmCellRevert by remember(model.session) { mutableStateOf(false) }
+    var selectedCell by
+        remember(model.session, activeSheet) {
+            mutableStateOf<org.smallthingz.alldoc.core.DocumentEngine.Block?>(null)
+        }
+    var slideNavigationRequest by remember { mutableIntStateOf(0) }
+    var activeSlide by
+        rememberSaveable(model.name, model.sourceUri?.toString()) { mutableIntStateOf(0) }
     val snackbar = remember { SnackbarHostState() }
     val searchFocus = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val hasDocument = model.name.isNotEmpty() && !showHome
+    SideEffect {
+        interactions.onTextEdited = {
+            controlsVisible = false
+            searchVisible = false
+            search = ""
+        }
+    }
+    LaunchedEffect(controlsVisible) {
+        if (!controlsVisible) {
+            searchVisible = false
+            search = ""
+        }
+    }
+    fun revealControls() {
+        controlsVisible = true
+        revealEpoch++
+    }
+    LaunchedEffect(hasDocument, model.session, model.name) {
+        controlsVisible = false
+        searchVisible = false
+        menuOpen = false
+        if (hasDocument) viewportFocus.requestFocus()
+    }
+    DisposableEffect(activity, hasDocument) {
+        val window = activity?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
+        if (window != null) {
+            WindowCompat.setDecorFitsSystemWindows(window, !hasDocument)
+            controller?.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            if (hasDocument) controller?.hide(WindowInsetsCompat.Type.systemBars())
+            else controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
+    }
+    LaunchedEffect(
+        controlsVisible,
+        revealEpoch,
+        searchVisible,
+        menuOpen,
+        showExport,
+        showDocumentDetails,
+        model.busy,
+        overlayHasFocus,
+        touchExploration,
+    ) {
+        if (
+            controlsVisible &&
+                !searchVisible &&
+                !menuOpen &&
+                !showExport &&
+                !showDocumentDetails &&
+                !model.busy &&
+                !overlayHasFocus &&
+                !touchExploration
+        ) {
+            delay(recommendedTimeout)
+            controlsVisible = false
+        }
+    }
     LaunchedEffect(searchVisible, hasDocument, model.pdfPages) {
         if (searchVisible && hasDocument && model.pdfPages == 0) searchFocus.requestFocus()
-        else focusManager.clearFocus()
     }
     val open =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -96,7 +207,6 @@ internal fun Workspace(
                 searchVisible = false
                 editMode = false
                 showHome = false
-                formattedPreview = true
                 model.open(it)
             }
         }
@@ -138,7 +248,6 @@ internal fun Workspace(
             if (model.edits.isNotEmpty()) incomingConfirmation = incomingUri
             else {
                 showHome = false
-                formattedPreview = true
                 searchVisible = false
                 search = ""
                 editMode = false
@@ -147,458 +256,619 @@ internal fun Workspace(
             }
         }
     }
-    LaunchedEffect(model.status) {
-        model.status?.let { message ->
-            snackbar.showSnackbar(message)
-            if (model.status == message) model.status = null
-        }
+    LaunchedEffect(model.status, controlsVisible, hasDocument) {
+        if (!hasDocument || controlsVisible)
+            model.status?.let { message ->
+                snackbar.showSnackbar(message)
+                if (model.status == message) model.status = null
+            }
     }
     BackHandler(hasDocument) {
         if (searchVisible) {
             searchVisible = false
             search = ""
-        } else showHome = true
+        } else if (controlsVisible) controlsVisible = false else showHome = true
     }
-    Scaffold(
-        modifier = Modifier.imePadding(),
-        containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbar) },
-        topBar = {
-            TopAppBar(
-                expandedHeight = 60.dp,
-                colors =
-                    TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
-                navigationIcon = {
-                    if (hasDocument) IconAction("Back to library", Glyph.Back) { showHome = true }
-                    else
-                        Box(
-                            Modifier.padding(start = 20.dp, end = 8.dp)
-                                .size(30.dp)
-                                .background(
-                                    MaterialTheme.colorScheme.primary,
-                                    RoundedCornerShape(8.dp),
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            AppIcon(
-                                Glyph.Document,
-                                Modifier.size(20.dp),
-                                MaterialTheme.colorScheme.onPrimary,
-                            )
-                        }
-                },
-                title = {
-                    Column {
-                        Text(
-                            if (hasDocument) model.name else "alldoc",
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style =
-                                if (hasDocument) MaterialTheme.typography.titleMedium
-                                else MaterialTheme.typography.titleLarge,
-                        )
-                        if (hasDocument && !largeText)
-                            Text(
-                                if (model.edits.isEmpty()) "Original protected"
-                                else if (model.hasExportedCurrentDraft) "Copy exported"
-                                else "Unsaved changes",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.secondary,
-                            )
-                    }
-                },
-                actions = {
-                    if (hasDocument && model.pdfPages == 0)
-                        IconButton(
-                            modifier = Modifier.semantics { contentDescription = "Find" },
-                            onClick = {
-                                searchVisible = !searchVisible
-                                if (searchVisible) {
-                                    formattedPreview = false
-                                    editMode = false
-                                } else search = ""
-                            },
-                        ) {
-                            AppIcon(Glyph.Search)
-                        }
-                    Box {
-                        IconAction("More options", Glyph.More) { menuOpen = true }
-                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Format support") },
-                                onClick = {
-                                    menuOpen = false
-                                    showCapabilities = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Open-source licenses") },
-                                onClick = {
-                                    menuOpen = false
-                                    showLicenses = true
-                                },
-                            )
-                            if (hasDocument)
-                                DropdownMenuItem(
-                                    text = { Text("Export copy") },
-                                    enabled = !model.busy,
-                                    onClick = {
-                                        menuOpen = false
-                                        showExport = true
-                                    },
-                                    leadingIcon = { AppIcon(Glyph.Save) },
-                                )
-                            if (hasDocument)
-                                DropdownMenuItem(
-                                    text = { Text("Open another document") },
-                                    onClick = {
-                                        menuOpen = false
-                                        chooseDocument()
-                                    },
-                                    enabled = !model.busy,
-                                )
-                            if (model.recoveredDrafts.isNotEmpty())
-                                DropdownMenuItem(
-                                    text = { Text("Recovered drafts") },
-                                    onClick = {
-                                        menuOpen = false
-                                        showRecovered = true
-                                    },
-                                )
-                            if (model.edits.isNotEmpty())
-                                DropdownMenuItem(
-                                    text = { Text("Discard edits") },
-                                    onClick = {
-                                        menuOpen = false
-                                        exitDialog = true
-                                    },
-                                    enabled = !model.busy,
-                                )
-                        }
-                    }
-                },
-            )
-        },
-        bottomBar = {
-            if (hasDocument && model.edits.isNotEmpty())
-                Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 4.dp) {
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .navigationBarsPadding()
-                            .padding(horizontal = 16.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (largeText) Spacer(Modifier.weight(1f))
-                        else
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    if (model.hasExportedCurrentDraft) "Copy exported"
-                                    else "Draft changes",
-                                    style = MaterialTheme.typography.labelMedium,
-                                )
-                                Text(
-                                    "Original unchanged",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        Button(
-                            onClick = { showExport = true },
-                            enabled = !model.busy,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                        ) {
-                            Text("Save copy")
-                        }
-                    }
-                }
-        },
-    ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
-            if (model.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            model.error?.let { message -> Notice(message, true) { model.error = null } }
-            if (!hasDocument) {
-                LibraryScreen(
-                    model,
-                    { chooseDocument() },
-                    { showHome = false },
-                    { recent ->
-                        if (model.edits.isNotEmpty()) recentConfirmation = Uri.parse(recent.uri)
-                        else {
-                            showHome = false
-                            formattedPreview = true
-                            editMode = false
-                            search = ""
-                            searchVisible = false
-                            model.open(Uri.parse(recent.uri))
-                        }
-                    },
-                    { showCapabilities = true },
-                )
-            } else if (model.pdfPages > 0) {
-                Row(
-                    Modifier.fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = 12.dp)
-                ) {
-                    ModeTab(
-                        selected = !pdfFormMode,
-                        onClick = { pdfFormMode = false },
-                        label = { Text("Pages") },
-                    )
-                    ModeTab(
-                        selected = pdfFormMode,
-                        onClick = { pdfFormMode = true },
-                        label = { Text("Fill form") },
-                    )
-                }
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TextButton(
-                        onClick = { model.render(model.pdfPage - 1) },
-                        enabled = model.pdfPage > 0 && !model.pdfLoading && !model.busy,
-                    ) {
-                        Text("Previous")
-                    }
-                    Text("${model.pdfPage+1} / ${model.pdfPages}", modifier = Modifier.weight(1f))
-                    TextButton(
-                        onClick = { model.render(model.pdfPage + 1) },
-                        enabled =
-                            model.pdfPage + 1 < model.pdfPages && !model.pdfLoading && !model.busy,
-                    ) {
-                        Text("Next")
-                    }
-                    TextButton(
-                        onClick = { pdfZoom = if (pdfZoom < 2f) 2f else 1f },
-                        modifier = Modifier.semantics { contentDescription = "Change PDF zoom" },
-                    ) {
-                        Text("${(pdfZoom*100).toInt()}%")
-                    }
-                }
-                if (model.pdfLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (pdfFormMode)
-                    PdfFormCanvas(
-                        model.pdfFormPage,
-                        model.edits.toMap(),
-                        !model.busy && !model.pdfLoading,
-                        model::edit,
-                        Modifier.weight(1f).fillMaxWidth(),
-                    )
+    val header: @Composable () -> Unit = {
+        TopAppBar(
+            expandedHeight = 60.dp,
+            windowInsets =
+                if (hasDocument) WindowInsets(0, 0, 0, 0) else TopAppBarDefaults.windowInsets,
+            colors =
+                TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+            navigationIcon = {
+                if (hasDocument) IconAction("Back to library", Glyph.Back) { showHome = true }
                 else
-                    BoxWithConstraints(
-                        Modifier.weight(1f)
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                    Box(
+                        Modifier.padding(start = 20.dp, end = 8.dp)
+                            .size(30.dp)
+                            .background(
+                                MaterialTheme.colorScheme.primary,
+                                RoundedCornerShape(8.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        val pageWidth = maxWidth * pdfZoom
-                        Box(
-                            Modifier.fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                                .horizontalScroll(rememberScrollState())
-                        ) {
-                            model.pdfBitmap?.let { bitmap ->
-                                Image(
-                                    bitmap.asImageBitmap(),
-                                    contentDescription = "Page ${model.pdfPage+1} of ${model.name}",
-                                    modifier = Modifier.width(pageWidth).padding(12.dp),
-                                )
-                            }
-                        }
-                    }
-            } else {
-                if (model.session?.extension !in setOf("xlsx", "ods", "fods"))
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .background(MaterialTheme.colorScheme.surface)
-                            .padding(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        if (
-                            model.session?.extension == "docx" ||
-                                model.session?.slides?.isNotEmpty() == true
+                        AppIcon(
+                            Glyph.Document,
+                            Modifier.size(20.dp),
+                            MaterialTheme.colorScheme.onPrimary,
                         )
-                            ModeTab(
-                                selected = formattedPreview,
+                    }
+            },
+            title = {
+                Column {
+                    Text(
+                        if (hasDocument) model.name else "alldoc",
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style =
+                            if (hasDocument) MaterialTheme.typography.titleMedium
+                            else MaterialTheme.typography.titleLarge,
+                    )
+                    if (hasDocument && !largeText)
+                        Text(
+                            if (model.edits.isEmpty()) "Original protected"
+                            else if (model.hasExportedCurrentDraft) "Copy exported"
+                            else "Unsaved changes",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                }
+            },
+            actions = {
+                if (hasDocument)
+                    IconAction("Hide document controls", Glyph.Close) {
+                        controlsVisible = false
+                        searchVisible = false
+                    }
+                if (
+                    hasDocument &&
+                        model.pdfPages == 0 &&
+                        model.session?.slides.isNullOrEmpty() &&
+                        model.session?.extension != "rtf"
+                )
+                    IconButton(
+                        modifier = Modifier.semantics { contentDescription = "Find" },
+                        onClick = {
+                            searchVisible = !searchVisible
+                            if (searchVisible) {
+                                if (model.session?.extension == "docx") editMode = true
+                            } else search = ""
+                        },
+                    ) {
+                        AppIcon(Glyph.Search)
+                    }
+                Box {
+                    IconAction("More options", Glyph.More) { menuOpen = true }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Format support") },
+                            onClick = {
+                                menuOpen = false
+                                showCapabilities = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Open-source licenses") },
+                            onClick = {
+                                menuOpen = false
+                                showLicenses = true
+                            },
+                        )
+                        if (hasDocument)
+                            DropdownMenuItem(
+                                text = { Text("Document details") },
                                 onClick = {
-                                    formattedPreview = true
-                                    editMode = false
-                                    searchVisible = false
-                                    search = ""
-                                },
-                                label = {
-                                    Text(
-                                        if (model.session?.extension == "docx") "Layout"
-                                        else "Slides"
-                                    )
+                                    menuOpen = false
+                                    showDocumentDetails = true
                                 },
                             )
-                        ModeTab(
-                            selected =
-                                !editMode &&
-                                    (!(model.session?.extension == "docx" ||
-                                        model.session?.slides?.isNotEmpty() == true) ||
-                                        !formattedPreview),
-                            onClick = {
-                                formattedPreview = false
-                                editMode = false
-                            },
-                            label = {
-                                Text(
-                                    if (
-                                        model.session?.extension == "docx" ||
-                                            model.session?.extension == "pptx"
-                                    )
-                                        "Text"
-                                    else "Read"
-                                )
-                            },
-                        )
-                        if (model.session?.blocks?.any { it.editable } == true)
-                            ModeTab(
-                                selected = editMode,
+                        if (hasDocument)
+                            DropdownMenuItem(
+                                text = { Text("Export copy") },
+                                enabled = !model.busy,
                                 onClick = {
-                                    formattedPreview = false
-                                    editMode = true
+                                    menuOpen = false
+                                    showExport = true
+                                },
+                                leadingIcon = { AppIcon(Glyph.Save) },
+                            )
+                        if (hasDocument)
+                            DropdownMenuItem(
+                                text = { Text("Open another document") },
+                                onClick = {
+                                    menuOpen = false
+                                    chooseDocument()
                                 },
                                 enabled = !model.busy,
-                                label = { Text("Edit") },
+                            )
+                        if (model.recoveredDrafts.isNotEmpty())
+                            DropdownMenuItem(
+                                text = { Text("Recovered drafts") },
+                                onClick = {
+                                    menuOpen = false
+                                    showRecovered = true
+                                },
+                            )
+                        if (model.edits.isNotEmpty())
+                            DropdownMenuItem(
+                                text = { Text("Discard edits") },
+                                onClick = {
+                                    menuOpen = false
+                                    exitDialog = true
+                                },
+                                enabled = !model.busy,
                             )
                     }
-                if (searchVisible)
-                    OutlinedTextField(
-                        value = search,
-                        onValueChange = { search = it },
-                        label = { Text("Find content") },
-                        singleLine = true,
-                        modifier =
-                            Modifier.fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 4.dp)
-                                .focusRequester(searchFocus),
-                        trailingIcon = {
-                            TextButton(
-                                onClick = {
-                                    searchVisible = false
-                                    search = ""
-                                }
-                            ) {
-                                Text("Close")
+                }
+            },
+        )
+    }
+    val session = model.session
+    val sourceText = session?.blocks?.singleOrNull()?.id == "text"
+    val hasSlides = session?.slides?.isNotEmpty() == true
+    val blocks =
+        session?.blocks.orEmpty().filter {
+            search.isBlank() ||
+                (model.edits[it.id] ?: it.original).contains(search, true) ||
+                it.section.contains(search, true) ||
+                it.label.contains(search, true)
+        }
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets =
+            if (hasDocument) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
+        snackbarHost = { SnackbarHost(snackbar) },
+        topBar = { if (!hasDocument) header() },
+    ) { padding ->
+        Box(
+            Modifier.fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding)
+                .onPreviewKeyEvent { event ->
+                    if (
+                        hasDocument &&
+                            event.type == KeyEventType.KeyUp &&
+                            (event.key == Key.F10 || event.key == Key.Menu)
+                    ) {
+                        revealControls()
+                        true
+                    } else if (
+                        hasDocument &&
+                            hasDocument &&
+                            event.type == KeyEventType.KeyUp &&
+                            event.key == Key.Escape &&
+                            controlsVisible
+                    ) {
+                        controlsVisible = false
+                        true
+                    } else false
+                }
+        ) {
+            if (!hasDocument)
+                Column(Modifier.fillMaxSize()) {
+                    model.error?.let { Notice(it, true) { model.error = null } }
+                    LibraryScreen(
+                        model,
+                        { chooseDocument() },
+                        { showHome = false },
+                        { recent ->
+                            if (model.edits.isNotEmpty()) recentConfirmation = Uri.parse(recent.uri)
+                            else {
+                                showHome = false
+                                editMode = false
+                                search = ""
+                                searchVisible = false
+                                model.open(Uri.parse(recent.uri))
                             }
                         },
+                        { showCapabilities = true },
                     )
-                val blocks =
-                    model.session?.blocks.orEmpty().filter {
-                        search.isBlank() ||
-                            (model.edits[it.id] ?: it.original).contains(search, true) ||
-                            it.label.contains(search, true) ||
-                            it.section.contains(search, true)
+                }
+            else {
+                CompositionLocalProvider(LocalDocumentInteraction provides interactions) {
+                    Box(
+                        Modifier.fillMaxSize()
+                            .testTag("Document viewport")
+                            .focusRequester(viewportFocus)
+                            .focusable()
+                            .semantics {
+                                customActions =
+                                    listOf(
+                                        CustomAccessibilityAction(
+                                            if (controlsVisible) "Hide document controls"
+                                            else "Show document controls"
+                                        ) {
+                                            if (controlsVisible) controlsVisible = false
+                                            else revealControls()
+                                            true
+                                        }
+                                    )
+                            }
+                            .immersiveTapObserver(
+                                resetKey =
+                                    listOf(
+                                        model.name,
+                                        session,
+                                        presentationMode,
+                                        editMode,
+                                        pdfFormMode,
+                                    ),
+                                isScrollInProgress = {
+                                    interactions.moving() || interactions.selecting()
+                                },
+                                allowChildHandledTap = { !interactions.selecting() },
+                                onReveal = { revealControls() },
+                            )
+                    ) {
+                        when {
+                            model.pdfPages > 0 && pdfFormMode ->
+                                PdfFormCanvas(
+                                    model.pdfFormPage,
+                                    model.edits.toMap(),
+                                    !model.busy && !model.pdfLoading,
+                                    model::edit,
+                                    Modifier.fillMaxSize().imePadding(),
+                                )
+                            model.pdfPages > 0 ->
+                                ImmersivePdfPage(
+                                    model,
+                                    pdfZoom,
+                                    { pdfZoom = it },
+                                    Modifier.fillMaxSize(),
+                                )
+                            sourceText ->
+                                SourceCanvas(
+                                    model.edits[session!!.blocks.first().id]
+                                        ?: session.blocks.first().original,
+                                    session.extension,
+                                    true,
+                                    !model.busy,
+                                    { model.edit("text", it) },
+                                    Modifier.fillMaxSize().imePadding(),
+                                    query = search,
+                                    obscuredTopPixels = if (controlsVisible) overlayHeight else 0,
+                                )
+                            session?.extension == "rtf" ->
+                                RtfEditingCanvas(
+                                    blocks,
+                                    model.edits.toMap(),
+                                    !model.busy,
+                                    model::editBatch,
+                                    { model.error = it },
+                                    Modifier.fillMaxSize().imePadding(),
+                                )
+                            hasSlides && !editMode ->
+                                PresentationCanvas(
+                                    session!!,
+                                    model.edits.toMap(),
+                                    presentationMode,
+                                    activeSlide,
+                                    { activeSlide = it },
+                                    { previewWarnings = it },
+                                    navigationRequest = slideNavigationRequest,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            session?.extension == "docx" && !editMode ->
+                                DocxPreview(session, model.edits.toMap(), Modifier.fillMaxSize())
+                            session?.extension in setOf("xlsx", "ods", "fods") ->
+                                SheetCanvas(
+                                    session!!,
+                                    model.edits.toMap(),
+                                    search,
+                                    model::edit,
+                                    Modifier.fillMaxSize().imePadding(),
+                                    enabled = !model.busy,
+                                    resetVersion = model.editorResetVersion,
+                                    currentSheet = activeSheet,
+                                    navigationVisible = false,
+                                    onSelection = { selectedCell = it },
+                                )
+                            editMode || session?.blocks?.any { it.editable } == true ->
+                                EditorCanvas(
+                                    if (hasSlides)
+                                        session!!
+                                            .slides[
+                                                activeSlide.coerceIn(0, session.slides.lastIndex)]
+                                            .blocks
+                                    else blocks,
+                                    model.edits.toMap(),
+                                    !model.busy,
+                                    model::edit,
+                                    Modifier.fillMaxSize().imePadding(),
+                                    sans = hasSlides,
+                                )
+                            else ->
+                                ReadingCanvas(blocks, model.edits.toMap(), Modifier.fillMaxSize())
+                        }
                     }
-                if (model.session?.editable == false)
-                    Text(
-                        "Read-only text extraction · original copy export",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                    )
-                when {
-                    model.session?.blocks?.singleOrNull()?.id == "text" -> {
-                        val block = model.session!!.blocks.first()
-                        SourceCanvas(
-                            model.edits[block.id] ?: block.original,
-                            model.session!!.extension,
-                            editMode,
-                            !model.busy,
-                            { model.edit(block.id, it) },
-                            Modifier.weight(1f).fillMaxWidth(),
-                            query = search,
-                        )
-                    }
-                    model.session?.slides?.isNotEmpty() == true && formattedPreview ->
-                        SlideCanvas(
-                            model.session!!,
-                            model.edits.toMap(),
-                            activeSlide,
-                            { activeSlide = it },
-                            Modifier.weight(1f).fillMaxWidth(),
-                        )
-                    model.session?.extension == "docx" && formattedPreview ->
-                        DocxPreview(
-                            model.session!!,
-                            model.edits.toMap(),
-                            Modifier.weight(1f).fillMaxWidth(),
-                        )
-                    model.session?.extension in setOf("xlsx", "ods", "fods") ->
-                        SheetCanvas(
-                            model.session!!,
-                            model.edits.toMap(),
-                            search,
-                            model::edit,
-                            Modifier.weight(1f).fillMaxWidth(),
-                            enabled = !model.busy,
-                            resetVersion = model.editorResetVersion,
-                        )
-                    editMode ->
-                        Column(Modifier.weight(1f).fillMaxWidth()) {
-                            val slides = model.session?.slides.orEmpty()
-                            if (slides.isNotEmpty())
-                                Row(
-                                    Modifier.fillMaxWidth()
-                                        .background(MaterialTheme.colorScheme.surface)
-                                        .padding(horizontal = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
+                }
+                if (controlsVisible) {
+                    Surface(
+                        Modifier.align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .testTag("Document controls")
+                            .onSizeChanged { overlayHeight = it.height }
+                            .onFocusChanged { overlayHasFocus = it.hasFocus }
+                            .focusGroup(),
+                        color =
+                            MaterialTheme.colorScheme.surface.copy(
+                                alpha = if (searchVisible || selectedCell != null) 1f else .96f
+                            ),
+                        shadowElevation = 4.dp,
+                    ) {
+                        Column {
+                            header()
+                            if (searchVisible)
+                                OutlinedTextField(
+                                    value = search,
+                                    onValueChange = { search = it },
+                                    label = { Text("Find content") },
+                                    singleLine = true,
+                                    modifier =
+                                        Modifier.fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 4.dp)
+                                            .focusRequester(searchFocus),
+                                    trailingIcon = {
+                                        IconAction("Close search", Glyph.Close) {
+                                            searchVisible = false
+                                            search = ""
+                                        }
+                                    },
+                                )
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                if (hasSlides) {
+                                    FilterChip(
+                                        selected =
+                                            presentationMode == PresentationMode.Pages && !editMode,
+                                        onClick = {
+                                            presentationMode = PresentationMode.Pages
+                                            editMode = false
+                                            controlsVisible = false
+                                        },
+                                        label = { Text("Pages") },
+                                    )
+                                    FilterChip(
+                                        selected =
+                                            presentationMode == PresentationMode.Slides &&
+                                                !editMode,
+                                        onClick = {
+                                            presentationMode = PresentationMode.Slides
+                                            editMode = false
+                                            controlsVisible = false
+                                        },
+                                        label = { Text("Slides") },
+                                    )
+                                    if (session!!.blocks.any { it.editable })
+                                        TextButton(
+                                            onClick = {
+                                                editMode = !editMode
+                                                controlsVisible = false
+                                            }
+                                        ) {
+                                            Text(if (editMode) "View slides" else "Edit text")
+                                        }
                                     IconAction("Previous slide", Glyph.Back, activeSlide > 0) {
                                         activeSlide--
+                                        slideNavigationRequest++
+                                        revealEpoch++
                                     }
                                     Text(
-                                        "Slide ${activeSlide + 1} of ${slides.size}",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        modifier = Modifier.weight(1f),
-                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                        "${activeSlide+1} / ${session.slides.size}",
+                                        style = MaterialTheme.typography.labelSmall,
                                     )
                                     IconAction(
                                         "Next slide",
                                         Glyph.Next,
-                                        activeSlide < slides.lastIndex,
+                                        activeSlide < session.slides.lastIndex,
                                     ) {
                                         activeSlide++
+                                        slideNavigationRequest++
+                                        revealEpoch++
+                                    }
+                                } else if (model.pdfPages > 0) {
+                                    TextButton(
+                                        onClick = {
+                                            pdfFormMode = !pdfFormMode
+                                            controlsVisible = false
+                                        }
+                                    ) {
+                                        Text(if (pdfFormMode) "View pages" else "Fill form")
+                                    }
+                                    IconAction(
+                                        "Previous page",
+                                        Glyph.Back,
+                                        model.pdfPage > 0 && !model.pdfLoading,
+                                    ) {
+                                        model.render(model.pdfPage - 1)
+                                    }
+                                    Text(
+                                        "${model.pdfPage+1} / ${model.pdfPages}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                    IconAction(
+                                        "Next page",
+                                        Glyph.Next,
+                                        model.pdfPage + 1 < model.pdfPages && !model.pdfLoading,
+                                    ) {
+                                        model.render(model.pdfPage + 1)
+                                    }
+                                    TextButton(
+                                        onClick = { pdfZoom = if (pdfZoom == 1f) 2f else 1f }
+                                    ) {
+                                        Text("${(pdfZoom*100).toInt()}%")
+                                    }
+                                } else if (session?.extension in setOf("xlsx", "ods", "fods")) {
+                                    session!!.sheets.forEach { sheet ->
+                                        FilterChip(
+                                            selected = sheet.name == activeSheet,
+                                            onClick = {
+                                                activeSheet = sheet.name
+                                                controlsVisible = false
+                                            },
+                                            label = { Text(sheet.name) },
+                                        )
+                                    }
+                                } else if (session?.extension == "docx")
+                                    TextButton(
+                                        onClick = {
+                                            editMode = !editMode
+                                            controlsVisible = false
+                                        }
+                                    ) {
+                                        Text(if (editMode) "View layout" else "Edit text")
+                                    }
+                                if (session?.editable == false)
+                                    Text(
+                                        "Read-only in compact engine",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                            }
+                            if (
+                                session?.extension in setOf("xlsx", "ods", "fods") &&
+                                    selectedCell != null
+                            ) {
+                                val cell = selectedCell!!
+                                Column(
+                                    Modifier.fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        "Cell ${blockRange(cell)}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                    if (cell.editable)
+                                        DocumentTextField(
+                                            value = model.edits[cell.id] ?: cell.original,
+                                            onValueChange = { model.edit(cell.id, it) },
+                                            enabled = !model.busy,
+                                            maxLines = 3,
+                                            cursorBrush =
+                                                androidx.compose.ui.graphics.SolidColor(
+                                                    MaterialTheme.colorScheme.primary
+                                                ),
+                                            textStyle =
+                                                MaterialTheme.typography.bodyLarge.copy(
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                ),
+                                            modifier =
+                                                Modifier.fillMaxWidth()
+                                                    .heightIn(min = 48.dp)
+                                                    .semantics {
+                                                        contentDescription = "Cell value"
+                                                    },
+                                        )
+                                    else
+                                        Text(
+                                            cell.original.take(4000),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                        )
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End,
+                                    ) {
+                                        if (model.edits.containsKey(cell.id))
+                                            TextButton(onClick = { confirmCellRevert = true }) {
+                                                Text("Revert")
+                                            }
+                                        TextButton(
+                                            onClick = {
+                                                controlsVisible = false
+                                                focusManager.clearFocus()
+                                            }
+                                        ) {
+                                            Text("Done")
+                                        }
                                     }
                                 }
-                            if (!largeText)
-                                Text(
-                                    "Edit existing text · review layout after export",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier =
-                                        Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                                )
-                            EditorCanvas(
-                                if (slides.isNotEmpty())
-                                    slides[activeSlide.coerceIn(0, slides.lastIndex)].blocks
-                                else blocks,
-                                model.edits.toMap(),
-                                !model.busy,
-                                model::edit,
-                                Modifier.weight(1f).fillMaxWidth(),
-                                sans = slides.isNotEmpty(),
-                            )
+                            }
                         }
-                    else ->
-                        ReadingCanvas(
-                            blocks,
-                            model.edits.toMap(),
-                            Modifier.weight(1f).fillMaxWidth(),
-                        )
+                    }
+                    if (!searchVisible)
+                        Surface(
+                            Modifier.align(Alignment.BottomEnd)
+                                .imePadding()
+                                .navigationBarsPadding()
+                                .padding(16.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            shadowElevation = 4.dp,
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = .96f),
+                        ) {
+                            Button(
+                                onClick = { showExport = true },
+                                enabled = !model.busy,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.padding(4.dp),
+                            ) {
+                                AppIcon(Glyph.Save, tint = MaterialTheme.colorScheme.onPrimary)
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (model.edits.isNotEmpty()) "Save copy" else "Export copy")
+                            }
+                        }
+                }
+                if (model.busy)
+                    LinearProgressIndicator(Modifier.align(Alignment.TopCenter).fillMaxWidth())
+                model.error?.let { message ->
+                    Box(Modifier.align(Alignment.TopCenter)) {
+                        Notice(message, true) { model.error = null }
+                    }
                 }
             }
         }
     }
+    if (confirmCellRevert && selectedCell != null)
+        AlertDialog(
+            onDismissRequest = { confirmCellRevert = false },
+            title = { Text("Revert this cell?") },
+            text = { Text("Restore the original value. Other edits are kept.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        selectedCell?.let { model.edit(it.id, it.original) }
+                        confirmCellRevert = false
+                    }
+                ) {
+                    Text("Revert cell")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmCellRevert = false }) { Text("Keep editing") }
+            },
+        )
+    if (showDocumentDetails)
+        AlertDialog(
+            onDismissRequest = { showDocumentDetails = false },
+            title = { Text("Document details") },
+            text = {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(model.name, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        session?.description ?: PdfTools.FORM_LIMITATION,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    (previewWarnings + session?.warnings.orEmpty()).distinct().forEach {
+                        Text(it, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDocumentDetails = false }) { Text("Done") }
+            },
+        )
     recentConfirmation?.let { uri ->
         AlertDialog(
             onDismissRequest = { recentConfirmation = null },
@@ -611,7 +881,6 @@ internal fun Workspace(
                     onClick = {
                         recentConfirmation = null
                         showHome = false
-                        formattedPreview = true
                         editMode = false
                         search = ""
                         model.open(uri)
@@ -643,7 +912,6 @@ internal fun Workspace(
                         incomingConfirmation = null
                         consumeIncoming()
                         showHome = false
-                        formattedPreview = true
                         searchVisible = false
                         search = ""
                         editMode = false
@@ -702,6 +970,8 @@ internal fun Workspace(
                     onClick = {
                         exitDialog = false
                         model.discardEdits()
+                        selectedCell = null
+                        confirmCellRevert = false
                     }
                 ) {
                     Text("Discard edits")

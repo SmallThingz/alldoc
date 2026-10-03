@@ -4,7 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,6 +26,8 @@ fun EditorCanvas(
     modifier: Modifier = Modifier,
     sans: Boolean = false,
 ) {
+    val editScroll = rememberLazyListState()
+    RegisterDocumentScroll(editScroll)
     val paragraphs = remember(blocks) { blocks.groupBy { it.paragraphId }.values.toList() }
     Box(
         modifier.background(MaterialTheme.colorScheme.surfaceContainerLow),
@@ -39,6 +41,7 @@ fun EditorCanvas(
             color = MaterialTheme.colorScheme.surface,
         ) {
             LazyColumn(
+                state = editScroll,
                 contentPadding = PaddingValues(horizontal = 24.dp, vertical = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
@@ -63,7 +66,7 @@ fun EditorCanvas(
                             )
                         paragraph.forEachIndexed { segmentIndex, block ->
                             if (block.editable)
-                                BasicTextField(
+                                DocumentTextField(
                                     value = edits[block.id] ?: block.original,
                                     onValueChange = { onEdit(block.id, it) },
                                     enabled = enabled,

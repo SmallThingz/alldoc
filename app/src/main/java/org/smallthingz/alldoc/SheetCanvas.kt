@@ -5,8 +5,8 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,12 +29,16 @@ fun SheetCanvas(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     resetVersion: Int = 0,
+    currentSheet: String? = null,
+    navigationVisible: Boolean = true,
+    onSelection: ((DocumentEngine.Block?)->Unit)? = null,
 ) {
     val sheets =
         remember(session) {
             session.sheets.map { it.name }.ifEmpty { session.blocks.map { it.section }.distinct() }
         }
-    var sheet by remember(session) { mutableStateOf(sheets.firstOrNull().orEmpty()) }
+    var localSheet by remember(session) { mutableStateOf(sheets.firstOrNull().orEmpty()) }
+    val sheet = currentSheet?.takeIf { it in sheets } ?: localSheet
     var selected by remember(session, resetVersion) { mutableStateOf<DocumentEngine.Block?>(null) }
     var initialValue by remember(session, resetVersion) { mutableStateOf("") }
     var confirmRevert by remember(session, resetVersion) { mutableStateOf(false) }
@@ -61,13 +65,21 @@ fun SheetCanvas(
         remember(cells) {
             cells.groupBy { address(it).dropWhile(Char::isLetter).toIntOrNull() ?: 0 }.toSortedMap()
         }
-    BackHandler(selected != null) {
+    BackHandler(selected != null && onSelection == null) {
         if (confirmRevert) confirmRevert = false else selected = null
     }
+    LaunchedEffect(sheet, resetVersion) {
+        selected = null
+        confirmRevert = false
+        onSelection?.invoke(null)
+    }
     val horizontal = rememberScrollState()
+    val vertical = rememberLazyListState()
+    RegisterDocumentScroll(horizontal)
+    RegisterDocumentScroll(vertical)
     Column(modifier) {
         val current = selected
-        if (current != null) {
+        if (current != null && onSelection == null) {
             CellEditor(
                 current,
                 sheet,
@@ -85,7 +97,7 @@ fun SheetCanvas(
                 },
                 { confirmRevert = false },
             )
-        } else {
+        } else if (navigationVisible) {
             Row(
                 Modifier.fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
@@ -94,7 +106,7 @@ fun SheetCanvas(
             ) {
                 sheets.forEach { name ->
                     TextButton(
-                        onClick = { sheet = name },
+                        onClick = { localSheet = name },
                         shape = RoundedCornerShape(6.dp),
                         colors =
                             ButtonDefaults.textButtonColors(
@@ -108,7 +120,11 @@ fun SheetCanvas(
                 }
             }
         }
-        if (current == null && cells.any { it.rowRepeat > 1 || it.columnRepeat > 1 })
+        if (
+            navigationVisible &&
+                current == null &&
+                cells.any { it.rowRepeat > 1 || it.columnRepeat > 1 }
+        )
             Text(
                 "Repeated ranges are shown once",
                 style = MaterialTheme.typography.labelSmall,
@@ -171,7 +187,7 @@ fun SheetCanvas(
                         else "No matching cells",
                         Modifier.padding(24.dp),
                     )
-                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(state = vertical, modifier = Modifier.weight(1f).fillMaxWidth()) {
                     items(rows.entries.toList(), key = { it.key }) { (row, blocks) ->
                         val byColumn = blocks.associateBy { address(it).takeWhile(Char::isLetter) }
                         Row(
@@ -214,6 +230,7 @@ fun SheetCanvas(
                                                             .clickable {
                                                                 if (selected?.id != block.id) {
                                                                     selected = block
+                                                                    onSelection?.invoke(block)
                                                                     initialValue = text
                                                                     confirmRevert = false
                                                                 }
@@ -221,7 +238,7 @@ fun SheetCanvas(
                                                     else Modifier
                                                 ),
                                         color =
-                                            if (edited) MaterialTheme.colorScheme.primaryContainer
+                                            if (edited || selected?.id == block?.id) MaterialTheme.colorScheme.primaryContainer
                                             else MaterialTheme.colorScheme.surface,
                                     ) {
                                         Box(
@@ -318,7 +335,7 @@ private fun CellEditor(
                     Button(onClick = revert, enabled = enabled) { Text("Revert cell") }
                 }
             } else if (block.editable) {
-                BasicTextField(
+                DocumentTextField(
                     value = input,
                     onValueChange = onInput,
                     enabled = enabled,

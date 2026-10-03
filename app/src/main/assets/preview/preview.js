@@ -18,5 +18,5 @@
    document.getElementById('document').style.zoom=Math.min(1,(window.innerWidth-12)/(widest+40));
   };
   fit();window.addEventListener('resize',fit);
- } catch(error){status.textContent='This formatted preview could not be rendered. Switch to Text to inspect or edit the document.';}
+ } catch(error){status.textContent='This formatted preview could not be rendered. Reveal controls and choose Edit text to inspect or edit the document.';}
 })();

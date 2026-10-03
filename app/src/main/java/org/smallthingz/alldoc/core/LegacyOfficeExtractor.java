@@ -4,9 +4,18 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.List;
 import java.util.Locale;
-import org.apache.poi.hslf.extractor.QuickButCruddyTextExtractor;
+import org.apache.poi.hslf.record.PersistPtrHolder;
+import org.apache.poi.hslf.record.SlidePersistAtom;
+import org.apache.poi.hslf.record.SSSlideInfoAtom;
+import org.apache.poi.hslf.record.TextBytesAtom;
+import org.apache.poi.hslf.record.TextCharsAtom;
+import org.apache.poi.hslf.record.UserEditAtom;
 import org.apache.poi.hslf.record.CurrentUserAtom;
 import org.apache.poi.hslf.record.RecordTypes;
 import org.apache.poi.hssf.eventusermodel.HSSFEventFactory;
@@ -174,55 +183,219 @@ public final class LegacyOfficeExtractor {
   }
 
   private static Result presentation(POIFSFileSystem fs) throws IOException {
-    if (new CurrentUserAtom(fs.getRoot()).isEncrypted()) throw new IOException("Encrypted PPT is not previewed");
+    CurrentUserAtom current = new CurrentUserAtom(fs.getRoot());
+    if (current.isEncrypted()) throw new IOException("Encrypted PPT is not previewed");
     DocumentEntry entry = (DocumentEntry) fs.getRoot().getEntry("PowerPoint Document");
     byte[] stream;
     try (DocumentInputStream in = new DocumentInputStream(entry)) {
       stream = IOUtils.toByteArray(in, entry.getSize(), MAX_INPUT_BYTES);
     }
-    validatePptRecords(stream);
-    QuickButCruddyTextExtractor extractor = new QuickButCruddyTextExtractor(fs);
-    BoundedStrings text = new BoundedStrings();
-    try {
-      int pos = 0, records = 0;
-      while (pos >= 0) {
-        if (++records > MAX_RECORDS || pos > stream.length - 8) throw new IOException("PPT record limit exceeded");
-        int next = extractor.findTextRecords(pos, text);
-        if (next != -1 && (next <= pos || next > stream.length - 8)) throw new IOException("Invalid PPT record traversal");
-        pos = next;
+    return new PptText(stream).extract(current.getCurrentEditOffset());
+  }
+
+  /**
+   * Resolve live slides as specified by MS-PPT 2.1.2, instead of scanning every saved edit.
+   * POI handles OLE and individual record/text decoding; only bounded record envelopes and
+   * relationships are traversed here. Never construct the desktop-oriented HSLF slide model.
+   */
+  private static final class PptText {
+    private static final int CLIENT_TEXTBOX = 0xf00d;
+    private static final String WARNING = "Read-only text from current slides in presentation order. "
+        + "Hidden slides are labeled. Text order within a slide may differ; master text, notes, "
+        + "images, formatting, and animations are omitted.";
+    final byte[] data;
+    final Map<Integer, PptRecord> roots = new HashMap<>();
+    int records, pointers, chars;
+
+    PptText(byte[] data) throws IOException {
+      this.data = data;
+      for (PptRecord r : readRecords(0, data.length, 0)) roots.put(r.start, r);
+    }
+
+    Result extract(long currentOffset) throws IOException {
+      if (currentOffset <= 0 || currentOffset > Integer.MAX_VALUE)
+        throw new IOException("Invalid PPT current edit reference");
+      Map<Integer, Integer> persisted = new HashMap<>();
+      Set<Integer> edits = new HashSet<>();
+      int editOffset = (int) currentOffset, documentId = -1;
+      while (editOffset != 0) {
+        if (!edits.add(editOffset) || edits.size() > MAX_RECORDS)
+          throw new IOException("Invalid PPT edit chain");
+        PptRecord edit = root(editOffset, RecordTypes.UserEditAtom.typeID);
+        if (edit.options != 0 || (edit.length() != 28 && edit.length() != 32))
+          throw new IOException("Invalid PPT edit record");
+        UserEditAtom user = (UserEditAtom) atom(edit);
+        if (user.getEncryptSessionPersistIdRef() != -1)
+          throw new IOException("Encrypted PPT is not previewed");
+        if (edits.size() == 1) {
+          documentId = user.getDocPersistRef();
+          if (documentId <= 0 || documentId > 0xfffff)
+            throw new IOException("Invalid PPT document persist reference");
+        }
+        int pointerOffset = user.getPersistPointersOffset();
+        PptRecord ptr = roots.get(pointerOffset);
+        if (ptr == null || pointerOffset >= editOffset || ptr.options != 0
+            || (ptr.type != RecordTypes.PersistPtrFullBlock.typeID
+                && ptr.type != RecordTypes.PersistPtrIncrementalBlock.typeID))
+          throw new IOException("Invalid PPT persist directory reference");
+        validatePointers(ptr);
+        PersistPtrHolder holder = (PersistPtrHolder) atom(ptr);
+        for (Map.Entry<Integer, Integer> p : holder.getSlideLocationsLookup().entrySet())
+          persisted.putIfAbsent(p.getKey(), p.getValue()); // Newest edit wins.
+        int previous = user.getLastUserEditAtomOffset();
+        if (previous < 0 || previous >= editOffset)
+          throw new IOException("Invalid PPT previous edit reference");
+        editOffset = previous;
       }
-    } finally { extractor.close(); }
-    StringBuilder out = new StringBuilder();
-    for (String s : text) { append(out, s); append(out, "\n"); }
-    return result("Extracted presentation text", out.toString(),
-        "Read-only unstructured text. Slide order, layout, images, and animations are not reproduced. Master, hidden, repeated, and historical text may be included.");
-  }
+      PptRecord document = resolve(persisted, documentId, RecordTypes.Document.typeID);
+      PptRecord slides = null;
+      for (PptRecord r : document.children) {
+        if (r.type == RecordTypes.SlideListWithText.typeID && r.instance() == 0) {
+          if (slides != null || !r.isContainer()) throw new IOException("Invalid PPT slide list");
+          slides = r;
+        }
+      }
+      List<Section> sections = new ArrayList<>();
+      Set<Integer> usedSlides = new HashSet<>();
+      if (slides != null) {
+        for (int i = 0; i < slides.children.size();) {
+          PptRecord ref = slides.children.get(i++);
+          if (ref.type != RecordTypes.SlidePersistAtom.typeID || ref.length() < 20
+              || ref.length() > 32 || ref.isContainer())
+            throw new IOException("Invalid PPT slide reference");
+          SlidePersistAtom spa = (SlidePersistAtom) atom(ref);
+          PptRecord slide = resolve(persisted, spa.getRefID(), RecordTypes.Slide.typeID);
+          if (!usedSlides.add(slide.start)) throw new IOException("Duplicate PPT slide reference");
+          StringBuilder text = new StringBuilder();
+          int textHeaders = 0;
+          while (i < slides.children.size()
+              && slides.children.get(i).type != RecordTypes.SlidePersistAtom.typeID) {
+            PptRecord r = slides.children.get(i++);
+            if (r.type == RecordTypes.TextHeaderAtom.typeID) {
+              if (r.length() != 4) throw new IOException("Invalid PPT text header");
+              textHeaders++;
+            }
+            addText(r, text);
+          }
+          boolean hidden = false;
+          for (PptRecord r : slide.children) {
+            if (r.type == RecordTypes.SSSlideInfoAtom.typeID) {
+              if (r.length() != 16 || r.options != 0)
+                throw new IOException("Invalid PPT slide visibility record");
+              hidden |= ((SSSlideInfoAtom) atom(r)).getEffectTransitionFlagByBit(SSSlideInfoAtom.HIDDEN_BIT);
+            } else if (r.type == RecordTypes.PPDrawing.typeID) {
+              if (!r.isContainer()) throw new IOException("Invalid PPT drawing container");
+              addTextBoxes(r, text, textHeaders);
+            }
+          }
+          sections.add(new Section("Slide " + (sections.size() + 1) + (hidden ? " (hidden)" : ""), text.toString()));
+        }
+      }
+      if (sections.isEmpty()) sections.add(new Section("Presentation", ""));
+      return new Result(sections, WARNING);
+    }
 
-  /** Header-boundary validation only; Apache POI performs all record and text decoding. */
-  private static void validatePptRecords(byte[] bytes) throws IOException {
-    int[] ends = new int[MAX_DEPTH + 1]; ends[0] = bytes.length;
-    int depth = 0, pos = 0, count = 0;
-    while (pos < bytes.length) {
-      while (depth > 0 && pos == ends[depth]) depth--;
-      if (++count > MAX_RECORDS || ends[depth] - pos < 8) throw new IOException("Invalid PPT record boundary");
-      long len = LittleEndian.getUInt(bytes, pos + 4), end = (long) pos + 8 + len;
-      if (end > ends[depth]) throw new IOException("PPT record exceeds its container");
-      int type = LittleEndian.getUShort(bytes, pos + 2);
-      if (type == RecordTypes.DocumentEncryptionAtom.typeID) throw new IOException("Encrypted PPT is not previewed");
-      if ((bytes[pos] & 15) == 15 && len > 0) {
-        if (++depth > MAX_DEPTH) throw new IOException("PPT nesting limit exceeded");
-        ends[depth] = (int) end; pos += 8;
-      } else pos = (int) end;
+    private PptRecord root(int offset, int type) throws IOException {
+      PptRecord r = roots.get(offset);
+      if (r == null || r.type != type) throw new IOException("Invalid PPT record reference");
+      return r;
+    }
+
+    private PptRecord resolve(Map<Integer, Integer> persisted, int id, int type) throws IOException {
+      Integer offset = persisted.get(id);
+      if (id <= 0 || id > 0xfffff || offset == null) throw new IOException("Missing PPT persist reference");
+      PptRecord r = root(offset, type);
+      if (!r.isContainer()) throw new IOException("Invalid PPT persist container");
+      return r;
+    }
+
+    private void validatePointers(PptRecord ptr) throws IOException {
+      Set<Integer> ids = new HashSet<>();
+      int pos = ptr.start + 8;
+      while (pos < ptr.end) {
+        if (ptr.end - pos < 4) throw new IOException("Truncated PPT persist directory");
+        int info = LittleEndian.getInt(data, pos), id = info & 0xfffff, count = info >>> 20;
+        pos += 4;
+        if (id == 0 || count == 0 || count > (ptr.end - pos) / 4 || id + count > 0x100000
+            || (pointers += count) > MAX_RECORDS)
+          throw new IOException("Invalid PPT persist directory bounds");
+        for (int n = 0; n < count; n++, pos += 4) {
+          int offset = LittleEndian.getInt(data, pos);
+          if (!ids.add(id + n) || offset >= ptr.start || !roots.containsKey(offset))
+            throw new IOException("Invalid PPT persist object reference");
+        }
+      }
+    }
+
+    private void addTextBoxes(PptRecord r, StringBuilder text, int textHeaders) throws IOException {
+      if (r.type == CLIENT_TEXTBOX) {
+        for (PptRecord child : r.children) {
+          if (child.type == RecordTypes.OutlineTextRefAtom.typeID) {
+            if (child.length() != 4) throw new IOException("Invalid PPT outline text reference");
+            int index = LittleEndian.getInt(data, child.start + 8);
+            if (index < 0 || index >= textHeaders) throw new IOException("Missing PPT outline text reference");
+            // Already included from this slide's SlideListWithText records; don't duplicate it.
+          } else addText(child, text);
+        }
+      } else {
+        // Only traverse OfficeArt containers. Client data/animation metadata is not slide text.
+        for (PptRecord child : r.children)
+          if (child.type == CLIENT_TEXTBOX || (child.type >= 0xf000 && child.isContainer()))
+            addTextBoxes(child, text, textHeaders);
+      }
+    }
+
+    private void addText(PptRecord r, StringBuilder out) throws IOException {
+      String value;
+      if (r.type == RecordTypes.TextBytesAtom.typeID) {
+        if (r.isContainer()) throw new IOException("Invalid PPT text record");
+        value = ((TextBytesAtom) atom(r)).getText();
+      } else if (r.type == RecordTypes.TextCharsAtom.typeID) {
+        if (r.isContainer() || (r.length() & 1) != 0) throw new IOException("Invalid PPT Unicode text record");
+        value = ((TextCharsAtom) atom(r)).getText();
+      } else return;
+      if (value.length() > MAX_TEXT_CHARS - chars - 1) throw new IOException("Legacy text limit exceeded");
+      chars += value.length() + 1;
+      append(out, value.replace('\r', '\n').replace('\u000b', '\n'));
+      append(out, "\n");
+    }
+
+    private org.apache.poi.hslf.record.Record atom(PptRecord r) {
+      return org.apache.poi.hslf.record.Record.createRecordForType(r.type, data, r.start, r.end - r.start);
+    }
+
+    private List<PptRecord> readRecords(int start, int end, int depth) throws IOException {
+      if (depth > MAX_DEPTH) throw new IOException("PPT nesting limit exceeded");
+      List<PptRecord> result = new ArrayList<>();
+      for (int pos = start; pos < end;) {
+        if (++records > MAX_RECORDS || end - pos < 8) throw new IOException("Invalid PPT record boundary");
+        long recordEnd = (long) pos + 8 + LittleEndian.getUInt(data, pos + 4);
+        if (recordEnd > end) throw new IOException("PPT record exceeds its container");
+        PptRecord r = new PptRecord(pos, (int) recordEnd,
+            LittleEndian.getUShort(data, pos + 2), LittleEndian.getUShort(data, pos));
+        if (r.type == RecordTypes.DocumentEncryptionAtom.typeID)
+          throw new IOException("Encrypted PPT is not previewed");
+        if (r.type == RecordTypes.VBAInfoAtom.typeID
+            && (r.length() < 12 || LittleEndian.getUInt(data, pos + 12) != 0))
+          throw new IOException("Macro-enabled PPT is not previewed");
+        if (r.isContainer() || r.type == CLIENT_TEXTBOX)
+          r.children = readRecords(pos + 8, r.end, depth + 1);
+        result.add(r);
+        pos = r.end;
+      }
+      return result;
     }
   }
 
-  private static final class BoundedStrings extends ArrayList<String> {
-    int chars;
-    @Override public boolean add(String value) {
-      if (size() >= MAX_RECORDS || value.length() > MAX_TEXT_CHARS - chars - 1)
-        throw new Limit("Legacy text limit exceeded");
-      chars += value.length() + 1; return super.add(value);
+  private static final class PptRecord {
+    final int start, end, type, options;
+    List<PptRecord> children = Collections.emptyList();
+    PptRecord(int start, int end, int type, int options) {
+      this.start = start; this.end = end; this.type = type; this.options = options;
     }
+    int length() { return end - start - 8; }
+    int instance() { return options >>> 4; }
+    boolean isContainer() { return (options & 15) == 15; }
   }
   private static void append(StringBuilder b, String text) {
     if (text.length() > MAX_TEXT_CHARS - b.length()) throw new Limit("Legacy text limit exceeded");

@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,6 +21,8 @@ fun ReadingCanvas(
     edits: Map<String, String>,
     modifier: Modifier = Modifier,
 ) {
+    val readingScroll = rememberLazyListState()
+    RegisterDocumentScroll(readingScroll)
     val paragraphs =
         remember(blocks, edits) {
             blocks
@@ -42,6 +45,7 @@ fun ReadingCanvas(
             color = MaterialTheme.colorScheme.surface,
         ) {
             LazyColumn(
+                state = readingScroll,
                 contentPadding = PaddingValues(horizontal = 28.dp, vertical = 30.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
@@ -64,14 +68,7 @@ fun ReadingCanvas(
                             color = MaterialTheme.colorScheme.secondary,
                             modifier = Modifier.padding(bottom = 10.dp),
                         )
-                    SelectionContainer {
-                        Text(
-                            text,
-                            fontFamily = FontFamily.Serif,
-                            fontSize = 16.sp,
-                            lineHeight = 26.sp,
-                        )
-                    }
+                    DocumentTextField(value=text,onValueChange={},readOnly=true,modifier=Modifier.fillMaxWidth(),textStyle=MaterialTheme.typography.bodyLarge.copy(fontFamily=FontFamily.Serif,fontSize=16.sp,lineHeight=26.sp,color=MaterialTheme.colorScheme.onSurface))
                 }
             }
         }

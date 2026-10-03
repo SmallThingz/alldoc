@@ -1,0 +1,158 @@
+{
+  "classes": [
+    {
+      "class": "org.smallthingz.alldoc.AndroidSafetyTest",
+      "run": 11,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 4632,
+      "wall_seconds": 5.08
+    },
+    {
+      "class": "org.smallthingz.alldoc.GestureGateTest",
+      "run": 20,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 22,
+      "wall_seconds": 0.27
+    },
+    {
+      "class": "org.smallthingz.alldoc.ImmersiveGestureObserverTest",
+      "run": 8,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 6058,
+      "wall_seconds": 6.75
+    },
+    {
+      "class": "org.smallthingz.alldoc.ImmersiveWorkspaceTest",
+      "run": 4,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 8041,
+      "wall_seconds": 8.8
+    },
+    {
+      "class": "org.smallthingz.alldoc.ImmersivePresentationTest",
+      "run": 4,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 8774,
+      "wall_seconds": 9.51
+    },
+    {
+      "class": "org.smallthingz.alldoc.ImmersiveSelectionTest",
+      "run": 3,
+      "failures": 0,
+      "ignored": 1,
+      "milliseconds": 7336,
+      "wall_seconds": 8.12
+    },
+    {
+      "class": "org.smallthingz.alldoc.ImmersiveSheetTest",
+      "run": 1,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 6423,
+      "wall_seconds": 7.2
+    },
+    {
+      "class": "org.smallthingz.alldoc.PdfFormUiTest",
+      "run": 2,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 5680,
+      "wall_seconds": 6.43
+    },
+    {
+      "class": "org.smallthingz.alldoc.PdfToolsTest",
+      "run": 20,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 3636,
+      "wall_seconds": 4.08
+    },
+    {
+      "class": "org.smallthingz.alldoc.RecoveryMigrationTest",
+      "run": 4,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 3512,
+      "wall_seconds": 3.98
+    },
+    {
+      "class": "org.smallthingz.alldoc.RtfRunEditingTest",
+      "run": 5,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 30,
+      "wall_seconds": 0.27
+    },
+    {
+      "class": "org.smallthingz.alldoc.SlideGeometryTest",
+      "run": 3,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 16,
+      "wall_seconds": 0.21
+    },
+    {
+      "class": "org.smallthingz.alldoc.SlideImageDecoderTest",
+      "run": 3,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 3424,
+      "wall_seconds": 3.85
+    },
+    {
+      "class": "org.smallthingz.alldoc.SlideRasterStoreTest",
+      "run": 6,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 3713,
+      "wall_seconds": 4.14
+    },
+    {
+      "class": "org.smallthingz.alldoc.WorkspaceUiTest",
+      "run": 22,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 16484,
+      "wall_seconds": 17.37
+    },
+    {
+      "class": "org.smallthingz.alldoc.core.DocumentEngineTest",
+      "run": 62,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 1156,
+      "wall_seconds": 1.42
+    },
+    {
+      "class": "org.smallthingz.alldoc.core.LegacyOfficeExtractorTest",
+      "run": 18,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 999,
+      "wall_seconds": 1.27
+    },
+    {
+      "class": "org.smallthingz.alldoc.core.PresentationFidelityTest",
+      "run": 24,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 607,
+      "wall_seconds": 0.82
+    },
+    {
+      "class": "org.smallthingz.alldoc.core.RtfDocumentTest",
+      "run": 32,
+      "failures": 0,
+      "ignored": 0,
+      "milliseconds": 183,
+      "wall_seconds": 0.42
+    }
+  ],
+  "max_child_rss_kib": 793844,
+  "all_successful": true
+}

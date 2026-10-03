@@ -18,11 +18,13 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.Density
 import java.io.File
+import java.time.Duration
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -109,8 +111,8 @@ class WorkspaceUiTest {
     @Test
     fun textEditCancelExportAndReturnHome() {
         openFixture("notes.txt")
-        compose.onNodeWithText("Edit", useUnmergedTree = true).performClick()
-        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("Edited: ")
+        compose.onNodeWithContentDescription("Edit document source").performTextInput("Edited: ")
+        showControls()
         compose.onNodeWithText("Save copy").assertIsDisplayed()
         capture("text-edit-focused")
         compose.onNodeWithText("Save copy").performClick()
@@ -118,9 +120,12 @@ class WorkspaceUiTest {
         capture("export-review")
         compose.onNodeWithText("Cancel").performClick()
         compose.onNodeWithText("Save copy").assertIsDisplayed()
+        showControls()
         compose.onNodeWithContentDescription("Back to library").performClick()
         compose.onNodeWithText("Current draft", substring = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Resume current document").performClick()
+        compose.onNodeWithTag("Document controls").assertDoesNotExist()
+        showControls()
         compose.onNodeWithText("Save copy").assertIsDisplayed()
     }
 
@@ -128,10 +133,10 @@ class WorkspaceUiTest {
     fun worksheetCellEditingIsLocalAndCancelable() {
         openFixture("budget.xlsx")
         capture("worksheet-grid")
-        compose.onNodeWithText("Paper").performClick()
+        selectCell("Paper")
         compose.onNodeWithText("Done").performClick()
         compose.onNodeWithText("Paper").assertIsDisplayed()
-        compose.onNodeWithText("Paper").performClick()
+        selectCell("Paper")
         compose.onNodeWithContentDescription("Cell value").performTextReplacement("Temporary")
         compose.onNodeWithText("Revert").performClick()
         compose.onNodeWithText("Revert this cell?").assertIsDisplayed()
@@ -139,8 +144,11 @@ class WorkspaceUiTest {
         compose.onNodeWithContentDescription("Cell value").assertTextEquals("Temporary")
         compose.onNodeWithText("Revert").performClick()
         compose.onNodeWithText("Revert cell").performClick()
+        compose.onNodeWithContentDescription("Cell value").assertTextEquals("Paper")
+        compose.onNodeWithText("Revert").assertDoesNotExist()
+        hideControls()
         compose.onNodeWithText("Paper").assertIsDisplayed()
-        compose.onNodeWithText("Paper").performClick()
+        selectCell("Paper")
         compose.onNodeWithContentDescription("Cell value").performTextReplacement("Recycled paper")
         capture("worksheet-cell-editor")
         compose.onNodeWithText("Done").performClick()
@@ -152,29 +160,37 @@ class WorkspaceUiTest {
     @Test
     fun cellDraftSurvivesBackOutsideTapSheetSwitchAndIncomingOpen() {
         openFixture("budget.xlsx")
-        compose.onNodeWithText("Paper").performClick()
+        selectCell("Paper")
         compose.onNodeWithContentDescription("Cell value").performTextReplacement("Retained cell")
         // A tap outside the editor selecting another cell cannot discard the live draft.
-        compose.onNodeWithText("Pens").performClick()
+        selectCell("Pens")
         compose.onNodeWithText("Done").performClick()
-        compose.onNodeWithText("Retained cell").performClick()
+        selectCell("Retained cell")
         compose.onNodeWithContentDescription("Cell value").assertIsDisplayed()
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithContentDescription("Cell value").assertDoesNotExist()
+        compose.onNodeWithTag("Document controls").assertDoesNotExist()
         compose.onNodeWithText("Retained cell").assertIsDisplayed()
         val sheets = model.session!!.blocks.map { it.section }.distinct()
+        showControls()
         compose.onNodeWithText(sheets.last()).performClick()
+        showControls()
         compose.onNodeWithText(sheets.first()).performClick()
         compose.onNodeWithText("Retained cell").assertIsDisplayed()
+        showControls()
         compose.onNodeWithContentDescription("Back to library").performClick()
         compose.onNodeWithContentDescription("Resume current document").performClick()
         compose.onNodeWithText("Retained cell").assertIsDisplayed()
+        showControls()
         compose.onNodeWithContentDescription("More options").performClick()
         compose.onNodeWithText("Open another document").performClick()
         compose.onNodeWithText("Leave these edits?").assertIsDisplayed()
         compose.onNodeWithText("Keep editing").performClick()
         compose.runOnUiThread { incoming = Uri.parse("content://alldoc.tests/incoming") }
         compose.onNodeWithText("Open the incoming document?").assertIsDisplayed()
-        compose.onNode(hasText("Keep this draft") and hasClickAction()).performClick()
+        compose.onNode(
+            hasText("Keep this draft") and hasClickAction() and hasAnyAncestor(isDialog())
+        ).performClick()
         compose.runOnIdle {
             org.junit.Assert.assertTrue(model.edits.values.contains("Retained cell"))
         }
@@ -202,16 +218,22 @@ class WorkspaceUiTest {
         openFixture("budget.xlsx")
         val address =
             model.session!!.blocks.first { it.original == "Paper" }.label.substringBefore(' ')
-        compose.onNodeWithText("Paper").performClick()
+        selectCell("Paper")
         compose.onNodeWithContentDescription("Cell value").performTextReplacement("First change")
-        compose.onNodeWithContentDescription("$address: First change").performClick()
+        hideControls()
+        compose.onNodeWithContentDescription("$address: First change").performTouchInput { click() }
+        settlePointerTap()
+        showControls()
         compose.onNodeWithText("Revert").performClick()
         compose.onNodeWithText("Revert cell").performClick()
+        compose.onNodeWithContentDescription("Cell value").assertTextEquals("Paper")
+        compose.onNodeWithText("Revert").assertDoesNotExist()
+        hideControls()
         compose.onNodeWithText("Paper").assertIsDisplayed()
-        compose.onNodeWithText("Paper").performClick()
+        selectCell("Paper")
         compose.onNodeWithContentDescription("Cell value").performTextReplacement("Earlier draft")
         compose.onNodeWithText("Done").performClick()
-        compose.onNodeWithText("Earlier draft").performClick()
+        selectCell("Earlier draft")
         compose.onNodeWithContentDescription("More options").performClick()
         compose.onNodeWithText("Discard edits").performClick()
         compose.onNodeWithText("Discard edits").performClick()
@@ -224,7 +246,7 @@ class WorkspaceUiTest {
     @Test
     fun cellLiveDraftExportsWithoutClosingEditor() {
         openFixture("budget.xlsx")
-        compose.onNodeWithText("Paper").performClick()
+        selectCell("Paper")
         compose
             .onNodeWithContentDescription("Cell value")
             .performTextReplacement("Exported live cell")
@@ -239,19 +261,24 @@ class WorkspaceUiTest {
     @Test
     fun searchRequestsFocusAndBackClosesSearchBeforeDocument() {
         openFixture("notes.txt")
+        showControls()
         compose.onNodeWithContentDescription("Find").performClick()
-        compose.onNode(hasSetTextAction()).assertIsFocused()
+        compose.onNodeWithText("Find content").assertIsFocused()
         compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.onNodeWithText("Find content").assertDoesNotExist()
         compose.onNodeWithText("notes.txt").assertIsDisplayed()
-        compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+        compose.onNodeWithContentDescription("Edit document source").assertIsDisplayed()
+        compose.onAllNodes(hasSetTextAction()).assertCountEquals(1)
+        compose.onNodeWithContentDescription("Edit document source")
+            .assertTextEquals(File("../fixtures/notes.txt").readText())
     }
 
     @Test
     fun restoredSearchWaitsForAvailableDocumentBeforeRequestingFocus() {
         openFixture("notes.txt")
+        showControls()
         compose.onNodeWithContentDescription("Find").performClick()
-        compose.onNode(hasSetTextAction()).assertIsFocused()
+        compose.onNodeWithText("Find content").assertIsFocused()
         compose.runOnIdle {
             compose.activity.viewModelStore.clear()
             File(compose.activity.filesDir, "recovery").deleteRecursively()
@@ -267,8 +294,10 @@ class WorkspaceUiTest {
     @Test
     fun documentReadingCanvasAndFailedExport() {
         openFixture("field-notes.docx")
-        compose.onNodeWithText("Text").performClick()
+        showControls()
+        compose.onNodeWithText("Edit text").performClick()
         capture("document-content-canvas")
+        val viewport = compose.onNodeWithTag("Document viewport").getUnclippedBoundsInRoot()
         compose.runOnUiThread { model.export(Uri.parse("content://alldoc.tests/failed-export")) }
         ready()
         compose.onNodeWithText("Dismiss").assertIsDisplayed()
@@ -276,9 +305,18 @@ class WorkspaceUiTest {
         compose.waitForIdle()
         val heading = compose.onNodeWithText("What matters").getUnclippedBoundsInRoot()
         val following = compose.onNodeWithText("Quiet, readable tools").getUnclippedBoundsInRoot()
-        org.junit.Assert.assertTrue("Error insertion overlapped reading paragraphs", heading.bottom <= following.top)
+        org.junit.Assert.assertTrue(
+            "Error insertion overlapped document paragraphs",
+            heading.bottom <= following.top,
+        )
+        org.junit.Assert.assertEquals(
+            "Export error must not resize the document viewport",
+            viewport,
+            compose.onNodeWithTag("Document viewport").getUnclippedBoundsInRoot(),
+        )
         capture("export-error")
         compose.onNodeWithText("Dismiss").performClick()
+        showControls()
         compose.onNodeWithText("field-notes.docx").assertIsDisplayed()
     }
 
@@ -288,7 +326,10 @@ class WorkspaceUiTest {
         compose.runOnUiThread { model.edit("text", "Keep this draft") }
         compose.runOnUiThread { incoming = Uri.parse("content://alldoc.tests/incoming") }
         compose.onNodeWithText("Open the incoming document?").assertIsDisplayed()
-        compose.onNode(hasText("Keep this draft") and hasClickAction()).performClick()
+        compose.onNode(
+            hasText("Keep this draft") and hasClickAction() and hasAnyAncestor(isDialog())
+        ).performClick()
+        showControls()
         compose.onNodeWithText("notes.txt").assertIsDisplayed()
         compose.runOnIdle { org.junit.Assert.assertEquals("Keep this draft", model.edits["text"]) }
     }
@@ -296,7 +337,8 @@ class WorkspaceUiTest {
     @Test
     fun recentDocumentsAndRecoverableDraftAreVisible() {
         openFixture("field-notes.docx")
-        compose.onNodeWithText("Text").performClick()
+        showControls()
+        compose.onNodeWithText("Edit text").performClick()
         compose.runOnUiThread {
             model.edit(model.session!!.blocks.first().id, "Revised opening")
             listOf(
@@ -319,6 +361,7 @@ class WorkspaceUiTest {
                     )
                 }
         }
+        showControls()
         compose.onNodeWithContentDescription("Back to library").performClick()
         compose.onNodeWithText("Current draft", substring = true).assertIsDisplayed()
         compose.onNodeWithText("Recent").assertIsDisplayed()
@@ -334,11 +377,10 @@ class WorkspaceUiTest {
     fun textEntrySaveAndDiscardUseTheRealResultFlow() {
         openFixture("notes.txt")
         val original = File("../fixtures/notes.txt").readBytes()
-        compose.onNodeWithText("Edit").performClick()
         compose
-            .onAllNodes(hasSetTextAction())
-            .onLast()
+            .onNodeWithContentDescription("Edit document source")
             .performTextReplacement("Saved copy ✓\nمرحبا")
+        showControls()
         compose.onNodeWithText("Save copy").performClick()
         compose.onNodeWithText("Choose destination").performClick()
         val activity = org.robolectric.Shadows.shadowOf(compose.activity)
@@ -366,8 +408,8 @@ class WorkspaceUiTest {
     fun narrowLargeTextAndImeInsetsKeepSaveVisible() {
         openFixture("notes.txt")
         compose.runOnUiThread { uiFontScale = 2f }
-        compose.onNodeWithText("Edit").performClick()
-        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("Large text: ")
+        compose.onNodeWithContentDescription("Edit document source").performTextInput("Large text: ")
+        showControls()
         compose.runOnUiThread {
             val insets =
                 androidx.core.view.WindowInsetsCompat.Builder()
@@ -435,25 +477,35 @@ class WorkspaceUiTest {
     @Test
     fun presentationAndOpenDocumentWorkspaces() {
         openFixture("studio-review.pptx")
-        compose.onNodeWithText("Text layout · images and styles omitted").assertIsDisplayed()
+        assertPresentationLimitationsAvailable()
         capture("slides-pptx")
-        compose.onNode(hasText("2") and hasClickAction()).performClick()
+        showControls()
+        compose.onNodeWithText("Slides").performClick()
+        showControls()
+        compose.onNodeWithContentDescription("Next slide").performClick()
+        compose.onNodeWithText("2 / ${model.session!!.slides.size}").assertIsDisplayed()
+        hideControls()
+        compose.onNodeWithTag("Slide page 2").assertIsDisplayed()
+        // Presentation order deliberately differs from the numbered ZIP part names.
+        compose.onNodeWithText("Work that moves.").assertIsDisplayed()
         capture("slides-pptx-second")
-        compose.onNodeWithText("Edit").performClick()
+        showControls()
+        compose.onNodeWithText("Edit text").performClick()
         compose
             .onAllNodes(hasSetTextAction())
             .onFirst()
             .performTextReplacement("A clearer direction.")
+        showControls()
         compose.onNodeWithText("Save copy").assertIsDisplayed()
         capture("slides-edit")
         compose.onNodeWithContentDescription("More options").performClick()
         compose.onNodeWithText("Discard edits").performClick()
         compose.onNodeWithText("Discard edits").performClick()
         openFixture("studio-review.odp")
-        compose.onNodeWithText("Text layout · images and styles omitted").assertIsDisplayed()
+        assertPresentationLimitationsAvailable()
         capture("slides-odp")
         openFixture("studio-budget.ods")
-        compose.onNodeWithText("Notebooks").performClick()
+        selectCell("Notebooks")
         compose.onNodeWithContentDescription("Cell value").performTextReplacement("Sketchbooks")
         compose.onNodeWithText("Done").performClick()
         compose.onNodeWithText("Sketchbooks").assertIsDisplayed()
@@ -465,11 +517,11 @@ class WorkspaceUiTest {
     fun sourceEditingAndPopulatedDarkLibrary() {
         openFixture("manifest.xml")
         capture("xml-source-dark")
-        compose.onNodeWithText("Edit").performClick()
         compose
             .onNodeWithContentDescription("Edit document source")
             .performTextReplacement("<?xml version=\"1.0\"?>\n<workspace>Edited safely</workspace>")
         capture("xml-editor-dark")
+        showControls()
         compose.onNodeWithText("Save copy").assertIsDisplayed()
         compose.onNodeWithContentDescription("Back to library").performClick()
         capture("home-populated-dark")
@@ -487,7 +539,7 @@ class WorkspaceUiTest {
     @Config(qualifiers = "w320dp-h640dp-night-xhdpi")
     fun largeTypeCellEditorKeepsCopyActionVisible() {
         openFixture("budget.xlsx")
-        compose.onNodeWithText("Paper").performClick()
+        selectCell("Paper")
         compose.runOnUiThread { uiFontScale = 2f }
         compose.onNodeWithContentDescription("Cell value").performTextReplacement("Edited paper")
         compose.runOnUiThread {
@@ -526,6 +578,7 @@ class WorkspaceUiTest {
             RecoveredDraftStore(File(compose.activity.filesDir, "recovered-drafts"))
                 .preserve(snapshot)
         compose.runOnUiThread { model.recoveredDrafts.add(archive) }
+        showControls()
         compose.onNodeWithContentDescription("More options").performClick()
         compose.onNodeWithText("Recovered drafts").performClick()
         capture("recovered-drafts")
@@ -559,10 +612,17 @@ class WorkspaceUiTest {
     fun legacyOfficeFilesExposeReadOnlyTextAndNoEditAction() {
         for (extension in listOf("doc", "xls", "ppt")) {
             openFixture("legacy-basic.$extension")
+            compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+            showControls()
+            compose.onNodeWithText("Read-only in compact engine").assertIsDisplayed()
+            compose.onNodeWithText("Edit text").assertDoesNotExist()
+            compose.onNodeWithContentDescription("More options").performClick()
+            compose.onNodeWithText("Document details").performClick()
             compose
-                .onNodeWithText("Read-only text extraction · original copy export")
+                .onNodeWithText("Legacy Office • read-only text extraction; original-byte copies only")
                 .assertIsDisplayed()
-            compose.onNodeWithText("Edit").assertDoesNotExist()
+            compose.onNodeWithText("Done").performClick()
+            hideControls()
             org.junit.Assert.assertFalse(model.session!!.editable)
             org.junit.Assert.assertArrayEquals(
                 File("../fixtures/legacy-basic.$extension").readBytes(),
@@ -570,6 +630,55 @@ class WorkspaceUiTest {
             )
             capture("legacy-$extension-readonly")
         }
+    }
+
+    /** Accessibility reveal is independent of a document child's click/selection semantics. */
+    private fun showControls() {
+        if (compose.onAllNodesWithTag("Document controls").fetchSemanticsNodes().isEmpty()) {
+            val action =
+                compose.onNodeWithTag("Document viewport").fetchSemanticsNode()
+                    .config[SemanticsActions.CustomActions]
+                    .single { it.label == "Show document controls" }
+            compose.runOnIdle { org.junit.Assert.assertTrue(action.action()) }
+        }
+        compose.onNodeWithTag("Document controls").assertIsDisplayed()
+    }
+
+    private fun hideControls() {
+        if (compose.onAllNodesWithTag("Document controls").fetchSemanticsNodes().isNotEmpty()) {
+            compose.onNodeWithContentDescription("Hide document controls").performClick()
+        }
+        compose.onNodeWithTag("Document controls").assertDoesNotExist()
+    }
+
+    private fun settlePointerTap() {
+        // Real single taps are delayed to distinguish them from double-tap selection/zoom.
+        compose.mainClock.advanceTimeBy(400)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+            .idleFor(Duration.ofMillis(400))
+        compose.waitForIdle()
+    }
+
+    private fun selectCell(value: String) {
+        // The overlay must not intercept a tap intended for a cell beneath it.
+        hideControls()
+        compose.onNode(hasText(value) and hasClickAction()).performTouchInput { click() }
+        settlePointerTap()
+        showControls()
+        compose.onNodeWithContentDescription("Cell value").assertIsDisplayed()
+    }
+
+    private fun assertPresentationLimitationsAvailable() {
+        compose.onNodeWithTag("Presentation viewport").assertIsDisplayed()
+        showControls()
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Document details").performClick()
+        compose.onNodeWithText(model.session!!.description).assertIsDisplayed()
+        compose.onNodeWithText("Slide preview supports", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        compose.onNodeWithText("Done").performClick()
+        hideControls()
     }
 
     private fun findWebView(view: android.view.View): android.webkit.WebView? {
@@ -603,11 +712,14 @@ class WorkspaceUiTest {
         compose.runOnUiThread { incoming = Uri.parse("content://alldoc.tests/$name") }
         compose.waitForIdle()
         ready()
-        compose.onNodeWithText(name).assertIsDisplayed()
+        compose.onNodeWithTag("Document viewport").assertIsDisplayed()
+        compose.onNodeWithTag("Document controls").assertDoesNotExist()
+        compose.runOnIdle { org.junit.Assert.assertEquals(name, model.name) }
     }
 
     private fun capture(name: String) {
-        val output = File("build/screenshots/v0.2/$name.png").apply { parentFile?.mkdirs() }
+        val output =
+            File("build/screenshots/immersive-regression/$name.png").apply { parentFile?.mkdirs() }
         compose.runOnIdle {
             val view =
                 org.robolectric.shadows.ShadowDialog.getLatestDialog()

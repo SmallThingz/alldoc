@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "examples": [
+    {
+      "id": "text-md",
+      "title": "Trail guide",
+      "asset": "examples/text/trail-guide.md",
+      "mime": "text/markdown",
+      "extension": "md",
+      "description": "Headings, emphasis, lists and code in one continuous document",
+      "category": "Documents"
+    },
+    {
+      "id": "text-markdown",
+      "title": "Trail guide",
+      "asset": "examples/text/trail-guide.markdown",
+      "mime": "text/markdown",
+      "extension": "markdown",
+      "description": "Headings, emphasis, lists and code in one continuous document",
+      "category": "Documents"
+    },
+    {
+      "id": "text-html",
+      "title": "Coastal guide",
+      "asset": "examples/text/coastal-guide.html",
+      "mime": "text/html",
+      "extension": "html",
+      "description": "",
+      "category": "Documents"
+    },
+    {
+      "id": "text-htm",
+      "title": "Coastal guide",
+      "asset": "examples/text/coastal-guide.htm",
+      "mime": "text/html",
+      "extension": "htm",
+      "description": "",
+      "category": "Documents"
+    },
+    {
+      "id": "text-xhtml",
+      "title": "Coastal guide",
+      "asset": "examples/text/coastal-guide.xhtml",
+      "mime": "application/xhtml+xml",
+      "extension": "xhtml",
+      "description": "",
+      "category": "Documents"
+    },
+    {
+      "id": "text-fb2",
+      "title": "Coastal story",
+      "asset": "examples/text/coastal-story.fb2",
+      "mime": "application/x-fictionbook+xml",
+      "extension": "fb2",
+      "description": "",
+      "category": "Books"
+    }
+  ]
+}

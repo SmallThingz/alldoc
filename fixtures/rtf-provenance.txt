@@ -1,6 +1,0 @@
-formatted.rtf is a synthetic, original alldoc interoperability fixture authored for this repository.
-It includes common emphasis, paragraph/line boundaries, Unicode signed UTF-16 escapes, cp1252/cp1251
-font encodings, a cached inert field, an unknown destination, an omitted header and an intentionally
-non-decodable synthetic picture payload. The image bytes are never opened or interpreted by alldoc.
-The example.invalid URL is reserved example data and must never be fetched.
-No third-party document, personal information, font file or image asset is included.

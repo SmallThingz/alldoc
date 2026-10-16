@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+ <queries><package android:name="app.smallthingz.alldoc" /></queries>
+ <application android:label="AllDoc API test client" android:allowBackup="false">
+  <activity android:name=".OacpCallerActivity" android:exported="false" />
+  <provider android:name=".OacpFixtureProvider"
+   android:authorities="app.smallthingz.alldoc.clienttest.oacp-fixtures"
+   android:exported="false" android:grantUriPermissions="true" />
+  <service android:name=".IsolatedProbeService" android:isolatedProcess="true" android:exported="false" />
+ </application>
+ <instrumentation android:name=".ExportRunner" android:targetPackage="app.smallthingz.alldoc.clienttest" android:label="AllDoc local export" />
+</manifest>

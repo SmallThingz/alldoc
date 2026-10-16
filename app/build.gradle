@@ -1,0 +1,94 @@
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.CacheableTask
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+
+plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.plugin.compose' }
+def readerAbis = providers.gradleProperty('alldocAbis').getOrElse('arm64-v8a,x86_64').split(',').collect { it.trim() }.unique()
+if (readerAbis.isEmpty() || readerAbis.any { !(it in ['arm64-v8a', 'x86_64']) }) throw new GradleException('alldocAbis must contain arm64-v8a and/or x86_64')
+android {
+ namespace 'app.smallthingz.alldoc'
+ compileSdk 37
+ defaultConfig { applicationId 'app.smallthingz.alldoc'; minSdk 28; targetSdk 37; versionCode 1; versionName '0.1.0'; testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner' }
+ buildFeatures { compose true; aidl true; buildConfig true }
+ compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+ // Compress the installable download; Android extracts native code and prepares DEX for execution.
+ packaging { dex { useLegacyPackaging = true }; jniLibs { useLegacyPackaging = true }; resources { merges += ['META-INF/LICENSE*','META-INF/NOTICE*','META-INF/DEPENDENCIES'] } }
+ splits { abi { enable true; reset(); include(*readerAbis); universalApk false } }
+ buildTypes { release { minifyEnabled true; shrinkResources true; proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'; signingConfig signingConfigs.debug } }
+ testOptions { unitTests.returnDefaultValues = true }
+}
+dependencies {
+ implementation project(':api')
+ implementation project(':oacp-sdk')
+ implementation platform('androidx.compose:compose-bom:2026.05.01')
+ implementation 'androidx.activity:activity-compose:1.13.0'
+ implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.10.0'
+ implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0'
+ implementation 'androidx.paging:paging-compose:3.5.3'
+ implementation 'androidx.compose.foundation:foundation'
+ implementation 'androidx.compose.material3:material3'
+ implementation 'androidx.compose.material:material-icons-extended:1.7.8'
+ implementation 'androidx.compose.ui:ui'
+ implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
+ implementation 'org.jsoup:jsoup:1.21.2'
+ implementation 'org.jetbrains:markdown:0.7.18'
+ implementation 'androidx.core:core-ktx:1.17.0'
+ testImplementation 'junit:junit:4.13.2'
+ androidTestImplementation 'androidx.test:core:1.7.0'
+ androidTestImplementation 'androidx.test:runner:1.7.0'
+ androidTestImplementation 'androidx.test:rules:1.7.0'
+ androidTestImplementation 'androidx.test.ext:junit:1.3.0'
+}
+
+// A standalone Gradle invocation must not silently ship an app missing its readers.
+def verifyNativeReaders = tasks.register('verifyNativeReaders') {
+ doLast {
+  def missing = []
+  readerAbis.each { abi ->
+   ['liballdoc.so', 'liballpdf.so', 'liballrender.so', 'liballrun.so'].each { name ->
+    def library = file("src/main/jniLibs/${abi}/${name}")
+    if (!library.isFile() || library.length() < 256) missing.add("${abi}/${name}")
+   }
+  }
+  if (!missing.isEmpty()) throw new GradleException("Missing native readers: ${missing.join(', ')}. Run scripts/build from the project root.")
+ }
+}
+tasks.configureEach {
+ if (name.startsWith('merge') && name.endsWith('NativeLibs')) dependsOn(verifyNativeReaders)
+}
+
+// Package the same scoped grant and attribution as the published source tree.
+@CacheableTask
+abstract class GenerateAllDocNotices extends DefaultTask {
+ @InputFile @PathSensitive(PathSensitivity.RELATIVE)
+ abstract RegularFileProperty getLicenseFile()
+ @InputFile @PathSensitive(PathSensitivity.RELATIVE)
+ abstract RegularFileProperty getNoticeFile()
+ @OutputDirectory
+ abstract DirectoryProperty getOutputDirectory()
+
+ @TaskAction
+ void generate() {
+  def directory = outputDirectory.get().asFile
+  if (!directory.isDirectory() && !directory.mkdirs()) throw new GradleException('Could not create license assets directory')
+  new File(directory, 'alldoc-notices.txt').setText(
+   licenseFile.get().asFile.getText('UTF-8') + '\n\n' + noticeFile.get().asFile.getText('UTF-8'), 'UTF-8')
+ }
+}
+
+def generateAllDocNotices = tasks.register('generateAllDocNotices', GenerateAllDocNotices) {
+ licenseFile.set(rootProject.layout.projectDirectory.file('LICENSE'))
+ noticeFile.set(rootProject.layout.projectDirectory.file('NOTICE'))
+ outputDirectory.set(layout.buildDirectory.dir('generated/assets/alldoc-notices'))
+}
+androidComponents {
+ onVariants(selector().all()) { variant ->
+  variant.sources.assets.addGeneratedSourceDirectory(generateAllDocNotices) { task -> task.outputDirectory }
+ }
+}

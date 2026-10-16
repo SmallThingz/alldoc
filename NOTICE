@@ -1,0 +1,77 @@
+AllDoc
+Copyright 2026 SmallThingz
+
+Original AllDoc contributions are licensed under Apache-2.0; see LICENSE.
+The previous implementation's Apache-2.0 grant remains in repository history.
+This notice does not relicense the third-party or derived material listed below,
+and does not declare that the combined application binary is Apache-only or MIT-only.
+
+ZFM-derived document core and rendering adapters
+------------------------------------------------
+The semantic reader was adapted from ZFM native/documents at revision
+9d69a973fb0b6f5242295c52513c1dfc1f6f5dde. Its pinned crate manifest declares MIT,
+while its pinned repository supplies the GNU GPL version 3 text. The relationship
+between those declarations remains unresolved here; no governing license or
+relicense is asserted. Both pieces of evidence are retained unchanged:
+
+  native/documents/UPSTREAM.json
+  native/documents/LICENSE-ZFM
+  native/documents/Cargo.toml
+  app/src/main/assets/document-notices.txt
+
+The bounded visual adapter, memory-limit launcher, Android font discovery and
+mobile rendering patches also originate in ZFM. Their recorded provenance and
+local adaptations are retained in:
+
+  native/render/README.md
+  native/render/zfm-provenance.json
+  native/render/core/
+  native/render/patches/
+
+AllDoc's root Apache grant excludes these ZFM-derived contributions. Publishing
+this source tree does not resolve the upstream scope question. Distributors must
+retain the applicable notices and provide corresponding source as required by the
+applicable licenses; an Apache-only or MIT-only claim for the combined binary is
+not made here.
+
+Craft engines and fonts
+-----------------------
+WordCraft, DeckCraft and GridCraft are pinned Git submodules from
+https://github.com/storytold. Selected parser/rendering code uses the upstream MIT
+option where dual-licensed. Local mobile patches are kept outside the submodules.
+Font and asset licenses are separate, including SIL OFL-1.1 and Ubuntu Font License.
+Their original license, copyright and attribution texts are retained in:
+
+  .gitmodules
+  native/render/notices/
+  native/render/office-fonts/LICENSE
+  native/render/zfm-provenance.json
+  app/src/main/assets/render-notices.txt
+
+Other dependencies
+------------------
+The OACP Android SDK is Apache-2.0, pinned without source modifications. Its exact
+revision and source hashes are in oacp-sdk/UPSTREAM.json; its complete license is
+in oacp-sdk/src/main/assets/oacp-sdk-license.txt.
+
+AndroidX, Compose, Kotlin and other application dependencies retain their own
+licenses. The resolved application inventory and bundled notices are in
+app/src/main/assets/application-notices.txt.
+
+Native dependencies retain their declared licenses, including MPL-2.0 for
+nucleo-matcher. Exact versions, source locations and full license/notice texts are
+retained in native/documents/dependencies-upstream.json, native/pdf/dependencies-upstream.json,
+native/render/dependencies-upstream.json and each component's notices directory.
+The app includes document-notices.txt, pdf-notices.txt and render-notices.txt.
+
+Examples and design references
+------------------------------
+Bundled examples and artwork were authored for AllDoc and use its original-work
+license. Their provenance and generators are documented in scripts/text-examples.md
+and scripts/fixtures/EXAMPLES-OFFICE.md. The separate scripts/fixtures/simple.doc
+smoke fixture comes from Apache POI; its source, hash, attribution and Apache-2.0
+text are retained in scripts/fixtures/README.md and LICENSE-APACHE.txt.
+
+Reverb, MJ PDF and Dark Reader were inspected as behavioral/design references.
+Their code and assets were not copied for that purpose. See docs/UI_REFERENCE.md,
+docs/INTERFACE.md and docs/DARK_MODE.md for the inspected references.

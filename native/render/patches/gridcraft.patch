@@ -1,0 +1,823 @@
+--- a/gridcraft/Cargo.toml
++++ b/gridcraft/Cargo.toml
+@@ -1,7 +1,7 @@
+ [workspace]
+ resolver = "3"
+-members = ["crates/*", "apps/*", "xtask"]
+-default-members = ["crates/*", "apps/gridcraft", "apps/gridcraft-cli", "xtask"]
++members = ["crates/calc", "crates/chart", "crates/core", "crates/engine", "crates/formula", "crates/functions", "crates/model", "crates/numfmt", "crates/pdf", "crates/xlsx"]
++default-members = ["crates/calc", "crates/chart", "crates/core", "crates/engine", "crates/formula", "crates/functions", "crates/model", "crates/numfmt", "crates/pdf", "crates/xlsx"]
+ 
+ [workspace.package]
+ version = "0.1.0"
+--- a/gridcraft/crates/engine/Cargo.toml
++++ b/gridcraft/crates/engine/Cargo.toml
+@@ -7,6 +7,10 @@
+ 
+ [lints]
+ workspace = true
++
++[features]
++default = []
++raster = ["gridcraft-pdf/raster"]
+ 
+ [dependencies]
+ gridcraft-core = { workspace = true }
+--- a/gridcraft/crates/engine/src/cmd/print.rs
++++ b/gridcraft/crates/engine/src/cmd/print.rs
+@@ -60,7 +60,7 @@
+ /// Sheet geometry is in pixels at 96 dpi; PDF units are points.
+ const PX_TO_PT: f32 = 0.75;
+ /// Most pages one export produces.
+-pub const MAX_PAGES: usize = 2000;
++pub const MAX_PAGES: usize = 128;
+ /// Cells in a page block above which only stored cells are visited (not every grid position).
+ const DENSE_BLOCK: u64 = 60_000;
+ 
+@@ -537,11 +537,11 @@
+ }
+ 
+ /// PDF measurement for chart layout.
+-struct PdfMeasure;
+-
+-impl gridcraft_chart::Measure for PdfMeasure {
++struct PdfMeasure<'a>(&'a Page);
++
++impl gridcraft_chart::Measure for PdfMeasure<'_> {
+     fn text_width(&self, text: &str, size: f32, bold: bool) -> f32 {
+-        gridcraft_pdf::text_width(if bold { Font::HelveticaBold } else { Font::Helvetica }, size, text)
++        self.0.text_width(if bold { Font::HelveticaBold } else { Font::Helvetica }, size, text)
+     }
+ }
+ 
+@@ -603,7 +603,7 @@
+             Prim::Text { x, y, text, size, color, bold, align, valign, rotation } => {
+                 let font = if *bold { Font::HelveticaBold } else { Font::Helvetica };
+                 let size = size * k;
+-                let w = gridcraft_pdf::text_width(font, size, text);
++                let w = pg.text_width(font, size, text);
+                 let dx = match align {
+                     H::Left => 0.0,
+                     H::Center => -w / 2.0,
+@@ -625,24 +625,24 @@
+ const PAD_PX: f32 = 2.0;
+ 
+ /// Word-wraps `text` to `width` points.
+-fn wrap_lines(text: &str, font: Font, size: f32, width: f32) -> Vec<String> {
++fn wrap_lines(pg: &Page, text: &str, font: Font, size: f32, width: f32) -> Vec<String> {
+     let mut out = Vec::new();
+     for para in text.split('\n') {
+         let mut line = String::new();
+         for word in para.split(' ') {
+             let cand = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+-            if line.is_empty() || gridcraft_pdf::text_width(font, size, &cand) <= width {
++            if line.is_empty() || pg.text_width(font, size, &cand) <= width {
+                 line = cand;
+             } else {
+                 out.push(std::mem::take(&mut line));
+                 line = word.to_string();
+             }
+             // Break a single over-long word by characters.
+-            while gridcraft_pdf::text_width(font, size, &line) > width && line.chars().count() > 1 {
++            while pg.text_width(font, size, &line) > width && line.chars().count() > 1 {
+                 let mut cut = String::new();
+                 let mut rest = String::new();
+                 for ch in line.chars() {
+-                    if rest.is_empty() && gridcraft_pdf::text_width(font, size, &format!("{cut}{ch}")) <= width || cut.is_empty() {
++                    if rest.is_empty() && pg.text_width(font, size, &format!("{cut}{ch}")) <= width || cut.is_empty() {
+                         cut.push(ch);
+                     } else {
+                         rest.push(ch);
+@@ -887,7 +887,7 @@
+     } else if code == "General"
+         && let Value::Number(n) = v
+     {
+-        let digit = gridcraft_pdf::text_width(font, size, "0").max(0.1);
++        let digit = pg.text_width(font, size, "0").max(0.1);
+         let max_chars = (avail / digit).floor().max(1.0) as usize;
+         gridcraft_numfmt::format_general_fit(n, max_chars.min(11)).unwrap_or_else(|| "#".repeat(max_chars.min(255)))
+     } else {
+@@ -899,15 +899,15 @@
+     if text.is_empty() {
+         return;
+     }
+-    let mut tw = gridcraft_pdf::text_width(font, size, &text);
++    let mut tw = pg.text_width(font, size, &text);
+     if st.align.shrink && !wrap && tw > avail && tw > 0.0 {
+         size = (size * avail / tw).max(1.0);
+-        tw = gridcraft_pdf::text_width(font, size, &text);
++        tw = pg.text_width(font, size, &text);
+     }
+     if is_num && !wrap && tw > avail + 0.01 && !sh.show_formulas {
+-        let hash = gridcraft_pdf::text_width(font, size, "#").max(0.1);
++        let hash = pg.text_width(font, size, "#").max(0.1);
+         text = "#".repeat(((avail / hash).floor().max(1.0) as usize).min(255));
+-        tw = gridcraft_pdf::text_width(font, size, &text);
++        tw = pg.text_width(font, size, &text);
+     }
+     let h_align = match st.align.h {
+         HAlign::General => {
+@@ -923,7 +923,7 @@
+         HAlign::Justify | HAlign::Fill => HAlign::Left,
+         other => other,
+     };
+-    let lines: Vec<String> = if wrap { wrap_lines(&text, font, size, avail.max(size)) } else { vec![text] };
++    let lines: Vec<String> = if wrap { wrap_lines(pg, &text, font, size, avail.max(size)) } else { vec![text] };
+     let line_h = size * 1.2;
+     let n = lines.len().max(1) as f32;
+     let first_baseline = match st.align.v {
+@@ -984,7 +984,7 @@
+         let mut yy = y + pad + size * 0.8;
+         for ch in chars {
+             let s = ch.to_string();
+-            let cw = gridcraft_pdf::text_width(font, size, &s);
++            let cw = pg.text_width(font, size, &s);
+             pg.text(x + (w - cw) / 2.0, yy, size, font, color, &s);
+             yy += line_h;
+             if yy > y + h + line_h {
+@@ -995,7 +995,7 @@
+         return;
+     }
+     for (i, line) in lines.iter().enumerate() {
+-        let lw = gridcraft_pdf::text_width(font, size, line);
++        let lw = pg.text_width(font, size, line);
+         let lx = match h_align {
+             HAlign::Right => x + w - pad - lw - indent,
+             HAlign::Center => x + (w - lw) / 2.0,
+@@ -1110,10 +1110,10 @@
+         }
+         if !shp.text.is_empty() {
+             let size = 11.0 * b.scale;
+-            let lines = wrap_lines(&shp.text, Font::Helvetica, size, (w - 4.0 * b.k).max(size));
++            let lines = wrap_lines(pg, &shp.text, Font::Helvetica, size, (w - 4.0 * b.k).max(size));
+             let mut yy = y + 2.0 * b.k + size * 0.8;
+             for l in lines.iter().take(500) {
+-                let lw = gridcraft_pdf::text_width(Font::Helvetica, size, l);
++                let lw = pg.text_width(Font::Helvetica, size, l);
+                 let lx = if shp.kind == ShapeKind::TextBox { x + 2.0 * b.k } else { x + (w - lw) / 2.0 };
+                 pg.text(lx, yy, size, Font::Helvetica, [0, 0, 0], l);
+                 yy += size * 1.2;
+@@ -1127,7 +1127,7 @@
+         }
+         let (x, y, _, _) = place(r);
+         let data = gridcraft_chart::resolve(wb, si, ch);
+-        let prims = gridcraft_chart::render(ch, &data, r.2 as f32, r.3 as f32, &PdfMeasure);
++        let prims = gridcraft_chart::render(ch, &data, r.2 as f32, r.3 as f32, &PdfMeasure(pg));
+         draw_prims(pg, &prims, Xf { ox: x, oy: y, k: b.k });
+     }
+     pg.restore();
+@@ -1148,7 +1148,7 @@
+             pg.fill_rect(x0, y, x1 - x0, size.1, fill);
+             pg.rect_stroke(x0, y, x1 - x0, size.1, lw, line);
+             let t = gridcraft_core::col_to_letters(col);
+-            let tw = gridcraft_pdf::text_width(Font::Helvetica, fsize, &t);
++            let tw = pg.text_width(Font::Helvetica, fsize, &t);
+             pg.text(x0 + (x1 - x0 - tw) / 2.0, y + size.1 / 2.0 + fsize * 0.35, fsize, Font::Helvetica, [0x40, 0x40, 0x40], &t);
+         }
+     }
+@@ -1162,7 +1162,7 @@
+             pg.fill_rect(x, y0, size.0, y1 - y0, fill);
+             pg.rect_stroke(x, y0, size.0, y1 - y0, lw, line);
+             let t = (row + 1).to_string();
+-            let tw = gridcraft_pdf::text_width(Font::Helvetica, fsize, &t);
++            let tw = pg.text_width(Font::Helvetica, fsize, &t);
+             pg.text(x + (size.0 - tw) / 2.0, y0 + (y1 - y0) / 2.0 + fsize * 0.35, fsize, Font::Helvetica, [0x40, 0x40, 0x40], &t);
+         }
+     }
+@@ -1186,7 +1186,7 @@
+             let lines: Vec<&str> = sec.text.split('\n').take(20).collect();
+             let n = lines.len() as f32;
+             for (j, line) in lines.iter().enumerate() {
+-                let lw = gridcraft_pdf::text_width(font, size, line);
++                let lw = pg.text_width(font, size, line);
+                 let x = match i {
+                     0 => l,
+                     1 => (pw - lw) / 2.0,
+@@ -1238,13 +1238,42 @@
+ /// Renders laid-out sheets to a PDF.
+ pub fn render_pdf(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str) -> (Vec<u8>, usize) {
+     let mut doc = PdfDoc::new();
++    draw_document(wb, layouts, file, path, &mut doc, None);
++    let n = doc.page_count();
++    (doc.finish(), n)
++}
++
++/// Renders one selected print page using the same layout and vector drawing traversal.
++/// `print_page` is the original one-based page in the full print order, and `print_pages`
++/// is that full layout's page count. Header/footer offsets (`&P+n`/`&P-n`) are still applied
++/// by the existing expander; selecting a page must not reset its footer to 1/1.
++/// The native reader keeps its existing process cancellation and PNG wire format.
++#[cfg(feature = "raster")]
++pub fn render_raster(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str,
++    width: u32, height: u32, scale: f64, print_page: usize, print_pages: usize) -> std::result::Result<gridcraft_pdf::RasterImage, String> {
++    if layouts.iter().map(|l| l.pages.len()).sum::<usize>() != 1 {
++        return Err("Worksheet raster requires one selected print page".into());
++    }
++    if print_page == 0 || print_page > print_pages || print_pages > MAX_PAGES {
++        return Err("Worksheet print page context is out of range".into());
++    }
++    let mut doc = PdfDoc::new_raster(width, height, scale)?;
++    draw_document(wb, layouts, file, path, &mut doc, Some((print_page, print_pages)));
++    doc.finish_raster()
++}
++
++fn draw_document(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str, doc: &mut PdfDoc,
++    selected_print_context: Option<(usize, usize)>) {
+     doc.info.title = if wb.props.title.is_empty() { file.to_string() } else { wb.props.title.clone() };
+     doc.info.author = wb.props.author.clone();
+-    let total: usize = layouts.iter().map(|l| l.pages.len()).sum();
++    let total = selected_print_context.map(|(_, pages)| pages)
++        .unwrap_or_else(|| layouts.iter().map(|l| l.pages.len()).sum());
+     let now = gridcraft_calc::now_serial();
+     let date = crate::display::format(&Value::Number(now.floor()), "m/d/yyyy", wb).text;
+     let time = crate::display::format(&Value::Number(now), "h:mm AM/PM", wb).text;
+-    let mut page_no = 0usize;
++    // Full PDF export starts at 1 exactly as before. The single-page raster entry
++    // validates this original print context before advancing to its selected page.
++    let mut page_no = selected_print_context.map(|(page, _)| page - 1).unwrap_or(0);
+     for lay in layouts {
+         let Some(sh) = wb.sheet(lay.sheet) else { continue };
+         let mut cf = if sh.cond_formats.is_empty() { None } else { Some(crate::cf::CfCache::new()) };
+@@ -1297,8 +1326,6 @@
+             draw_header_footer(pg, lay, &cx);
+         }
+     }
+-    let n = doc.page_count();
+-    (doc.finish(), n)
+ }
+ 
+ // ---------------------------------------------------------------- commands
+@@ -1756,10 +1783,65 @@
+         let b = bands(0, 2, |r| if r == 1 { 100.0 } else { 10.0 }, |_| 35.0, &[], 100);
+         assert_eq!(b, vec![(0, 0), (1, 1), (2, 2)]);
+         assert_eq!(bands(0, 1_000_000, |_| 10.0, |_| 5.0, &[], 3).len(), 3);
+-        let w = wrap_lines("the quick brown fox jumps", Font::Helvetica, 10.0, 50.0);
++        let mut doc = PdfDoc::new();
++        let pg = doc.add_page(612.0, 792.0);
++        let w = wrap_lines(pg, "the quick brown fox jumps", Font::Helvetica, 10.0, 50.0);
+         assert!(w.len() >= 2);
+-        assert!(w.iter().all(|l| gridcraft_pdf::text_width(Font::Helvetica, 10.0, l) <= 50.0 || !l.contains(' ')));
+-        let w = wrap_lines("Supercalifragilistic", Font::Helvetica, 10.0, 20.0);
++        assert!(w.iter().all(|l| pg.text_width(Font::Helvetica, 10.0, l) <= 50.0 || !l.contains(' ')));
++        let w = wrap_lines(pg, "Supercalifragilistic", Font::Helvetica, 10.0, 20.0);
+         assert!(w.len() > 2);
+     }
+-}
++
++    #[cfg(feature = "raster")]
++    #[test]
++    fn raster_print_consumes_the_selected_page_and_retains_pdf_export() {
++        let mut session = s();
++        let rows: Vec<Vec<Json>> = (1..=300).map(|i| vec![json!(i)]).collect();
++        session.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
++        let doc = session.doc().unwrap();
++        let options = PrintOptions::default();
++        let all = layouts(&doc.wb, &options);
++        let (pdf, page_count) = render_pdf(&doc.wb, &all, "Document", "");
++        assert_eq!(page_count, 7);
++        assert!(pdf.starts_with(b"%PDF-1.7"));
++        assert!(render_raster(&doc.wb, &all, "Document", "", 612, 792, 1.0, 1, page_count).is_err());
++        let mut first = layouts(&doc.wb, &options).remove(0);
++        let mut second = layouts(&doc.wb, &options).remove(0);
++        assert!(second.pages.len() >= 2);
++        first.pages.truncate(1);
++        second.pages = vec![second.pages[1]];
++        let a = render_raster(&doc.wb, &[first], "Document", "", 612, 792, 1.0, 1, page_count).unwrap();
++        let b = render_raster(&doc.wb, &[second], "Document", "", 612, 792, 1.0, 2, page_count).unwrap();
++        assert_eq!((a.width, a.height, b.width, b.height), (612, 792, 612, 792));
++        assert_eq!(&a.pixels[..4], &[255, 255, 255, 255], "unprinted paper margin");
++        assert_ne!(a.pixels, b.pixels, "different selected row bands must not replay the first page");
++    }
++
++    #[cfg(feature = "raster")]
++    #[test]
++    fn raster_selected_page_keeps_original_footer_count_and_number_offsets() {
++        let mut session = s();
++        let rows: Vec<Vec<Json>> = (1..=300).map(|i| vec![json!(i)]).collect();
++        session.execute("range.setValues", json!({"range": "A1", "values": rows})).unwrap();
++        session.execute("pageLayout.pageSetup", json!({
++            "footer": "&CPage &P of &N | next &P+1 | previous &P-1"
++        })).unwrap();
++        let doc = session.doc().unwrap();
++        let all = layouts(&doc.wb, &PrintOptions::default());
++        let (pdf, pages) = render_pdf(&doc.wb, &all, "Document", "");
++        assert_eq!(pages, 7);
++        assert!(contains(&pdf, "(Page 1 of 7 | next 2 | previous 0) Tj"));
++        assert!(contains(&pdf, "(Page 2 of 7 | next 3 | previous 1) Tj"));
++        let mut selected = all[0].clone();
++        selected.pages = vec![selected.pages[1]];
++        let actual = render_raster(&doc.wb, &[selected.clone()], "Document", "", 612, 792, 1.0, 2, pages).unwrap();
++        let reset = render_raster(&doc.wb, &[selected.clone()], "Document", "", 612, 792, 1.0, 1, 1).unwrap();
++        let mut literal = selected.clone();
++        literal.settings.footer = "&CPage 2 of 7 | next 3 | previous 1".into();
++        let expected = render_raster(&doc.wb, &[literal], "Document", "", 612, 792, 1.0, 1, 1).unwrap();
++        assert_eq!(actual.pixels, expected.pixels, "selected page must render the original footer, including offsets exactly once");
++        assert_ne!(actual.pixels, reset.pixels, "the old 1/1 footer must be visibly different, not silently omitted");
++        assert!(render_raster(&doc.wb, &[selected.clone()], "Document", "", 612, 792, 1.0, 0, pages).is_err());
++        assert!(render_raster(&doc.wb, &[selected], "Document", "", 612, 792, 1.0, pages + 1, pages).is_err());
++    }
++}
+--- a/gridcraft/crates/pdf/Cargo.toml
++++ b/gridcraft/crates/pdf/Cargo.toml
+@@ -8,4 +8,12 @@
+ [lints]
+ workspace = true
+ 
++[features]
++default = []
++raster = ["dep:vello_cpu", "dep:wordcraft-fonts", "dep:unicode-bidi", "dep:unicode-segmentation"]
++
+ [dependencies]
++vello_cpu = { version = "0.2", default-features = false, features = ["std", "u8_pipeline", "png", "text"], optional = true }
++wordcraft-fonts = { path = "../../../wordcraft/crates/fonts", optional = true }
++unicode-bidi = { version = "0.3", optional = true }
++unicode-segmentation = { version = "1", optional = true }
+--- a/gridcraft/crates/pdf/src/lib.rs
++++ b/gridcraft/crates/pdf/src/lib.rs
+@@ -12,6 +12,10 @@
+ #![forbid(unsafe_code)]
+ 
+ mod metrics;
++#[cfg(feature = "raster")]
++mod raster;
++#[cfg(feature = "raster")]
++pub use raster::RasterImage;
+ 
+ use std::fmt::Write as _;
+ 
+@@ -241,6 +245,8 @@
+     fonts: [bool; 12],
+     images: Vec<ImageData>,
+     depth: u32,
++    #[cfg(feature = "raster")]
++    raster: Option<raster::RasterPage>,
+ }
+ 
+ /// Most bytes of content per page before further drawing is dropped (keeps hostile inputs from
+@@ -250,6 +256,14 @@
+ const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+ 
+ impl Page {
++    /// Width using this page's drawing backend. Default PDF retains its WinAnsi metrics;
++    /// raster pages measure exactly the same Unicode/fallback shaping used for drawing.
++    pub fn text_width(&self, font: Font, size: f32, text: &str) -> f32 {
++        #[cfg(feature = "raster")]
++        if self.raster.is_some() { return raster::RasterPage::measure(font, size, text); }
++        text_width(font, size, text)
++    }
++
+     pub fn width(&self) -> f32 {
+         self.width
+     }
+@@ -271,11 +285,15 @@
+ 
+     /// Saves the graphics state (pair with [`Page::restore`]).
+     pub fn save(&mut self) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.save(); return; }
+         self.depth = self.depth.saturating_add(1);
+         self.content.push_str("q\n");
+     }
+     /// Restores the graphics state saved by [`Page::save`]; extra calls are ignored.
+     pub fn restore(&mut self) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.restore(); return; }
+         if self.depth > 0 {
+             self.depth -= 1;
+             self.content.push_str("Q\n");
+@@ -283,11 +301,15 @@
+     }
+     /// Intersects the clip with a rectangle (until the next [`Page::restore`]).
+     pub fn clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.clip_rect(x, y, w, h); return; }
+         let s = format!("{} {} {} {} re W n", n(x), n(self.y(y + h)), n(w.max(0.0)), n(h.max(0.0)));
+         self.op(&s);
+     }
+ 
+     pub fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Rgb) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.fill_rect(x, y, w, h, color); return; }
+         if w <= 0.0 || h <= 0.0 {
+             return;
+         }
+@@ -296,6 +318,8 @@
+     }
+ 
+     pub fn rect_stroke(&mut self, x: f32, y: f32, w: f32, h: f32, width: f32, color: Rgb) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.rect_stroke(x, y, w, h, width, color); return; }
+         let s = format!("{}\n{} w [] 0 d\n{} {} {} {} re S", rgb_op(color, true), n(width), n(x), n(self.y(y + h)), n(w), n(h));
+         self.op(&s);
+     }
+@@ -306,6 +330,8 @@
+ 
+     /// A line with a dash pattern (`[on, off, …]` in points; empty = solid).
+     pub fn stroke_line_dashed(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, color: Rgb, dash: &[f32]) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.stroke_line_dashed(x0, y0, x1, y1, width, color, dash); return; }
+         let d: Vec<String> = dash.iter().take(8).map(|v| n(v.max(0.0))).collect();
+         let s =
+             format!("{}\n{} w [{}] 0 d\n{} {} m {} {} l S", rgb_op(color, true), n(width), d.join(" "), n(x0), n(self.y(y0)), n(x1), n(self.y(y1)));
+@@ -314,6 +340,8 @@
+ 
+     /// An open polyline.
+     pub fn polyline(&mut self, pts: &[[f32; 2]], width: f32, color: Rgb, dash: &[f32]) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.polyline(pts, width, color, dash); return; }
+         if pts.len() < 2 {
+             return;
+         }
+@@ -335,6 +363,8 @@
+ 
+     /// A closed polygon, filled and/or stroked.
+     pub fn polygon(&mut self, pts: &[[f32; 2]], fill: Option<Rgb>, stroke: Option<(Rgb, f32)>) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.polygon(pts, fill, stroke); return; }
+         if pts.len() < 2 || (fill.is_none() && stroke.is_none()) {
+             return;
+         }
+@@ -357,6 +387,8 @@
+ 
+     /// A circle approximated by four cubic Béziers.
+     pub fn circle(&mut self, cx: f32, cy: f32, r: f32, fill: Option<Rgb>, stroke: Option<(Rgb, f32)>) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.circle(cx, cy, r, fill, stroke); return; }
+         if r <= 0.0 || (fill.is_none() && stroke.is_none()) {
+             return;
+         }
+@@ -417,6 +449,8 @@
+     /// Text rotated by `angle` radians (clockwise on the page, like the y-down coordinate
+     /// system) about its baseline origin.
+     pub fn text_rotated(&mut self, x: f32, y: f32, size: f32, font: Font, color: Rgb, text: &str, angle: f32) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.text_rotated(x, y, size, font, color, text, angle); return; }
+         if text.is_empty() || !(size.is_finite() && size > 0.0) {
+             return;
+         }
+@@ -445,6 +479,8 @@
+     /// Draws an RGBA image (`pw`×`ph` pixels, row-major, straight alpha) into the box
+     /// `(x, y, w, h)`. Malformed or oversized buffers are ignored.
+     pub fn image_rgba(&mut self, x: f32, y: f32, w: f32, h: f32, rgba: &[u8], pw: u32, ph: u32) {
++        #[cfg(feature = "raster")]
++        if let Some(raster) = self.raster.as_mut() { raster.image_rgba(x, y, w, h, rgba, pw, ph); return; }
+         let px = pw as u64 * ph as u64;
+         if pw == 0 || ph == 0 || px > MAX_IMAGE_PIXELS || (rgba.len() as u64) < px * 4 || w <= 0.0 || h <= 0.0 {
+             return;
+@@ -477,6 +513,8 @@
+ pub struct PdfDoc {
+     pages: Vec<Page>,
+     pub info: Info,
++    #[cfg(feature = "raster")]
++    next_raster: Option<raster::RasterPage>,
+ }
+ 
+ /// PackBits-style run-length encoding (PDF `RunLengthDecode`).
+@@ -525,11 +563,33 @@
+         PdfDoc::default()
+     }
+ 
++    /// Opt-in one-page raster target. PDF export through `new`/`finish` is unchanged.
++    #[cfg(feature = "raster")]
++    pub fn new_raster(width: u32, height: u32, scale: f64) -> Result<Self, String> {
++        let mut doc = Self::new();
++        doc.next_raster = Some(raster::RasterPage::new(width, height, scale)?);
++        Ok(doc)
++    }
++
++    /// Finish exactly one raster page; budget errors are returned, never a partial image.
++    #[cfg(feature = "raster")]
++    pub fn finish_raster(mut self) -> Result<RasterImage, String> {
++        if self.pages.len() != 1 || self.next_raster.is_some() {
++            return Err("Worksheet raster requires one rendered print page".into());
++        }
++        let mut page = self.pages.pop().ok_or("Worksheet raster page unavailable")?;
++        page.raster.take().ok_or("Worksheet raster target unavailable")?.finish()
++    }
++
+     /// Adds a page of `width_pt` × `height_pt` points and returns it for drawing.
+     pub fn add_page(&mut self, width_pt: f32, height_pt: f32) -> &mut Page {
+         let width = if width_pt.is_finite() { width_pt.clamp(3.0, 14_400.0) } else { 612.0 };
+         let height = if height_pt.is_finite() { height_pt.clamp(3.0, 14_400.0) } else { 792.0 };
+-        self.pages.push(Page { width, height, content: String::new(), fonts: [false; 12], images: Vec::new(), depth: 0 });
++        self.pages.push(Page {
++            width, height, content: String::new(), fonts: [false; 12], images: Vec::new(), depth: 0,
++            #[cfg(feature = "raster")]
++            raster: self.next_raster.take(),
++        });
+         let i = self.pages.len() - 1;
+         &mut self.pages[i]
+     }
+--- /dev/null
++++ b/gridcraft/crates/pdf/src/raster.rs
+@@ -0,0 +1,239 @@
++//! Optional bounded print raster target. Layout remains in GridCraft's print traversal;
++//! text uses the same pinned shaper/font database and colour-glyph renderer as WordCraft.
++use std::{collections::HashMap, sync::Arc};
++use unicode_bidi::BidiInfo;
++use unicode_segmentation::UnicodeSegmentation;
++use vello_cpu::{RenderContext, Resources, Pixmap, kurbo::{Affine, BezPath, Rect, Shape, Stroke, Join, Cap}, peniko};
++use wordcraft_fonts::{FaceRef, FontDb};
++use super::{Font, Rgb, MAX_PAGE_CONTENT, MAX_IMAGE_PIXELS};
++
++/// Premultiplied RGBA, top-left origin. Caller performs its existing PNG encoding.
++pub struct RasterImage {
++    pub width: u32,
++    pub height: u32,
++    pub pixels: Vec<u8>,
++}
++
++// Bound a single shaping allocation independently of the aggregate drawing budget.
++const MAX_TEXT_BYTES: usize = 256 * 1024;
++fn scalar(v: f32) -> f64 { if v.is_finite() { v.clamp(-1e7, 1e7) as f64 } else { 0.0 } }
++fn color(c: Rgb) -> peniko::Color { peniko::Color::from_rgba8(c[0], c[1], c[2], 255) }
++fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
++    Rect::new(scalar(x), scalar(y), scalar(x) + scalar(w), scalar(y) + scalar(h))
++}
++fn resolve(font: Font) -> wordcraft_fonts::word::Resolved {
++    let i = font.index();
++    let family = match i / 4 { 1 => "Times New Roman", 2 => "Courier New", _ => "Arial" };
++    wordcraft_fonts::word::resolve(family, i % 4 == 1 || i % 4 == 3, i % 4 >= 2)
++}
++fn coverage_optional(c: char) -> bool {
++    c.is_whitespace() || c.is_control() || matches!(c, '\u{200c}' | '\u{200d}' | '\u{fe0e}' | '\u{fe0f}' | '\u{ad}')
++}
++struct Run {
++    face: FaceRef,
++    glyphs: Vec<vello_cpu::Glyph>,
++    bold: bool,
++    italic: bool,
++}
++struct Text {
++    runs: Vec<Run>,
++    width: f32,
++}
++
++// Font spans preserve grapheme clusters (including emoji selectors/ZWJ). Bidi supplies
++// visual span order; the pinned shaper supplies ligatures and mark positions. Its public
++// API returns clusters in logical order, so RTL clusters are reordered as a unit here.
++fn shape(font: Font, size: f32, text: &str) -> Option<Text> {
++    if text.len() > MAX_TEXT_BYTES { return None; }
++    let size = if size.is_finite() { size.clamp(0.0, 10_000.0) } else { 0.0 };
++    let primary = resolve(font);
++    let db = FontDb::global();
++    let bidi = BidiInfo::new(text, None);
++    let mut runs = Vec::new();
++    let mut x = 0.0f32;
++    for paragraph in &bidi.paragraphs {
++        let (levels, visual) = bidi.visual_runs(paragraph, paragraph.range.clone());
++        for range in visual {
++            let rtl = levels.get(range.start).is_some_and(|l| l.is_rtl());
++            let Some(sub) = text.get(range) else { continue };
++            let mut spans: Vec<(usize, usize, FaceRef)> = Vec::new();
++            for (start, grapheme) in sub.grapheme_indices(true) {
++                let face = grapheme.chars().find(|c| !coverage_optional(*c) && !primary.face.covers(*c))
++                    .and_then(|c| db.fallback_for(c, primary.face.id()))
++                    .map(|f| FaceRef::of(&f)).unwrap_or(primary.face);
++                let end = start + grapheme.len();
++                if let Some(last) = spans.last_mut().filter(|s| s.2.id() == face.id()) { last.1 = end; }
++                else { spans.push((start, end, face)); }
++            }
++            if rtl { spans.reverse(); }
++            for (start, end, face) in spans {
++                let Some(span) = sub.get(start..end) else { continue };
++                let mut shaped = wordcraft_fonts::shape(&face, span, &[], |c| c);
++                if rtl { shaped.sort_by(|a, b| b.cluster.cmp(&a.cluster)); }
++                let k = size / face.upem.max(1.0) as f32;
++                let mut glyphs = Vec::with_capacity(shaped.len());
++                for g in shaped {
++                    glyphs.push(vello_cpu::Glyph { id: g.gid, x: x + g.x_offset as f32 * k, y: -g.y_offset as f32 * k });
++                    x += g.x_advance as f32 * k;
++                }
++                let is_primary = face.id() == primary.face.id();
++                runs.push(Run { face, glyphs, bold: is_primary && primary.synth_bold, italic: is_primary && primary.synth_italic });
++            }
++        }
++    }
++    Some(Text { runs, width: x })
++}
++
++pub(super) struct RasterPage {
++    ctx: RenderContext,
++    resources: Resources,
++    fonts: HashMap<u32, peniko::FontData>,
++    view: Affine,
++    width: u32,
++    height: u32,
++    clips: usize,
++    saved: Vec<usize>,
++    used: usize,
++    error: Option<&'static str>,
++}
++impl RasterPage {
++    pub(super) fn new(width: u32, height: u32, scale: f64) -> Result<Self, String> {
++        if width == 0 || height == 0 || width > 1400 || height > 1400 || u64::from(width) * u64::from(height) > 2_000_000
++            || !scale.is_finite() || scale <= 0.0 || scale > 2.0 {
++            return Err("Worksheet raster dimensions exceed the visual reader limit".into());
++        }
++        let mut ctx = RenderContext::new_with(width as u16, height as u16,
++            vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
++        ctx.set_paint(color([255, 255, 255]));
++        ctx.fill_rect(&Rect::new(0.0, 0.0, width as f64, height as f64));
++        Ok(Self { ctx, resources: Resources::new(), fonts: HashMap::new(), view: Affine::scale(scale),
++            width, height, clips: 0, saved: Vec::new(), used: 0, error: None })
++    }
++    fn reserve(&mut self, bytes: usize) -> bool {
++        if self.error.is_some() { return false; }
++        match self.used.checked_add(bytes).filter(|n| *n <= MAX_PAGE_CONTENT) {
++            Some(n) => { self.used = n; true }
++            None => { self.error = Some("Worksheet raster drawing budget exceeded"); false }
++        }
++    }
++    pub(super) fn measure(font: Font, size: f32, text: &str) -> f32 {
++        shape(font, size, text).map(|t| t.width).unwrap_or(f32::INFINITY)
++    }
++    pub(super) fn save(&mut self) {
++        if !self.reserve(64) { return; }
++        if self.saved.len() >= 4096 { self.error = Some("Worksheet raster graphics-state limit"); return; }
++        self.saved.push(self.clips);
++    }
++    pub(super) fn restore(&mut self) {
++        if let Some(n) = self.saved.pop() { while self.clips > n { self.ctx.pop_layer(); self.clips -= 1; } }
++    }
++    pub(super) fn clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
++        if !self.reserve(256) { return; }
++        if self.clips >= 4096 { self.error = Some("Worksheet raster clipping limit"); return; }
++        self.ctx.set_transform(self.view);
++        self.ctx.push_clip_layer(&rect(x, y, w.max(0.0), h.max(0.0)).to_path(0.1));
++        self.clips += 1;
++    }
++    pub(super) fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Rgb) {
++        if w <= 0.0 || h <= 0.0 || !self.reserve(256) { return; }
++        self.ctx.set_transform(self.view); self.ctx.set_paint(color(c));
++        self.ctx.fill_rect(&rect(x, y, w, h));
++    }
++    fn stroke(&mut self, path: &BezPath, c: Rgb, width: f32, dash: &[f32], round: bool) {
++        let mut s = Stroke::new(scalar(width).max(0.0)).with_caps(Cap::Butt)
++            .with_join(if round { Join::Round } else { Join::Miter }).with_miter_limit(10.0);
++        let d: Vec<f64> = dash.iter().take(8).map(|v| scalar(*v).max(0.0)).collect();
++        if d.iter().any(|v| *v > 0.0) { s = s.with_dashes(0.0, d); }
++        self.ctx.set_transform(self.view); self.ctx.set_paint(color(c)); self.ctx.set_stroke(s); self.ctx.stroke_path(path);
++    }
++    pub(super) fn rect_stroke(&mut self, x: f32, y: f32, w: f32, h: f32, width: f32, c: Rgb) {
++        if !self.reserve(256) { return; }
++        self.stroke(&rect(x, y, w, h).to_path(0.1), c, width, &[], false);
++    }
++    pub(super) fn stroke_line_dashed(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, c: Rgb, dash: &[f32]) {
++        if !self.reserve(256) { return; }
++        let mut path = BezPath::new(); path.move_to((scalar(x0), scalar(y0))); path.line_to((scalar(x1), scalar(y1)));
++        self.stroke(&path, c, width, dash, false);
++    }
++    fn points(pts: &[[f32; 2]], close: bool) -> BezPath {
++        let mut path = BezPath::new();
++        for (i, p) in pts.iter().enumerate() {
++            let xy = (scalar(p[0]), scalar(p[1]));
++            if i == 0 { path.move_to(xy); } else { path.line_to(xy); }
++        }
++        if close { path.close_path(); } path
++    }
++    pub(super) fn polyline(&mut self, pts: &[[f32; 2]], width: f32, c: Rgb, dash: &[f32]) {
++        if pts.len() < 2 || !self.reserve(pts.len().saturating_mul(128)) { return; }
++        self.stroke(&Self::points(pts, false), c, width, dash, true);
++    }
++    fn fill_stroke(&mut self, path: &BezPath, fill: Option<Rgb>, stroke: Option<(Rgb, f32)>, round: bool) {
++        if let Some(c) = fill { self.ctx.set_transform(self.view); self.ctx.set_paint(color(c)); self.ctx.fill_path(path); }
++        if let Some((c, width)) = stroke { self.stroke(path, c, width, &[], round); }
++    }
++    pub(super) fn polygon(&mut self, pts: &[[f32; 2]], fill: Option<Rgb>, stroke: Option<(Rgb, f32)>) {
++        if pts.len() < 2 || !self.reserve(pts.len().saturating_mul(128)) { return; }
++        self.fill_stroke(&Self::points(pts, true), fill, stroke, true);
++    }
++    pub(super) fn circle(&mut self, cx: f32, cy: f32, r: f32, fill: Option<Rgb>, stroke: Option<(Rgb, f32)>) {
++        if r <= 0.0 || !self.reserve(1024) { return; }
++        let circle = vello_cpu::kurbo::Circle::new((scalar(cx), scalar(cy)), scalar(r).max(0.0));
++        self.fill_stroke(&circle.to_path(0.1), fill, stroke, false);
++    }
++    pub(super) fn text_rotated(&mut self, x: f32, y: f32, size: f32, font: Font, c: Rgb, text: &str, angle: f32) {
++        if text.is_empty() || !size.is_finite() || size <= 0.0 || !self.reserve(text.len().saturating_mul(256)) { return; }
++        let Some(shaped) = shape(font, size, text) else { self.error = Some("Worksheet text shaping limit"); return; };
++        let size = size.min(10_000.0);
++        let angle = if angle.is_finite() { angle as f64 } else { 0.0 };
++        let base = self.view * Affine::translate((scalar(x), scalar(y))) * Affine::rotate(angle);
++        for run in shaped.runs {
++            if !self.reserve(run.glyphs.len().saturating_mul(256)) { return; }
++            let face = run.face;
++            let font = self.fonts.entry(face.id()).or_insert_with(||
++                peniko::FontData::new(peniko::Blob::new(face.shared_data()), face.index()));
++            let coords: Vec<i16> = face.location().coords().iter().map(|c| c.to_bits()).collect();
++            let skew = if run.italic { Affine::new([1.0, 0.0, -0.21, 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
++            self.ctx.set_transform(base); self.ctx.set_paint(color(c));
++            self.ctx.glyph_run(&mut self.resources, font).font_size(size).hint(false)
++                .normalized_coords(&coords).glyph_transform(skew).atlas_cache(false).fill_glyphs(run.glyphs.iter().map(|g| vello_cpu::Glyph { id: g.id, x: g.x, y: g.y }));
++            if run.bold {
++                // Same synthetic emboldening as the shared WordCraft renderer. Colour and
++                // bitmap glyphs were already drawn by glyph_run; only outlines are stroked.
++                for glyph in &run.glyphs {
++                    let outline = FontDb::global().outline(&face, glyph.id);
++                    if outline.elements().is_empty() { continue; }
++                    self.ctx.set_transform(base * Affine::translate((glyph.x as f64, glyph.y as f64))
++                        * skew * Affine::scale(size as f64 / face.upem.max(1.0)));
++                    self.ctx.set_stroke(Stroke::new(face.upem * 0.03)); self.ctx.stroke_path(&outline);
++                }
++            }
++        }
++    }
++    pub(super) fn image_rgba(&mut self, x: f32, y: f32, w: f32, h: f32, rgba: &[u8], pw: u32, ph: u32) {
++        let px = u64::from(pw) * u64::from(ph);
++        if pw == 0 || ph == 0 || pw > u16::MAX as u32 || ph > u16::MAX as u32 || px > MAX_IMAGE_PIXELS
++            || (rgba.len() as u64) < px * 4 || w <= 0.0 || h <= 0.0 { return; }
++        if !self.reserve((px as usize).saturating_mul(4).saturating_add(256)) { return; }
++        let data = rgba.chunks_exact(4).take(px as usize).map(|p| {
++            let a = p[3] as u16; let m = |c: u8| ((c as u16 * a + 127) / 255) as u8;
++            vello_cpu::color::PremulRgba8 { r: m(p[0]), g: m(p[1]), b: m(p[2]), a: p[3] }
++        }).collect();
++        let pm = Arc::new(Pixmap::from_parts(data, pw as u16, ph as u16));
++        self.ctx.set_transform(self.view);
++        self.ctx.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(pm),
++            sampler: peniko::ImageSampler::default().with_quality(peniko::ImageQuality::Medium) });
++        self.ctx.set_paint_transform(Affine::translate((scalar(x), scalar(y)))
++            * Affine::scale_non_uniform(scalar(w) / pw as f64, scalar(h) / ph as f64));
++        self.ctx.fill_rect(&rect(x, y, w, h)); self.ctx.reset_paint_transform();
++    }
++    pub(super) fn finish(mut self) -> Result<RasterImage, String> {
++        if let Some(error) = self.error { return Err(error.into()); }
++        while self.clips > 0 { self.ctx.pop_layer(); self.clips -= 1; }
++        self.ctx.flush();
++        let mut pixels = vec![0u8; self.width as usize * self.height as usize * 4];
++        let pm = vello_cpu::PixmapMut::new(self.width as u16, self.height as u16, &mut pixels)
++            .ok_or("Worksheet raster buffer unavailable")?;
++        self.ctx.render(pm, &mut self.resources);
++        Ok(RasterImage { width: self.width, height: self.height, pixels })
++    }
++}
+--- a/gridcraft/crates/pdf/src/tests.rs
++++ b/gridcraft/crates/pdf/src/tests.rs
+@@ -157,3 +157,68 @@
+     let pdf = d.finish();
+     check_xref(&pdf);
+ }
++
++
++#[cfg(feature = "raster")]
++#[test]
++fn raster_unicode_glyph_and_measurement_do_not_use_winansi_question_mark() -> Result<(), String> {
++    let face = wordcraft_fonts::word::resolve("Times New Roman", false, false).face;
++    assert!(face.covers('Ω'), "pinned serif face must carry the Greek fixture glyph");
++    let glyphs = wordcraft_fonts::shape(&face, "Ω", &[], |c| c);
++    assert!(!glyphs.is_empty() && glyphs.iter().all(|g| g.gid != 0));
++    assert_ne!(face.glyph_for('Ω'), face.glyph_for('?'));
++    let expected_width: f32 = glyphs.iter().map(|g| g.x_advance as f32).sum::<f32>() * 32.0 / face.upem as f32;
++    let render = |text: &str| -> Result<RasterImage, String> {
++        let mut doc = PdfDoc::new_raster(128, 64, 1.0)?;
++        let pg = doc.add_page(128.0, 64.0);
++        if text == "Ω" { assert!((pg.text_width(Font::TimesRoman, 32.0, text) - expected_width).abs() < 0.001); }
++        pg.text(8.0, 42.0, 32.0, Font::TimesRoman, [0, 0, 0], text);
++        doc.finish_raster()
++    };
++    let greek = render("Ω")?;
++    let question = render("?")?;
++    assert_eq!((greek.width, greek.height), (128, 64));
++    assert_ne!(greek.pixels, question.pixels, "Unicode must not take the former CP1252 '?' route");
++    let dark: Vec<(usize, usize)> = greek.pixels.chunks_exact(4).enumerate()
++        .filter(|(_, p)| p[0] < 128 && p[1] < 128 && p[2] < 128)
++        .map(|(i, _)| (i % 128, i / 128)).collect();
++    assert!(dark.len() > 16, "known glyph must render, not just differ from a question mark");
++    assert!(dark.iter().all(|(x, y)| *x >= 7 && *x < 48 && *y >= 8 && *y < 44), "glyph stays in its baseline geometry");
++    Ok(())
++}
++
++#[cfg(feature = "raster")]
++#[test]
++fn raster_clip_restore_and_straight_alpha_keep_page_geometry() -> Result<(), String> {
++    let mut doc = PdfDoc::new_raster(64, 64, 1.0)?;
++    let pg = doc.add_page(64.0, 64.0);
++    pg.fill_rect(0.0, 0.0, 64.0, 64.0, [255, 0, 0]);
++    pg.save(); pg.clip_rect(8.0, 8.0, 16.0, 16.0);
++    pg.fill_rect(0.0, 0.0, 64.0, 64.0, [0, 0, 255]); pg.restore();
++    pg.fill_rect(32.0, 8.0, 16.0, 16.0, [0, 255, 0]);
++    pg.image_rgba(8.0, 32.0, 16.0, 8.0, &[0, 0, 255, 128], 1, 1);
++    let image = doc.finish_raster()?;
++    let pixel = |x: usize, y: usize| &image.pixels[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4];
++    assert_eq!(pixel(2, 2), &[255, 0, 0, 255]);
++    assert_eq!(pixel(12, 12), &[0, 0, 255, 255]);
++    assert_eq!(pixel(36, 12), &[0, 255, 0, 255]);
++    let alpha = pixel(12, 36);
++    assert!((126..=128).contains(&alpha[0]) && alpha[1] == 0 && (127..=129).contains(&alpha[2]) && alpha[3] == 255);
++    Ok(())
++}
++
++#[cfg(feature = "raster")]
++#[test]
++fn raster_rejects_oversized_output_and_drawing_instead_of_partial_success() -> Result<(), String> {
++    assert!(PdfDoc::new_raster(1401, 64, 1.0).is_err());
++    assert!(PdfDoc::new_raster(64, 64, f64::NAN).is_err());
++    let mut doc = PdfDoc::new_raster(64, 64, 1.0)?;
++    let pg = doc.add_page(64.0, 64.0);
++    let pts = vec![[1.0, 1.0]; MAX_PAGE_CONTENT / 128 + 1];
++    pg.polygon(&pts, Some([0, 0, 0]), None);
++    assert_eq!(doc.finish_raster().err().as_deref(), Some("Worksheet raster drawing budget exceeded"));
++    let mut multi = PdfDoc::new_raster(64, 64, 1.0)?;
++    multi.add_page(64.0, 64.0); multi.add_page(64.0, 64.0);
++    assert_eq!(multi.finish_raster().err().as_deref(), Some("Worksheet raster requires one rendered print page"));
++    Ok(())
++}

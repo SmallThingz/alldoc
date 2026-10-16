@@ -1,0 +1,365 @@
+{
+  "version": 1,
+  "examples": [
+    {
+      "id": "office-pdf",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.pdf",
+      "mime": "application/pdf",
+      "extension": "pdf",
+      "category": "Documents",
+      "description": "Three pages to scroll or present."
+    },
+    {
+      "id": "office-odt",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.odt",
+      "mime": "application/vnd.oasis.opendocument.text",
+      "extension": "odt",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-ott",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.ott",
+      "mime": "application/vnd.oasis.opendocument.text-template",
+      "extension": "ott",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-odm",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.odm",
+      "mime": "application/vnd.oasis.opendocument.text-master",
+      "extension": "odm",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-oth",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.oth",
+      "mime": "application/vnd.oasis.opendocument.text-web",
+      "extension": "oth",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-ods",
+      "title": "Reading plan",
+      "asset": "examples/office/office-guide.ods",
+      "mime": "application/vnd.oasis.opendocument.spreadsheet",
+      "extension": "ods",
+      "category": "Spreadsheets",
+      "description": ""
+    },
+    {
+      "id": "office-ots",
+      "title": "Reading plan",
+      "asset": "examples/office/office-guide.ots",
+      "mime": "application/vnd.oasis.opendocument.spreadsheet-template",
+      "extension": "ots",
+      "category": "Spreadsheets",
+      "description": ""
+    },
+    {
+      "id": "office-odp",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.odp",
+      "mime": "application/vnd.oasis.opendocument.presentation",
+      "extension": "odp",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-otp",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.otp",
+      "mime": "application/vnd.oasis.opendocument.presentation-template",
+      "extension": "otp",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-odg",
+      "title": "Reading cards",
+      "asset": "examples/office/office-guide.odg",
+      "mime": "application/vnd.oasis.opendocument.graphics",
+      "extension": "odg",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-otg",
+      "title": "Reading cards",
+      "asset": "examples/office/office-guide.otg",
+      "mime": "application/vnd.oasis.opendocument.graphics-template",
+      "extension": "otg",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-fodt",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.fodt",
+      "mime": "application/vnd.oasis.opendocument.text-flat-xml",
+      "extension": "fodt",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-fods",
+      "title": "Reading plan",
+      "asset": "examples/office/office-guide.fods",
+      "mime": "application/vnd.oasis.opendocument.spreadsheet-flat-xml",
+      "extension": "fods",
+      "category": "Spreadsheets",
+      "description": ""
+    },
+    {
+      "id": "office-fodp",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.fodp",
+      "mime": "application/vnd.oasis.opendocument.presentation-flat-xml",
+      "extension": "fodp",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-fodg",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.fodg",
+      "mime": "application/vnd.oasis.opendocument.graphics-flat-xml",
+      "extension": "fodg",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-docx",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.docx",
+      "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "extension": "docx",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-docm",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.docm",
+      "mime": "application/vnd.ms-word.document.macroEnabled.12",
+      "extension": "docm",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-dotx",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.dotx",
+      "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+      "extension": "dotx",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-dotm",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.dotm",
+      "mime": "application/vnd.ms-word.template.macroEnabled.12",
+      "extension": "dotm",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-xlsx",
+      "title": "Reading plan",
+      "asset": "examples/office/office-guide.xlsx",
+      "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "extension": "xlsx",
+      "category": "Spreadsheets",
+      "description": ""
+    },
+    {
+      "id": "office-xlsm",
+      "title": "Reading plan",
+      "asset": "examples/office/office-guide.xlsm",
+      "mime": "application/vnd.ms-excel.sheet.macroEnabled.12",
+      "extension": "xlsm",
+      "category": "Spreadsheets",
+      "description": ""
+    },
+    {
+      "id": "office-xltx",
+      "title": "Reading plan",
+      "asset": "examples/office/office-guide.xltx",
+      "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+      "extension": "xltx",
+      "category": "Spreadsheets",
+      "description": ""
+    },
+    {
+      "id": "office-xltm",
+      "title": "Reading plan",
+      "asset": "examples/office/office-guide.xltm",
+      "mime": "application/vnd.ms-excel.template.macroEnabled.12",
+      "extension": "xltm",
+      "category": "Spreadsheets",
+      "description": ""
+    },
+    {
+      "id": "office-pptx",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.pptx",
+      "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "extension": "pptx",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-ppsx",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.ppsx",
+      "mime": "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+      "extension": "ppsx",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-potx",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.potx",
+      "mime": "application/vnd.openxmlformats-officedocument.presentationml.template",
+      "extension": "potx",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-pptm",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.pptm",
+      "mime": "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+      "extension": "pptm",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-ppsm",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.ppsm",
+      "mime": "application/vnd.ms-powerpoint.slideshow.macroEnabled.12",
+      "extension": "ppsm",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-potm",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.potm",
+      "mime": "application/vnd.ms-powerpoint.template.macroEnabled.12",
+      "extension": "potm",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-doc",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.doc",
+      "mime": "application/msword",
+      "extension": "doc",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-dot",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.dot",
+      "mime": "application/msword",
+      "extension": "dot",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-xls",
+      "title": "Reading plan",
+      "asset": "examples/office/office-guide.xls",
+      "mime": "application/vnd.ms-excel",
+      "extension": "xls",
+      "category": "Spreadsheets",
+      "description": ""
+    },
+    {
+      "id": "office-ppt",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.ppt",
+      "mime": "application/vnd.ms-powerpoint",
+      "extension": "ppt",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-pps",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.pps",
+      "mime": "application/vnd.ms-powerpoint",
+      "extension": "pps",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-pot",
+      "title": "Reading slides",
+      "asset": "examples/office/office-guide.pot",
+      "mime": "application/vnd.ms-powerpoint",
+      "extension": "pot",
+      "category": "Presentations",
+      "description": ""
+    },
+    {
+      "id": "office-rtf",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.rtf",
+      "mime": "application/rtf",
+      "extension": "rtf",
+      "category": "Documents",
+      "description": ""
+    },
+    {
+      "id": "office-epub",
+      "title": "Field guide",
+      "asset": "examples/office/office-guide.epub",
+      "mime": "application/epub+zip",
+      "extension": "epub",
+      "category": "Books",
+      "description": ""
+    },
+    {
+      "id": "office-pages",
+      "title": "Pages saved preview",
+      "asset": "examples/office/office-guide.pages",
+      "mime": "application/vnd.apple.pages",
+      "extension": "pages",
+      "category": "Documents",
+      "description": "Saved PDF preview only; no editable iWork source."
+    },
+    {
+      "id": "office-numbers",
+      "title": "Numbers saved preview",
+      "asset": "examples/office/office-guide.numbers",
+      "mime": "application/vnd.apple.numbers",
+      "extension": "numbers",
+      "category": "Spreadsheets",
+      "description": "Saved PDF preview only; no editable iWork source."
+    },
+    {
+      "id": "office-key",
+      "title": "Keynote saved preview",
+      "asset": "examples/office/office-guide.key",
+      "mime": "application/vnd.apple.keynote",
+      "extension": "key",
+      "category": "Presentations",
+      "description": "Saved PDF preview only; no editable iWork source."
+    }
+  ]
+}

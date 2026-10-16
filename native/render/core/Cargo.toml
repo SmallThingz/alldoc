@@ -1,0 +1,27 @@
+[package]
+name = "alldoc_render"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+[lib]
+crate-type = ["rlib"]
+[dependencies]
+wordcraft-docx = { path = "../vendor/wordcraft/crates/docx" }
+wordcraft-render = { path = "../vendor/wordcraft/crates/render" }
+wordcraft-layout = { path = "../vendor/wordcraft/crates/layout" }
+wordcraft-fonts = { path = "../vendor/wordcraft/crates/fonts" }
+deckcraft-pptx = { path = "../vendor/deckcraft/crates/pptx" }
+deckcraft-render = { path = "../vendor/deckcraft/crates/render" }
+deckcraft-fonts = { path = "../vendor/deckcraft/crates/fonts" }
+gridcraft-xlsx = { path = "../vendor/gridcraft/crates/xlsx" }
+gridcraft-engine = { path = "../vendor/gridcraft/crates/engine", features = ["raster"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+quick-xml = "0.38"
+zip = { version = "3", default-features = false, features = ["deflate"] }
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = "symbols"

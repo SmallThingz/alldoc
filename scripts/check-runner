@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Qualify native-worker lifetime supervision on Linux; only owns test processes."""
+import ctypes
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parent.parent
+CACHE = ROOT / '.tmp/runner-check'
+SOURCE = ROOT / 'native/runner/allrun.c'
+
+
+def main():
+    if not sys.platform.startswith('linux'):
+        raise RuntimeError('The native runner checks require Linux')
+    CACHE.mkdir(parents=True, exist_ok=True)
+    # Adopt our test grandchildren so every terminated worker can be reaped.
+    if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'Cannot become test child subreaper')
+    launcher = CACHE / 'liballrun.so'
+    subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                    str(SOURCE), '-o', str(launcher)], check=True)
+    result = subprocess.run([str(launcher), str(os.getpid()), sys.executable, '-c',
+                             'print("worker-ran")'], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0 and result.stdout.strip() == 'worker-ran', result.stderr
+    checks = {'survivingParentRunsWorker': True}
+    worker = CACHE / 'worker.py'
+    worker.write_text('import sys,time\nfrom pathlib import Path\nPath(sys.argv[1]).write_text("ready")\ntime.sleep(30)\n')
+    delayed = CACHE / 'delayed.py'
+    delayed.write_text('''import os,sys,time
+expected=int(sys.argv[1])
+while os.getppid()==expected: time.sleep(.01)
+os.execv(sys.argv[2],[sys.argv[2],str(expected),sys.executable,sys.argv[3],sys.argv[4]])
+''')
+    parent = CACHE / 'parent.py'
+    parent.write_text('''import os,subprocess,sys,time
+from pathlib import Path
+launcher,worker,ready,delayed,mode=sys.argv[1:]
+command=([sys.executable,delayed,str(os.getpid()),launcher,worker,ready] if mode=="before-entry"
+         else [launcher,str(os.getpid()),sys.executable,worker,ready])
+child=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+if mode!="before-entry":
+ deadline=time.monotonic()+5
+ while not Path(ready).exists():
+  if child.poll() is not None or time.monotonic()>deadline: raise RuntimeError("Worker failed to start")
+  time.sleep(.01)
+print(child.pid,flush=True)
+sys.stdin.readline()
+''')
+    for mode in ('normal-exit', 'killed-parent', 'before-entry'):
+        ready = CACHE / (mode + '.ready')
+        ready.unlink(missing_ok=True)
+        helper = subprocess.Popen([sys.executable, str(parent), str(launcher), str(worker),
+                                   str(ready), str(delayed), mode], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True)
+        child = None
+        reaped = False
+        try:
+            line = helper.stdout.readline()
+            assert line.strip().isdigit(), 'Test helper did not start worker'
+            child = int(line)
+            if mode == 'killed-parent':
+                helper.kill()
+            else:
+                helper.stdin.write('\n'); helper.stdin.flush()
+            helper.wait(timeout=5)
+            deadline = time.monotonic() + 3
+            while True:
+                found, status = os.waitpid(child, os.WNOHANG)
+                if found:
+                    reaped = True
+                    code = os.waitstatus_to_exitcode(status)
+                    assert code == (124 if mode == 'before-entry' else -signal.SIGKILL), (mode, code)
+                    break
+                assert time.monotonic() < deadline, f'Worker outlived its parent: {mode}'
+                time.sleep(.01)
+            if mode == 'before-entry': assert not ready.exists(), 'Orphan started document work'
+            checks[mode] = True
+        finally:
+            if helper.poll() is None: helper.kill()
+            helper.wait(timeout=5)
+            if child is not None and not reaped:
+                try: os.kill(child, signal.SIGKILL)
+                except ProcessLookupError: pass
+                try: os.waitpid(child, 0)
+                except ChildProcessError: pass
+            helper.stdin.close(); helper.stdout.close()
+    report = {'passed': True, 'checks': checks,
+              'sourceSha256': hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
+              'hostRunnerSha256': hashlib.sha256(launcher.read_bytes()).hexdigest()}
+    (CACHE / 'receipt.json').write_text(json.dumps(report, indent=2) + '\n')
+    print(json.dumps(report, indent=2))
+
+
+if __name__ == '__main__':
+    main()

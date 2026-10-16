@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <queries>
+        <intent>
+            <action android:name="android.print.PRINT_DIALOG" />
+            <data android:scheme="printjob" />
+        </intent>
+    </queries>
+    <application>
+        <activity android:name="app.smallthingz.alldoc.ReaderTestActivity"
+            android:exported="false" />
+        <provider android:name="app.smallthingz.alldoc.ui.ReaderFixtures"
+            android:authorities="app.smallthingz.alldoc.test.reader-fixtures"
+            android:exported="false" />
+    </application>
+</manifest>

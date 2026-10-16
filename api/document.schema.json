@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AllDoc document export v1",
+  "type": "object",
+  "required": [
+    "version",
+    "format",
+    "fidelity",
+    "truncated",
+    "warnings",
+    "sections"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "format": {
+      "type": "string"
+    },
+    "fidelity": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "pageCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "textAvailable": {
+      "type": "boolean"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "title",
+          "blocks"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "text"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "row": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "column": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "level": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "bounds": {
+                  "type": "array",
+                  "description": "PDF rectangles [left, top, right, bottom] in page coordinates.",
+                  "items": {
+                    "type": "array",
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "continuous": {
+      "type": "boolean",
+      "description": "True for one continuous logical page; rendering remains bounded."
+    }
+  }
+}

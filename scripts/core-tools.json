@@ -1,0 +1,68 @@
+[
+  {
+    "group": "org.jetbrains.kotlin",
+    "artifact": "kotlin-compiler-embeddable",
+    "version": "2.3.0",
+    "sha256": "8dbd882fa58c3d17e683a27390288315f8b490f8e3e3b1be4dc3e280d37e285a"
+  },
+  {
+    "group": "org.jetbrains.kotlin",
+    "artifact": "kotlin-daemon-embeddable",
+    "version": "2.3.0",
+    "sha256": "39bcb02d8c293aa678554c8b49d7ff84657021709283c6186e3a40806af9bd10"
+  },
+  {
+    "group": "org.jetbrains.kotlin",
+    "artifact": "kotlin-reflect",
+    "version": "1.6.10",
+    "sha256": "3277ac102ae17aad10a55abec75ff5696c8d109790396434b496e75087854203"
+  },
+  {
+    "group": "org.jetbrains.intellij.deps",
+    "artifact": "trove4j",
+    "version": "1.0.20200330",
+    "sha256": "c5fd725bffab51846bf3c77db1383c60aaaebfe1b7fe2f00d23fe1b7df0a439d"
+  },
+  {
+    "group": "org.jetbrains.kotlin",
+    "artifact": "kotlin-stdlib",
+    "version": "2.3.0",
+    "sha256": "887587c91713250ad52fe14ad9166d042c33835049890e9437f355ffc5a195b1"
+  },
+  {
+    "group": "org.jetbrains.kotlinx",
+    "artifact": "kotlinx-coroutines-core-jvm",
+    "version": "1.10.2",
+    "sha256": "5ca175b38df331fd64155b35cd8cae1251fa9ee369709b36d42e0a288ccce3fd"
+  },
+  {
+    "group": "org.jetbrains",
+    "artifact": "annotations",
+    "version": "23.0.0",
+    "sha256": "7b0f19724082cbfcbc66e5abea2b9bc92cf08a1ea11e191933ed43801eb3cd05"
+  },
+  {
+    "group": "org.jsoup",
+    "artifact": "jsoup",
+    "version": "1.21.2",
+    "sha256": "f05496e255734759f0d4b5632da7b24f81313147c78c69e90ad045d096191344"
+  },
+  {
+    "group": "junit",
+    "artifact": "junit",
+    "version": "4.13.2",
+    "sha256": "8e495b634469d64fb8acfa3495a065cbacc8a0fff55ce1e31007be4c16dc57d3"
+  },
+  {
+    "group": "org.hamcrest",
+    "artifact": "hamcrest-core",
+    "version": "1.3",
+    "sha256": "66fdef91e9739348df7a096aa384a5685f4e875584cce89386a7a47251c4d8e9"
+  },
+  {
+    "group": "org.jetbrains",
+    "artifact": "markdown-jvm",
+    "version": "0.7.18",
+    "sha256": "05a7f08a5ecb00fc1dbe5026e695c840098729a6aa79cfffa26e2ffb2a789ea1"
+  }
+]

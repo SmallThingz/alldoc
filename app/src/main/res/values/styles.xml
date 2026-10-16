@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.AllDoc.Base" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+    <style name="Theme.AllDoc" parent="Theme.AllDoc.Base">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:colorAccent">#425AC8</item>
+        <item name="android:forceDarkAllowed">false</item>
+    </style>
+</resources>

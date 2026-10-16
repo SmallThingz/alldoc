@@ -1,0 +1,12 @@
+[submodule "upstream/wordcraft"]
+	path = upstream/wordcraft
+	url = https://github.com/storytold/wordcraft
+	branch = main
+[submodule "upstream/deckcraft"]
+	path = upstream/deckcraft
+	url = https://github.com/storytold/deckcraft
+	branch = main
+[submodule "upstream/gridcraft"]
+	path = upstream/gridcraft
+	url = https://github.com/storytold/gridcraft
+	branch = main

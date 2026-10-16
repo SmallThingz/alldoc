@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""Run the JVM-only document tests with real host JNI; skipped natives fail this check."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import urllib.request
+
+root = Path.cwd()
+if not Path('native/documents/Cargo.toml').is_file():
+    raise SystemExit('Run scripts/check-core from the AllDoc project root.')
+cache = Path('.tmp/core-check')
+cache.mkdir(parents=True, exist_ok=True)
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def run(command, **kwargs):
+    subprocess.run(command, check=True, **kwargs)
+
+def artifact(pin):
+    name = pin['artifact'] + '-' + pin['version'] + '.jar'
+    cached = Path(os.environ.get('GRADLE_USER_HOME', str(Path.home()/'.gradle'))) / 'caches/modules-2/files-2.1' / pin['group'] / pin['artifact'] / pin['version']
+    local = cache / name
+    for candidate in [*cached.glob('*/'+name), local]:
+        if candidate.is_file() and digest(candidate) == pin['sha256']:
+            return candidate
+    url = 'https://repo.maven.apache.org/maven2/' + pin['group'].replace('.', '/') + '/' + pin['artifact'] + '/' + pin['version'] + '/' + name
+    stage = cache / (name + '.download')
+    try:
+        with urllib.request.urlopen(url, timeout=60) as source, stage.open('wb') as output:
+            shutil.copyfileobj(source, output, 128 * 1024)
+        if digest(stage) != pin['sha256']:
+            raise RuntimeError('Checksum mismatch: ' + name)
+        stage.replace(local)
+    finally:
+        stage.unlink(missing_ok=True)
+    return local
+
+# Library search uses Android's Looper guard; this check exercises the platform-free parsers and JNI.
+sources = sorted(p for p in Path('app/src/main/java/app/smallthingz/alldoc/core').glob('*.kt') if p.name != 'NativeFuzzy.kt')
+sources += sorted(Path('app/src/test/java/app/smallthingz/alldoc/core').glob('*.kt'))
+native_sources = sorted(Path('native/documents/src').glob('*.rs')) + [Path('native/documents/'+name) for name in ['Cargo.toml','Cargo.lock','build.rs','bridge.c']]
+pins = {str(p): digest(p) for p in sources + native_sources}
+run(['python3', 'native/build_documents.py', 'host'])
+artifacts = [artifact(pin) for pin in json.loads(Path('scripts/core-tools.json').read_text())]
+classpath = os.pathsep.join(map(str, artifacts))
+configured_java = Path(os.environ.get('JAVA_HOME', ''))/'bin/java'
+java = str(configured_java) if configured_java.is_file() else shutil.which('java')
+if not java:
+    raise RuntimeError('A JDK with java and javac is required.')
+runner = cache/'CoreCheck.kt'
+runner.write_text('''package app.smallthingz.alldoc.core
+import org.junit.runner.JUnitCore
+import org.junit.runner.notification.Failure
+import org.junit.runner.notification.RunListener
+object CoreCheck {
+    @JvmStatic fun main(args: Array<String>) {
+        check(NativeDocuments.isAvailable()) { "Host JNI was not loaded; refusing to report skipped native tests as passed." }
+        var skipped = 0
+        val junit = JUnitCore()
+        junit.addListener(object : RunListener() {
+            override fun testAssumptionFailure(failure: Failure) { skipped++; System.err.println(failure) }
+        })
+        val result = junit.run(DocumentParserTest::class.java, NativeDocumentTest::class.java, MarkdownDocumentTest::class.java)
+        result.failures.forEach { System.err.println(it.trace) }
+        check(result.wasSuccessful() && skipped == 0 && result.runCount > 0) { "${result.failureCount} failures, $skipped assumptions skipped" }
+        println("PASS: ${result.runCount} core tests; real JNI loaded; no skipped assumptions")
+    }
+}
+''')
+classes = cache/'classes'
+classes.mkdir(exist_ok=True)
+run([java, '-cp', classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-jvm-target', '17', '-no-stdlib', '-no-reflect', '-classpath', classpath, '-d', str(classes), *map(str,sources), str(runner)])
+run([java, '-Djava.library.path=.tmp/native/documents', '-Djava.io.tmpdir='+str(cache), '-cp', str(classes)+os.pathsep+classpath, 'app.smallthingz.alldoc.core.CoreCheck'])
+if pins != {str(p): digest(p) for p in sources + native_sources}:
+    raise RuntimeError('Core sources changed during this run; repeat the check.')
+receipt = {'source_sha256':pins, 'result':'passed; real host JNI required; no skipped assumptions', 'tool_pins_sha256':digest(Path('scripts/core-tools.json')), 'host_jni_sha256':digest(Path('.tmp/native/documents/liballdoc.so'))}
+(cache/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
+print('Receipt: .tmp/core-check/receipt.json')

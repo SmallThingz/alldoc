@@ -1,0 +1,243 @@
+--- a/deckcraft/Cargo.toml
++++ b/deckcraft/Cargo.toml
+@@ -1,7 +1,7 @@
+ [workspace]
+ resolver = "3"
+-members = ["crates/*", "apps/*", "xtask"]
+-default-members = ["crates/*", "apps/deckcraft", "apps/deckcraft-cli"]
++members = ["crates/av1", "crates/bitstream", "crates/color", "crates/engine", "crates/fonts", "crates/format", "crates/geom", "crates/h264", "crates/hevc", "crates/isobmff", "crates/matroska", "crates/media", "crates/model", "crates/ogg", "crates/opus", "crates/pdf", "crates/pptx", "crates/render", "crates/text", "crates/vp9"]
++default-members = ["crates/av1", "crates/bitstream", "crates/color", "crates/engine", "crates/fonts", "crates/format", "crates/geom", "crates/h264", "crates/hevc", "crates/isobmff", "crates/matroska", "crates/media", "crates/model", "crates/ogg", "crates/opus", "crates/pdf", "crates/pptx", "crates/render", "crates/text", "crates/vp9"]
+ 
+ [workspace.package]
+ version = "0.1.0"
+@@ -52,7 +52,7 @@
+ # text / rendering / formats
+ skrifa = "0.47"
+ harfrust = "0.13"
+-vello_cpu = "0.2"
++vello_cpu = { version = "0.2", default-features = false, features = ["std", "u8_pipeline", "png", "text"] }
+ vello_common = { version = "0.2", default-features = false }
+ image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
+ krilla = { version = "0.8", features = ["pdf"] }
+--- a/deckcraft/crates/fonts/Cargo.toml
++++ b/deckcraft/crates/fonts/Cargo.toml
+@@ -16,3 +16,4 @@
+ log = { workspace = true }
+ # Last-resort face only (Ubuntu Light); no UI code.
+ epaint_default_fonts = "0.36"
++zfm-office-fonts = { path = "../../../office-fonts" }
+--- a/deckcraft/crates/fonts/src/fontdb.rs
++++ b/deckcraft/crates/fonts/src/fontdb.rs
+@@ -151,6 +151,13 @@
+             FontBytes::Owned(v) => v.as_slice(),
+         }
+     }
++    /// Share font payloads with the rasterizer; collection faces do not copy bytes.
++    pub fn shared_data(&self) -> Arc<dyn AsRef<[u8]> + Send + Sync> {
++        match &self.bytes {
++            FontBytes::Static(bytes) => Arc::new(*bytes),
++            FontBytes::Owned(bytes) => bytes.clone(),
++        }
++    }
+     pub fn skrifa(&self) -> Option<skrifa::FontRef<'_>> {
+         skrifa::FontRef::from_index(self.data(), self.index).ok()
+     }
+@@ -305,10 +312,13 @@
+ fn file_face_names(path: &std::path::Path) -> Vec<(String, String)> {
+     use std::io::{Read, Seek, SeekFrom};
+     /// Caps on what a (possibly damaged) file can make the scan read.
+-    const MAX_FACES: u32 = 256;
+-    const MAX_NAME_TABLE: u32 = 1 << 20;
++    const MAX_FACES: u32 = if cfg!(target_os = "android") { 16 } else { 256 };
++    const MAX_NAME_TABLE: u32 = if cfg!(target_os = "android") { 64 << 10 } else { 1 << 20 };
++    let mut read_budget = if cfg!(target_os = "android") { 128 << 10 } else { usize::MAX };
+     let Ok(mut file) = std::fs::File::open(path) else { return vec![] };
+     let mut read_at = |offset: u64, len: usize| -> Option<Vec<u8>> {
++        if len > read_budget { return None; }
++        read_budget -= len;
+         let mut buf = vec![0; len];
+         file.seek(SeekFrom::Start(offset)).ok()?;
+         file.read_exact(&mut buf).ok()?;
+@@ -400,12 +410,12 @@
+         Err(_) => 0,
+     };
+     let mut out = Vec::new();
+-    for i in 0..count {
++    for i in 0..count.min(if cfg!(target_os = "android") { 16 } else { u32::MAX }) {
+         let Ok(f) = skrifa::FontRef::from_index(data, i) else { continue };
+         let Some((family, style)) = face_names(&f) else { continue };
+         let axes = f.axes();
+         let mut named = Vec::new();
+-        for ni in f.named_instances().iter() {
++        for ni in f.named_instances().iter().take(if cfg!(target_os = "android") { 64 } else { usize::MAX }) {
+             let Some(style) = name(&f, &[ni.subfamily_name_id()]) else { continue };
+             if named.iter().any(|(_, s, _): &(u32, String, _)| s.eq_ignore_ascii_case(&style)) {
+                 continue;
+@@ -554,7 +564,12 @@
+     /// [`FontDb::scan_in_background`]).
+     pub fn global() -> &'static FontDb {
+         static DB: std::sync::OnceLock<FontDb> = std::sync::OnceLock::new();
+-        DB.get_or_init(|| FontDb::with_font_dirs(system_font_dirs()))
++        DB.get_or_init(|| {
++            let db = FontDb::with_font_dirs(Vec::new());
++            // Android uses only the bounded public catalog, never desktop/home discovery.
++            db.set_system_fallback(cfg!(target_os = "android"));
++            db
++        })
+     }
+ 
+     fn read_faces(&self) -> std::sync::RwLockReadGuard<'_, Vec<Arc<FontFace>>> {
+@@ -600,7 +615,10 @@
+     /// Add a user font (TTF/OTF/TTC bytes). Returns the number of faces added (0 if unparseable or
+     /// every face was already present).
+     pub fn add_font(&self, bytes: Vec<u8>) -> usize {
+-        let data = Arc::new(bytes);
++        self.add_shared_font(Arc::new(bytes))
++    }
++
++    fn add_shared_font(&self, data: Arc<Vec<u8>>) -> usize {
+         let mut added = 0;
+         for (i, family, style, coords) in enumerate_faces(&data) {
+             if self.read_faces().iter().any(|f| f.family.eq_ignore_ascii_case(&family) && f.style.eq_ignore_ascii_case(&style)) {
+@@ -647,6 +665,20 @@
+ 
+     #[cfg(not(target_arch = "wasm32"))]
+     fn scan_font_dirs(&self) -> usize {
++        #[cfg(target_os = "android")]
++        {
++            let mut found = Vec::new();
++            for path in zfm_office_fonts::system_files() {
++                for (family, style) in file_face_names(path) {
++                    found.push(CatalogEntry { family, style, path: path.clone() });
++                }
++            }
++            let count = found.len();
++            *self.catalog.write().unwrap_or_else(|e| e.into_inner()) = found;
++            return count;
++        }
++        #[cfg(not(target_os = "android"))]
++        {
+         let mut found = Vec::new();
+         let mut stack = self.font_dirs.clone();
+         // Each folder once, however links lead back to it.
+@@ -675,6 +707,7 @@
+         log::debug!("cataloged {n} system font faces");
+         *self.catalog.write().unwrap_or_else(|e| e.into_inner()) = found;
+         n
++        }
+     }
+ 
+     /// Load the files of the installed `family`. Returns whether any face was added.
+@@ -689,6 +722,11 @@
+         };
+         let mut any = false;
+         for p in paths {
++            #[cfg(target_os = "android")]
++            if let Some(data) = zfm_office_fonts::read_font(&p) {
++                any |= self.add_shared_font(data) > 0;
++            }
++            #[cfg(not(target_os = "android"))]
+             if let Ok(data) = std::fs::read(&p) {
+                 any |= self.add_font(data) > 0;
+             }
+@@ -866,6 +904,17 @@
+         paths.sort();
+         paths.dedup();
+         for p in paths {
++            #[cfg(target_os = "android")]
++            {
++                let matches = |data: &[u8]| enumerate_faces(data).iter().any(|(i, _, _, _)|
++                    skrifa::FontRef::from_index(data, *i).is_ok_and(|f| f.charmap().map(c).is_some()));
++                if let Some(data) = zfm_office_fonts::read_matching_font(&p, matches) {
++                    if self.add_shared_font(data) > 0 && covered(self) { return true; }
++                }
++                continue;
++            }
++            #[cfg(not(target_os = "android"))]
++            {
+             if std::fs::metadata(&p).map(|m| m.len() > 40 << 20).unwrap_or(true) {
+                 continue;
+             }
+@@ -875,6 +924,7 @@
+             if hit && self.add_font(data) > 0 && covered(self) {
+                 return true;
+             }
++            }
+         }
+         self.sys.lock().unwrap_or_else(|e| e.into_inner()).misses.insert(c);
+         false
+--- a/deckcraft/crates/render/Cargo.toml
++++ b/deckcraft/crates/render/Cargo.toml
+@@ -20,5 +20,3 @@
+ log = { workspace = true }
+ kurbo = { workspace = true }
+ 
+-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+-vello_cpu = { workspace = true, features = ["multithreading"] }
+--- a/deckcraft/crates/render/src/lib.rs
++++ b/deckcraft/crates/render/src/lib.rs
+@@ -962,6 +962,10 @@
+     for d in l.decos.iter().filter(|d| d.behind) {
+         deco(ctx, d);
+     }
++    // Resources are scoped to this text block. The non-atlas glyph backend
++    // records owned bitmap paints into ctx; no external atlas survives it.
++    let mut resources = Resources::new();
++    let mut fonts: HashMap<u32, peniko::FontData> = HashMap::new();
+     for run in &l.runs {
+         if (run.alpha <= 0.0 || run.color.a == 0) && run.outline.is_none() {
+             continue;
+@@ -973,27 +977,36 @@
+         let m = m * Affine::translate(ps.offset);
+         let alpha = run.alpha * ps.opacity;
+         let k = run.size / run.face.upem.max(1.0);
+-        ctx.set_paint(color(run.color, alpha));
+-        for (gid, x, y) in &run.glyphs {
+-            let path = glyph(&run.face, *gid);
+-            if path.elements().is_empty() {
+-                continue;
+-            }
+-            let skew = if run.fake_italic { Affine::new([1.0, 0.0, -0.2, 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
+-            let gm = m * Affine::translate((*x, *y)) * skew * Affine::scale(k);
+-            ctx.set_transform(gm);
+-            if alpha > 0.0 && run.color.a > 0 {
+-                ctx.fill_path(&path);
+-                if run.fake_bold {
+-                    ctx.set_stroke(kurbo::Stroke::new(run.face.upem * 0.025).with_join(kurbo::Join::Round));
++        let skew = if run.fake_italic { Affine::new([1.0, 0.0, -0.2, 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
++        if alpha > 0.0 && run.color.a > 0 {
++            let font = fonts.entry(run.face.id()).or_insert_with(||
++                peniko::FontData::new(peniko::Blob::new(run.face.shared_data()), run.face.index()));
++            let coords: Vec<i16> = run.face.location().coords().iter().map(|c| c.to_bits()).collect();
++            let opacity = (alpha * f64::from(run.color.a) / 255.0).clamp(0.0, 1.0) as f32;
++            ctx.set_transform(m);
++            if opacity < 1.0 { ctx.push_opacity_layer(opacity); }
++            ctx.set_paint(color(run.color.with_alpha(255), 1.0));
++            ctx.glyph_run(&mut resources, font).font_size(run.size as f32).hint(false)
++                .normalized_coords(&coords).glyph_transform(skew).atlas_cache(false)
++                .fill_glyphs(run.glyphs.iter().map(|(id, x, y)|
++                    vello_cpu::Glyph { id: *id, x: *x as f32, y: *y as f32 }));
++            if run.fake_bold {
++                ctx.set_stroke(kurbo::Stroke::new(run.face.upem * 0.025).with_join(kurbo::Join::Round));
++                for (gid, x, y) in &run.glyphs {
++                    let path = glyph(&run.face, *gid);
++                    ctx.set_transform(m * Affine::translate((*x, *y)) * skew * Affine::scale(k));
+                     ctx.stroke_path(&path);
+                 }
+             }
+-            if let Some((oc, ow)) = run.outline {
+-                ctx.set_paint(color(oc, ps.opacity));
+-                ctx.set_stroke(kurbo::Stroke::new(ow / k.max(1e-9)).with_join(kurbo::Join::Round));
++            if opacity < 1.0 { ctx.pop_layer(); }
++        }
++        if let Some((oc, ow)) = run.outline {
++            ctx.set_paint(color(oc, ps.opacity));
++            ctx.set_stroke(kurbo::Stroke::new(ow / k.max(1e-9)).with_join(kurbo::Join::Round));
++            for (gid, x, y) in &run.glyphs {
++                let path = glyph(&run.face, *gid);
++                ctx.set_transform(m * Affine::translate((*x, *y)) * skew * Affine::scale(k));
+                 ctx.stroke_path(&path);
+-                ctx.set_paint(color(run.color, alpha));
+             }
+         }
+     }

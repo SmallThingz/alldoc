@@ -1,0 +1,482 @@
+//! AllDoc bounded visual readers. Third-party format/render code is pinned under ../vendor.
+use quick_xml::events::Event;
+use std::io::{Cursor, Read};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+static RENDER_LOCK: Mutex<()> = Mutex::new(());
+pub const INPUT_LIMIT: usize = 16 * 1024 * 1024;
+pub const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+pub const MAX_PAGES: usize = 128;
+
+#[derive(Debug)]
+pub struct Page {
+    pub format: u32, // 1 PNG; 2 PDF containing exactly the requested print page.
+    pub width: u32,
+    pub height: u32,
+    pub page: u32,
+    pub pages: u32,
+    pub note: String,
+    pub data: Vec<u8>,
+}
+fn fail(s: impl ToString) -> String {
+    s.to_string()
+}
+fn checked_dimensions(w: u32, h: u32) -> Result<(), String> {
+    if w == 0 || h == 0 || w > 16384 || h > 16384 || u64::from(w) * u64::from(h) > 8_000_000 {
+        return Err("Image dimensions exceed the bounded visual reader".into());
+    }
+    Ok(())
+}
+fn fit(w: f64, h: f64, side: u32) -> Result<(f64, u32, u32), String> {
+    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 || w > 20000.0 || h > 20000.0 {
+        return Err("Unsupported document page dimensions".into());
+    }
+    let k = (side as f64 / w.max(h)).min(2.0);
+    let ow = ((w * k).ceil().max(1.0) as u32).min(side);
+    let oh = ((h * k).ceil().max(1.0) as u32).min(side);
+    if u64::from(ow) * u64::from(oh) > 2_000_000 {
+        return Err("Visual output pixel limit".into());
+    }
+    Ok((k, ow, oh))
+}
+fn image_size(data: &[u8]) -> Result<(u32, u32), String> {
+    image::ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .map_err(fail)?
+        .into_dimensions()
+        .map_err(fail)
+}
+// Container identification only: DeckCraft displays a clip's poster/glyph, never plays it.
+fn is_clip(data: &[u8]) -> bool {
+    (data.starts_with(b"RIFF") && matches!(data.get(8..12), Some(b"WAVE" | b"AVI ")))
+        || data.starts_with(b"OggS")
+        || data.starts_with(b"fLaC")
+        || (data.len() >= 10 && data.starts_with(b"ID3") && (2..=4).contains(&data[3]))
+        || (data.len() >= 4
+            && data[0] == 0xff
+            && data[1] & 0xe0 == 0xe0
+            && data[1] & 0x18 != 0x08
+            && data[1] & 0x06 != 0
+            && data[2] & 0xf0 != 0xf0
+            && data[2] & 0x0c != 0x0c)
+        || data.starts_with(b"\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c")
+        || (data.starts_with(b"\x1a\x45\xdf\xa3")
+            && data[..data.len().min(4096)]
+                .windows(7)
+                .any(|w| w == b"\x42\x82\x84webm"))
+        || (data.len() >= 16
+            && data.get(4..8) == Some(b"ftyp")
+            && matches!(
+                data.get(8..12),
+                Some(
+                    b"isom"
+                        | b"iso2"
+                        | b"iso3"
+                        | b"iso4"
+                        | b"iso5"
+                        | b"iso6"
+                        | b"mp41"
+                        | b"mp42"
+                        | b"M4V "
+                        | b"M4A "
+                        | b"qt  "
+                        | b"MSNV"
+                        | b"3gp4"
+                        | b"3gp5"
+                        | b"3gp6"
+                        | b"3g2a"
+                )
+            ))
+}
+fn package(
+    bytes: &[u8],
+    kind: u32,
+    check: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<String, String> {
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(fail)?;
+    if zip.len() > 2048 {
+        return Err("Too many package parts".into());
+    }
+    let mut expanded = 0u64;
+    let mut elements = 0usize;
+    let mut text = 0usize;
+    let mut external = 0usize;
+    for i in 0..zip.len() {
+        check()?;
+        let mut f = zip.by_index(i).map_err(fail)?;
+        let name = f.name().to_owned();
+        let size = f.size();
+        if name.len() > 512
+            || name
+                .split('/')
+                .any(|p| p == ".." || p.is_empty() && name.starts_with('/'))
+        {
+            return Err("Unsupported package part name".into());
+        }
+        expanded = expanded
+            .checked_add(size)
+            .ok_or("Package length overflow")?;
+        if size > 8 * 1024 * 1024 || expanded > 32 * 1024 * 1024 {
+            return Err("Expanded package exceeds visual reader budget".into());
+        }
+        let is_xml = name.ends_with(".xml") || name.ends_with(".rels");
+        let is_image = name.starts_with("word/media/")
+            || name.starts_with("ppt/media/")
+            || name.starts_with("xl/media/");
+        if !is_xml && !is_image {
+            let mut actual = 0u64;
+            let mut buffer = [0u8; 8192];
+            loop {
+                check()?;
+                let n = f.read(&mut buffer).map_err(fail)?;
+                if n == 0 {
+                    break;
+                }
+                actual += n as u64;
+                if actual > size {
+                    return Err("Package part size mismatch".into());
+                }
+            }
+            if actual != size {
+                return Err("Truncated package part".into());
+            }
+            continue;
+        }
+        if is_xml && size > 2 * 1024 * 1024 {
+            return Err("XML part exceeds visual reader budget".into());
+        }
+        let mut data = Vec::with_capacity(size as usize);
+        let mut buf = [0u8; 8192];
+        loop {
+            check()?;
+            let n = f.read(&mut buf).map_err(fail)?;
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n]);
+            if data.len() > size as usize {
+                return Err("Package part size mismatch".into());
+            }
+        }
+        if data.len() != size as usize {
+            return Err("Truncated package part".into());
+        }
+        if is_image {
+            if image::guess_format(&data).is_ok() {
+                let (w, h) = image_size(&data)?;
+                checked_dimensions(w, h)?;
+            } else if !(kind == 2 && is_clip(&data))
+                && !name.ends_with(".svg")
+                && !name.ends_with(".emf")
+                && !name.ends_with(".wmf")
+            {
+                return Err("Unsupported embedded image encoding".into());
+            }
+            continue;
+        }
+        let mut parser = quick_xml::Reader::from_reader(Cursor::new(&data));
+        let mut scratch = Vec::new();
+        let mut depth = 0usize;
+        loop {
+            check()?;
+            let event = parser.read_event_into(&mut scratch).map_err(fail)?;
+            let starting = matches!(&event, Event::Start(_));
+            match event {
+                Event::Start(e) | Event::Empty(e) => {
+                    elements += 1;
+                    if elements > 64_000 {
+                        return Err("Document structure exceeds visual reader budget".into());
+                    }
+                    for a in e.attributes().with_checks(true) {
+                        let a = a.map_err(fail)?;
+                        if a.value.len() > 8192 {
+                            return Err("Document attribute exceeds visual reader budget".into());
+                        }
+                        if a.key.as_ref() == b"TargetMode" && a.value.as_ref() == b"External" {
+                            external += 1;
+                        }
+                        if kind == 3 && e.local_name().as_ref() == b"c" && a.key.as_ref() == b"r" {
+                            let v = std::str::from_utf8(&a.value).map_err(fail)?;
+                            let col = v.bytes().take_while(|c| c.is_ascii_alphabetic()).fold(
+                                0u32,
+                                |n, c| {
+                                    n.saturating_mul(26)
+                                        .saturating_add((c.to_ascii_uppercase() - b'A' + 1) as u32)
+                                },
+                            );
+                            let row = v
+                                .trim_start_matches(|c: char| c.is_ascii_alphabetic())
+                                .parse::<u32>()
+                                .map_err(fail)?;
+                            if col == 0 || col > 512 || row == 0 || row > 8192 {
+                                return Err("Worksheet extent exceeds visual reader budget".into());
+                            }
+                        }
+                    }
+                    if starting {
+                        depth += 1;
+                        if depth > 64 {
+                            return Err("Document XML depth exceeds visual reader budget".into());
+                        }
+                    }
+                }
+                Event::Text(e) => {
+                    text = text.checked_add(e.len()).ok_or("Text length overflow")?;
+                    if text > 512 * 1024 {
+                        return Err("Document text exceeds visual reader budget".into());
+                    }
+                }
+                Event::CData(e) => {
+                    text = text.checked_add(e.len()).ok_or("Text length overflow")?;
+                    if text > 512 * 1024 {
+                        return Err("Document text exceeds visual reader budget".into());
+                    }
+                }
+                Event::End(_) => depth = depth.saturating_sub(1),
+                Event::DocType(_) => {
+                    return Err("XML declarations with document types are unsupported".into());
+                }
+                Event::Eof => break,
+                _ => {}
+            }
+            scratch.clear();
+        }
+    }
+    Ok(if external > 0 {
+        format!(
+            "{} external resources/links omitted; offline reader",
+            external
+        )
+    } else {
+        String::new()
+    })
+}
+pub fn render(
+    bytes: &[u8],
+    kind: u32,
+    page: u32,
+    side: u32,
+    mut cancel: impl FnMut() -> bool,
+) -> Result<Page, String> {
+    let start = Instant::now();
+    let mut check = || {
+        if cancel() {
+            Err("CANCELLED".into())
+        } else if start.elapsed() > Duration::from_secs(15) {
+            Err("Visual reader time limit".into())
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    if bytes.is_empty() || bytes.len() > INPUT_LIMIT {
+        return Err("Visual reader input limit is 16 MiB".into());
+    }
+    if !(128..=1400).contains(&side) {
+        return Err("Output side must be 128 through 1400".into());
+    }
+    let _guard = loop {
+        check()?;
+        match RENDER_LOCK.try_lock() {
+            Ok(g) => break g,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(5))
+            }
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                RENDER_LOCK.clear_poison();
+                break e.into_inner();
+            }
+        }
+    };
+    check()?;
+    if !(1..=3).contains(&kind) {
+        return Err("No visual renderer for this document format".into());
+    }
+    let preflight = package(bytes, kind, &mut check)?;
+    check()?;
+    let mut result = match kind {
+        1 => {
+            let doc = wordcraft_docx::read(bytes).map_err(fail)?;
+            check()?;
+            let layout = wordcraft_layout::layout(
+                &doc,
+                &mut wordcraft_layout::LayoutCache::new(),
+                &wordcraft_layout::LayoutOptions::default(),
+            );
+            check()?;
+            if layout.pages.is_empty() || layout.pages.len() > MAX_PAGES {
+                return Err("DOCX page limit or empty layout".into());
+            }
+            if page as usize >= layout.pages.len() {
+                return Err("Requested page is outside this document".into());
+            }
+            let index = page as usize;
+            let p = &layout.pages[index];
+            let (k, _, _) = fit(p.w as f64, p.h as f64, side)?;
+            // WordCraft rasterizes in f32; predicting with f64 can differ by one pixel.
+            let scale = (k as f32).next_down();
+            let w = (p.w * scale).ceil().max(1.0) as u32;
+            let h = (p.h * scale).ceil().max(1.0) as u32;
+            if w > side || h > side {
+                return Err("DOCX output dimensions exceed the preview size".into());
+            }
+            let output = wordcraft_render::render_page(
+                &doc,
+                p,
+                scale,
+                &wordcraft_render::RenderOptions::default(),
+            );
+            check()?;
+            if output.width != w
+                || output.height != h
+                || output.pixels.len() != w as usize * h as usize * 4
+            {
+                return Err("DOCX renderer output size mismatch".into());
+            }
+            Page {
+                format: 1,
+                width: w,
+                height: h,
+                page: index as u32,
+                pages: layout.pages.len() as u32,
+                note:
+                    "Visual layout; font substitution or unsupported features may affect appearance"
+                        .into(),
+                data: output.to_png(),
+            }
+        }
+        2 => {
+            let pres = deckcraft_pptx::import(bytes).map_err(fail)?;
+            check()?;
+            if pres.slides.is_empty() || pres.slides.len() > MAX_PAGES {
+                return Err("PPTX slide limit or empty presentation".into());
+            }
+            if page as usize >= pres.slides.len() {
+                return Err("Requested slide is outside this presentation".into());
+            }
+            let index = page as usize;
+            let (k, w, h) = fit(pres.slide_size.width, pres.slide_size.height, side)?;
+            let opts = deckcraft_render::RenderOpts {
+                scale: k,
+                size: Some((w, h)),
+                threads: 0,
+                ..Default::default()
+            };
+            let output = deckcraft_render::render_slide(&pres, index, &opts);
+            check()?;
+            if output.width != w
+                || output.height != h
+                || output.pixels.len() != w as usize * h as usize * 4
+            {
+                return Err("PPTX renderer output size mismatch".into());
+            }
+            Page {
+                format: 1,
+                width: w,
+                height: h,
+                page: index as u32,
+                pages: pres.slides.len() as u32,
+                note: "Visual slide; font substitution; playback/animation not rendered".into(),
+                data: output.to_png(),
+            }
+        }
+        3 => {
+            let (wb, _report) = gridcraft_xlsx::read_xlsx(bytes).map_err(fail)?;
+            check()?;
+            let mut layouts = gridcraft_engine::cmd::print::layouts(
+                &wb,
+                &gridcraft_engine::cmd::print::PrintOptions {
+                    all_sheets: true,
+                    ..Default::default()
+                },
+            );
+            check()?;
+            let total: usize = layouts.iter().map(|l| l.pages.len()).sum();
+            if total == 0 || total > MAX_PAGES {
+                return Err("XLSX print page limit or empty workbook".into());
+            }
+            if page as usize >= total {
+                return Err("Requested page is outside this workbook".into());
+            }
+            let index = page as usize;
+            let mut offset = 0usize;
+            let mut chosen = None;
+            for mut l in layouts.drain(..) {
+                if index < offset + l.pages.len() {
+                    let p = l.pages[index - offset];
+                    l.pages = vec![p];
+                    chosen = Some(l);
+                    break;
+                }
+                offset += l.pages.len();
+            }
+            let chosen = chosen.ok_or("Worksheet print page unavailable")?;
+            let (scale, w, h) = fit(chosen.page_w as f64, chosen.page_h as f64, side)?;
+            let output = gridcraft_engine::cmd::print::render_raster(
+                &wb,
+                &[chosen],
+                "Document",
+                "",
+                w,
+                h,
+                scale,
+                index + 1,
+                total,
+            )?;
+            check()?;
+            if output.width != w || output.height != h {
+                return Err("Worksheet raster output dimensions changed".into());
+            }
+            let data = wordcraft_render::Rendered {
+                width: w,
+                height: h,
+                pixels: output.pixels,
+            }
+            .to_png();
+            Page{format:1,width:w,height:h,page:index as u32,pages:total as u32,note:"GridCraft worksheet print geometry; cached values; Unicode font fallback; system-font coverage varies".into(),data}
+        }
+        _ => {
+            return Err("No visual renderer for this document format".into());
+        }
+    };
+    check()?;
+    if !preflight.is_empty() {
+        result.note.push_str("; ");
+        result.note.push_str(&preflight)
+    }
+    if result.data.is_empty() || result.data.len() > OUTPUT_LIMIT {
+        return Err("Visual output exceeds budget or is empty".into());
+    }
+    Ok(result)
+}
+pub fn wire(result: Result<Page, String>) -> Vec<u8> {
+    let mut out = b"ZFR1".to_vec();
+    match result {
+        Ok(p) => {
+            for n in [
+                p.format,
+                p.width,
+                p.height,
+                p.page,
+                p.pages,
+                p.note.len() as u32,
+                p.data.len() as u32,
+            ] {
+                out.extend_from_slice(&n.to_le_bytes())
+            }
+            out.extend_from_slice(p.note.as_bytes());
+            out.extend_from_slice(&p.data);
+        }
+        Err(e) => {
+            let e = e.chars().take(2048).collect::<String>();
+            for n in [0, 0, 0, 0, 0, e.len() as u32, 0] {
+                out.extend_from_slice(&n.to_le_bytes())
+            }
+            out.extend_from_slice(e.as_bytes());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests;

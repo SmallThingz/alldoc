@@ -1,0 +1,32 @@
+{
+  "project": "ZFM bounded document core",
+  "source": "kotlin/zfm/native/documents",
+  "revision": "9d69a973fb0b6f5242295c52513c1dfc1f6f5dde",
+  "license_evidence": {
+    "crate_manifest": {
+      "path": "native/documents/Cargo.toml",
+      "declared_license": "MIT",
+      "sha256": "8b2059171cc0cffeeefe6ef92da22bb75d0a491694ea6bd6c9baf03520c9ea5c"
+    },
+    "repository_license": {
+      "path": "LICENSE",
+      "name": "GNU General Public License, version 3",
+      "sha256": "12ac5047f2af0522f06798b1589ffc4599bc29c91f954d7874e0320634e777c0",
+      "copied_as": "native/documents/LICENSE-ZFM"
+    },
+    "scope": "The pinned crate manifest declares MIT, while the pinned repository supplies GPLv3 text. Their relationship remains unresolved here; no governing license or relicense is asserted."
+  },
+  "changes": "JNI/library rename; bounded MS-OXMSG string-property view added in legacy.rs; ODF drawing text pages supported",
+  "source_sha256": {
+    "src/lib.rs": "bd95c8e3b879178944caaca4e3038c7fe2701e373e8bb51c0589aec987c3b24c",
+    "src/package.rs": "f664c4f75878380d322efad9ae53b9383c95712b9169df26c205244d93c5311d",
+    "src/xml.rs": "2112e27827a1ca61c995d54cb3a6c0559fe23b0cead707463af058b7a6ab22ba",
+    "src/office.rs": "c56ed2e7e757f75a0a558f2cecca550769ac1073a6bc98b82a70484955ac7f73",
+    "src/odf.rs": "ff2669cdd58b4dddacfe7ccd6f659aeed8bdfb30f41dba66f0d48783723aa205",
+    "src/rtf.rs": "44b60e0793bafa570a89636993b2b33a8b3e55a75c63d2982cbf5e0903a102f6",
+    "src/legacy.rs": "44a68ac4d4819f31ee98cdc64d88bd4aa07a46d1ed81936036b8f1d285c3a98c",
+    "src/binary_word.rs": "16b22ffba2f08f9c5c2ce5fb0b5ac421c775e26860466b54150c88a761dddf32",
+    "src/binary_ppt.rs": "b5a4517ba935d23cd2bf8b23a0df49d5a8a980f5995d4cf5fbeaf66b989efbda",
+    "src/epub.rs": "b97ed1a65424f1e85c9556ac0eef95e6d4fc2b2f426d7e9ab99450f37f7df197"
+  }
+}

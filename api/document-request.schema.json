@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AllDoc document output request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format"
+  ],
+  "properties": {
+    "format": {
+      "enum": [
+        "text",
+        "json",
+        "png"
+      ]
+    },
+    "page": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 2048,
+      "default": 1200
+    },
+    "theme": {
+      "enum": [
+        "original",
+        "adaptive",
+        "adaptive_light",
+        "system",
+        "sepia",
+        "high_contrast",
+        "invert"
+      ],
+      "default": "original"
+    },
+    "preserveImages": {
+      "type": "boolean",
+      "default": true
+    }
+  }
+}

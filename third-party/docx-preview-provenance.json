@@ -1,8 +1,0 @@
-{
-  "name": "docx-preview",
-  "version": "0.3.6",
-  "url": "https://registry.npmjs.org/docx-preview/-/docx-preview-0.3.6.tgz",
-  "integrity": "sha512-gKVPE18hlpfuhQHiptsw1rbOwzQeGSwK10/w7hv1ZMEqHmjtCuTpz6AUMfu1twIPGxgpcsMXThKI6B6WsP3L1w==",
-  "asset_sha256": "3573b8d993442316042e95c782338b503b2a7cd573d336db894b87799c9d3097",
-  "license": "Apache-2.0"
-}

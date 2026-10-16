@@ -1,9 +1,144 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application android:label="@string/app_name" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:supportsRtl="true" android:icon="@drawable/ic_alldoc">
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <application android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:theme="@style/Theme.AllDoc" android:allowBackup="false" android:requestLegacyExternalStorage="true" android:enableOnBackInvokedCallback="true" android:supportsRtl="true" android:extractNativeLibs="true">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask">
-            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
-            <intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:mimeType="application/pdf"/><data android:mimeType="text/*"/><data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"/><data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/><data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation"/><data android:mimeType="application/vnd.oasis.opendocument.text"/><data android:mimeType="application/vnd.oasis.opendocument.spreadsheet"/><data android:mimeType="application/vnd.oasis.opendocument.presentation"/></intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="text/markdown" />
+                <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="application/vnd.ms-powerpoint" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.template" />
+                <data android:mimeType="application/vnd.ms-word.document.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-word.document.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-word.template.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-word.template.macroEnabled.12" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.template" />
+                <data android:mimeType="application/vnd.ms-excel.sheet.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-excel.sheet.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-excel.template.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-excel.template.macroEnabled.12" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.slideshow" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.template" />
+                <data android:mimeType="application/vnd.ms-powerpoint.presentation.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.presentation.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.slideshow.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.slideshow.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.template.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.template.macroEnabled.12" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text-template" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text-master" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text-web" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet-template" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation-template" />
+                <data android:mimeType="application/vnd.oasis.opendocument.graphics" />
+                <data android:mimeType="application/vnd.oasis.opendocument.graphics-template" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="text/html" />
+                <data android:mimeType="application/xhtml+xml" />
+                <data android:mimeType="application/rtf" />
+                <data android:mimeType="text/rtf" />
+                <data android:mimeType="application/vnd.apple.pages" />
+                <data android:mimeType="application/vnd.apple.numbers" />
+                <data android:mimeType="application/vnd.apple.keynote" />
+                <data android:mimeType="application/x-iwork-pages-sffpages" />
+                <data android:mimeType="application/x-iwork-numbers-sffnumbers" />
+                <data android:mimeType="application/x-iwork-keynote-sffkey" />
+                <data android:mimeType="application/x-fictionbook+xml" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text-flat-xml" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet-flat-xml" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation-flat-xml" />
+                <data android:mimeType="application/vnd.oasis.opendocument.graphics-flat-xml" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="text/markdown" />
+                <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="application/vnd.ms-powerpoint" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.template" />
+                <data android:mimeType="application/vnd.ms-word.document.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-word.document.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-word.template.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-word.template.macroEnabled.12" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.template" />
+                <data android:mimeType="application/vnd.ms-excel.sheet.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-excel.sheet.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-excel.template.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-excel.template.macroEnabled.12" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.slideshow" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.template" />
+                <data android:mimeType="application/vnd.ms-powerpoint.presentation.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.presentation.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.slideshow.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.slideshow.macroEnabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.template.macroenabled.12" />
+                <data android:mimeType="application/vnd.ms-powerpoint.template.macroEnabled.12" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text-template" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text-master" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text-web" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet-template" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation-template" />
+                <data android:mimeType="application/vnd.oasis.opendocument.graphics" />
+                <data android:mimeType="application/vnd.oasis.opendocument.graphics-template" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="text/html" />
+                <data android:mimeType="application/xhtml+xml" />
+                <data android:mimeType="application/rtf" />
+                <data android:mimeType="text/rtf" />
+                <data android:mimeType="application/vnd.apple.pages" />
+                <data android:mimeType="application/vnd.apple.numbers" />
+                <data android:mimeType="application/vnd.apple.keynote" />
+                <data android:mimeType="application/x-iwork-pages-sffpages" />
+                <data android:mimeType="application/x-iwork-numbers-sffnumbers" />
+                <data android:mimeType="application/x-iwork-keynote-sffkey" />
+                <data android:mimeType="application/x-fictionbook+xml" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text-flat-xml" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet-flat-xml" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation-flat-xml" />
+                <data android:mimeType="application/vnd.oasis.opendocument.graphics-flat-xml" />
+            </intent-filter>
         </activity>
-        <service android:name=".PdfService" android:exported="false" android:isolatedProcess="true"/>
+        <activity android:name=".oacp.DocumentCapabilityActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="${applicationId}.oacp.ACTION_READ_DOCUMENT" />
+                <action android:name="${applicationId}.oacp.ACTION_DOCUMENT_STRUCTURE" />
+                <action android:name="${applicationId}.oacp.ACTION_RENDER_PAGE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+        <provider android:name=".oacp.CapabilityResultProvider" android:authorities="${applicationId}.oacp.results"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/oacp_paths" />
+        </provider>
+        <service android:name=".ipc.DocumentService" android:exported="true" android:process=":documents">
+            <intent-filter>
+                <action android:name="app.smallthingz.alldoc.BIND_DOCUMENTS" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

@@ -1,0 +1,25 @@
+[package]
+name = "alldoc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+quick-xml = { version = "=0.42.0", default-features = false }
+flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
+crc32fast = "=1.5.0"
+cfb = "=0.15.0"
+encoding_rs = "=0.8.35"
+
+nucleo-matcher = { version = "=0.3.1", default-features = false, features = ["unicode-casefold", "unicode-normalization"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"

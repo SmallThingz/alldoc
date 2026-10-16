@@ -1,70 +1,63 @@
-# Format capabilities
+# Document formats
 
-This file describes the current working tree. The immersive/RTF/presentation changes after 0.2.0 are **unreleased**; the preserved 0.2.0 APK does not contain them.
+AllDoc separates **page rendering** from **text and structure**. A readable file is not necessarily reproduced with its original layout. The session metadata and JSON export include fidelity and warnings; truncated plain-text exports include an excerpt notice. Macros, scripts and remote resources are not executed.
 
-alldoc is a compact, offline document workspace. Its native views are useful reading and focused-editing tools, **not a full office layout or rendering engine**. DOC and DOCX, XLS and XLSX, and PPT and PPTX are different on-disk formats.
-
-| Format | Display | Edit / export | Important boundaries |
+| Format family | Reader | Text / JSON | Limits and omissions |
 |---|---|---|---|
-| PDF | Native page rasterization, pagination and zoom on Android 8+ | Original-byte copy; native text-form filling on Android 15+ | AcroForm text fields only; no arbitrary page-text edits, OCR, search, annotations, page operations, checkbox/dropdown/signature editing, XFA or password entry |
-| DOCX | Offline formatted preview; paragraphs, runs, tables, headers/footers/notes | Replace existing run text in a new package | Explicit page breaks are shown; pagination, fonts and complex shapes are approximate; enforced document editing protection is read-only |
-| XLSX | Sparse native grid, actual workbook sheet names and relationship order; cell coordinates and merged-range metadata | Replace an existing non-formula cell with an inline string | Formulas and protected sheets are read-only; edits become text, with no calculation; raw numbers and cached formula values are shown; no blank-cell insertion or charts |
-| PPTX | Continuous pages or single-slide view; supported text geometry, common text styles, solid rectangle fills and bounded PNG/JPEG images | Replace existing text runs; preserve the other package members | Approximate layout only; limited theme/layout/master text inheritance. Charts, SmartArt, groups, rotations, cropping, vector graphics, media and animation are not rendered faithfully. Unsupported positions fall back to a labeled text outline; omissions are reported |
-| ODT / FODT | Paragraphs and headings in document order, including text inside spans | Replace existing text nodes; preserve surrounding elements | Structured reading, not page layout; automatic numbering, fields and advanced text constructs are incomplete |
-| ODS / FODS | Named sheets, actual cell addresses, typed/cached values, merged-range and compact repeat metadata | Edit existing plain string cells, retaining cell attributes and style references | Numeric, formula, protected, repeated and rich-text cells are read-only; no recalculation; repeated ranges are represented once, without allocating millions of cells |
-| ODP / FODP | Continuous pages or single-slide view; page grouping, common text styles, solid rectangle fills and bounded PNG/JPEG images | Replace existing text nodes within each page | Approximate layout; inherited styles and transform support are limited. Master graphics, charts, transitions and complex transforms remain unsupported; notes are not mixed into slide body text |
-| XML / SVG | Inert source with well-formedness validation | Edit source in its original UTF-8 / BOM-detected UTF-16 encoding; validate before export | No schema validation, DTDs, external entities or resource resolution; SVG scripts never execute; an incompatible encoding declaration is rejected |
-| HTML / HTM / CSS | Inert source | Edit original text encoding | HTML, scripts, styles and external resources are never executed or rendered |
-| TXT / MD / CSV / TSV / LOG / JSON / YAML | Plain source | Edit original UTF-8 / BOM-detected UTF-16 encoding | CSV is not a grid, Markdown is not rendered, and formulas/code are not executed |
-| DOC | Read-only OLE2 Word 97–2003 text via Apache POI HWPF | Original-byte copy only | No page layout, formatting, images, field reconstruction or legacy editing |
-| XLS | Read-only OLE2/BIFF8 addressed raw cell text via Apache POI HSSF records | Original-byte copy only | Dates remain serial values, cached formula results may be stale; no formatting, formulas evaluated, charts or legacy editing |
-| PPT | Read-only text grouped in current presentation slide order using the current persist directory | Original-byte copy only | Master placeholders and historical/deleted slides are excluded structurally; hidden current slides are included and labeled. No rendered layout, images, notes, animation or legacy editing |
-| RTF | Safe body-text reading/editing with common run emphasis | Replace supported existing text while retaining untouched source byte ranges; edited output is reparsed | Existing styles are preserved, not editable. Fields/Unicode alternatives and ambiguous control regions are read-only; objects, protection, revisions and unsupported composite-font/HTML constructs can make the whole document read-only. No faithful pagination or image/table rendering |
+| PDF | Android page renderer, Android 9+ | Android 15+ platform extraction; compact Rust fallback on older Android | Scanned pages need OCR, which is not included. Complex reading order and fonts may affect extracted text. |
+| DOCX, DOCM, DOTX, DOTM | WordCraft pages; semantic fallback | Paragraphs, headings and table content | Font substitution and unsupported layout features can change appearance. Macros are ignored. |
+| XLSX, XLSM, XLTX, XLTM | GridCraft print pages; semantic fallback | Sparse sheets and cell coordinates | Saved cell values are not recalculated. Conditional-format and sparkline expressions may be evaluated for page rendering. Charts and drawing fidelity depend on the renderer. |
+| PPTX, PPTM, PPSX, PPSM, POTX, POTM | DeckCraft slides; semantic fallback | Slides in presentation order and text blocks | No animation or transition playback. Font substitution may change layout. |
+| DOC, DOT; XLS; PPT, PPS, POT | Text / structure | Word 97–2003, BIFF8 sheets and binary PowerPoint | Earlier binary formats, encrypted documents, drawings and embedded objects are not supported. |
+| ODT, OTT, ODM, OTH; ODS, OTS; ODP, OTP; ODG, OTG | Text / structure | Paragraphs, cells, slide / drawing text | Drawings are not reconstructed; external master-document parts are not loaded. |
+| FODT, FODS, FODP, FODG | Text / structure | Flat OpenDocument XML | Same semantic limits as packaged OpenDocument. |
+| RTF | Text / structure | Unicode paragraphs | Formatting and embedded objects are omitted. |
+| EPUB | Text / structure | Reading order and chapter text | No publisher page layout, DRM, external assets or embedded scripting. |
+| FictionBook FB2 | Text / structure | Titles, paragraphs and verse | Images and binary attachments omitted. XML document types and entities rejected. |
+| HTML, HTM, XHTML | Readable text | Title and visible text | Scripts, styles, images and remote content omitted. |
+| Pages, Numbers, Keynote | Saved embedded PDF / JPEG, when present | Saved-preview text / structure when extractable; metadata for image-only or absent previews | Exports retain preview provenance. Original IWA content is not decoded, and previews may be absent, stale or incomplete. Export the current document from iWork as PDF / Office for access to its current content. |
+| Markdown: MD, MARKDOWN | One continuous formatted document | Parsed text and structured blocks | Headings, emphasis, lists, quotes, tables and code. Inline images retain their alt text; images and remote resources are not fetched or rendered. Active HTML is omitted. |
 
-## Source and package preservation
+Normal scrolls documents vertically. Present advances intrinsic or virtual pages horizontally, one page at a time; zoomed pages retain internal panning. Markdown has one continuous formatted reading view and a Text alternative, with no Normal/Present chooser or artificial page breaks. Other semantic readers use bounded virtual pages. Extractable documents also offer a Text view, saved per document; search uses that surface temporarily without changing the saved choice. IPC metadata and page exports use the same logical page count.
 
-The source provider is never opened for write. Export creates a copy. An unchanged export returns the original bytes, including flat OpenDocument and source files. Edited exports are reparsed independently; a failed export cannot poison the open session.
+Markdown image export and printing render the complete logical page or report a size limit; they do not silently clip the document or create extra logical pages. Raster output is limited to 8 million pixels and 8,192 pixels high. Printing other documents uses bounded raster pages in original colors: source PDF vectors and selectable text are not preserved. Print images are at most 1,600 pixels wide; selected pages, printer paper size, margins and monochrome mode are supported.
 
-Untouched ZIP members retain their uncompressed bytes. Edited XML parts are serialized and may have lexical changes. This is **not** a lossless layout or full office-roundtrip guarantee. Review edited exports in the originating application. ODF mimetype is written first and stored uncompressed; flat FODT/FODS/FODP remains XML rather than becoming ZIP.
+Standalone raster/vector images, PSD/PSB, plain text, source code, configuration/data files, email, contacts, calendars, certificates and 3D models are not supported inputs. Embedded images remain part of supported documents. Generic archives, DjVu, XPS / OXPS, MOBI / AZW, CHM, WordPerfect and Apple IWA semantic decoding are not implemented. Unsupported content reports an error instead of falling back to arbitrary source text.
 
-OOXML sheet/slide lists determine order through their relationships. Orphan slide parts are not silently inserted. Missing, external, duplicate or ambiguous referenced slide/sheet relationships fail closed. If ordering metadata is entirely absent in a partial synthetic package, numbered-part fallback is reported in session warnings.
+## Bundled examples
 
-## Bounded processing
+Home → Examples offers 46 offline samples, one for each supported extension. `.dot` is a Word template. Examples are synthetic, small and searchable; browsing does not copy documents or add them to Library or Recents. Opening a sample copies only that asset into bounded private storage and uses the ordinary reader. iWork samples demonstrate saved embedded previews, not IWA decoding.
 
-- 32 MiB file input; 64 MiB total expanded archive/text; 8 MiB per archive/XML part
-- 3,000 archive entries; 12,000 content blocks; 100,000 XML nodes across the package; XML depth 128
-- 2 MiB editable source text and per-edit text; 4 MiB combined edited characters
-- Worksheet coordinates bounded to 1,048,576 rows and 16,384 columns; ODS repeats stay compact
-- Expanded ODF spaces, editing-induced XML complexity and serialized output are also bounded
+`scripts/build-examples.py --check` verifies the catalog against the format registry, asset sizes and hashes. Device tests open every sample through the document engine, extract available text/JSON and render its first and last page. This checks the bundled files; it does not imply complete support for every feature of their formats. Generation and provenance are documented under `scripts/`.
 
-Documents outside these limits fail explicitly rather than presenting partially editable content. Known macro-enabled, signed, active-script and encrypted package structures are refused. These checks are a defensive parsing policy, not an antivirus scanner. Embedded binary assets are not executed.
+## Notes and comments
 
-Formatted DOCX preview is independent of the edit/export engine. It receives a normalized, validated ZIP copy; unchanged user exports still preserve the original bytes. The preview disables alternate HTML chunks, embedded fonts, active hyperlinks, file/content access, external resources, navigation and application JavaScript bridges.
+The Notes panel is separate from the reading body. Text exports append a labelled notes section; JSON includes `notes` entries with text, kind and available author/location/page, plus warnings and truncation status.
 
-## PDF form-copy boundaries
+- PDF: plain-text annotation contents, including comments and highlight notes. Popup duplicates, links/actions, attachments/media and rich-text-only payloads are skipped. An image-only PDF can contain real annotations; pixels themselves are not OCRed.
+- OOXML: PowerPoint speaker notes and slide comments; referenced Word comments; Excel cell notes and threaded comments. Both are read; same-cell compatibility duplicates are omitted.
+- OpenDocument: annotations and presentation notes in packaged or flat text, spreadsheet, presentation and drawing formats.
 
-Text-form edits use Android 15's native PDF writer and do not rasterize the exported document. Read-only fields are omitted; any signature widget blocks filling, including unsigned signature fields. Detected `/ByteRange`, `/Sig` or `/DocTimeStamp` names (including PDF name escapes) also block form filling. A conservative `/Encrypt` marker check (including PDF name escapes) blocks form filling on encryption-marked files. These conservative checks deliberately may reject files containing those names in comments, strings or binary data; they are not a complete verifier for malformed, encrypted or digitally signed PDFs.
+Legacy binary Office notes, tracked changes, Word footnotes/endnotes and exact Word page mapping are not implemented. Notes extraction is lazy; failures preserve the readable body and are reported separately. Known page mappings support navigation, while unmapped locations remain labels.
 
-PDF form limits: 32 MiB input/output, 500 pages, 64 widgets/page, 256 edits, 4,096 characters/field and 65,536 aggregate edited characters. A fresh isolated renderer is used for export, and the staged PDF is reopened to verify page count and field values before the destination is written. Native form filling still requires real-device verification.
+Office notes retain at most 2,048 items and 524,288 UTF-16 code units of note text, with a 16,384-unit per-note limit, bounded XML/package processing and a deadline. PDF notes retain at most 4,096 entries across 2,000 pages, with 2,000,000 UTF-8 bytes of text and author names in total and 16 KiB of text per note. Limits mark omissions rather than presenting the result as complete.
 
-## Legacy extraction engine
+## Bounds
 
-The legitimate compact path is Apache POI's OLE2 infrastructure plus HWPF (DOC), HSSF records (XLS) and a bounded PPT text extractor. It does not require POI's large OOXML schema engine. The [official component map](https://poi.apache.org/components/index.html) documents these modules. Full HSLF slide rendering depends on desktop [Graphics2D APIs](https://poi.apache.org/apidocs/dev/org/apache/poi/hslf/usermodel/HSLFSheet.html), so it is unsuitable as an unmodified Android renderer.
+- Semantic Office input: 16 MiB; expanded ZIP content: 32 MiB; individual XML/package parts have additional bounds.
+- Native text content: 512 KiB, at most 4,096 blocks and 64 sections; bounded titles and warnings are additional. Structured exports preserve sparse sheet coordinates; sparse plain-text tables use explicit one-based row/column labels instead of allocating empty-cell padding.
+- Text-based document parsers read at most 512 KiB of encoded input. Excerpts and omitted content are reported.
+- Text-based documents accept UTF-8 and BOM-labelled UTF-16 / UTF-32. Malformed encodings and binary control data are rejected.
+- FB2 XML input: 512 KiB.
+- iWork packages: 16 MiB, 4,096 entries; one bounded embedded preview with length and CRC validation.
+- Files may reach a format-specific limit before the application input limit. Exceptions and session warnings explain the limit.
 
-An isolated POI 5.5.1 shrink experiment measured approximately 0.65 MiB compressed output for a small legacy extraction entry point. This is a feasibility measurement, not an integrated APK measurement or a runtime-compatibility guarantee. Full model extraction and convenient number-formatting helpers can still reach unavailable desktop graphics classes; those paths must not be hidden behind blanket warning suppression. The integrated adapter uses raw XLS records without formatting helpers, DOC text pieces without rendering, and validated PPT record boundaries before text decoding. Legacy import is limited to 8 MiB, 2,048 OLE entries, depth 64, 100,000 records and 1 MiB extracted characters. Known macro, signature and encryption structures are rejected. The library can allocate DOC/SST models before output guards; this adapter is not a hard aggregate-memory sandbox. All legacy sessions are read-only, and exported copies retain the original bytes.
+Bounded content signatures select known formats even with unfamiliar names. Name/provider hints remain useful when a package probe is inconclusive; each parser still validates its input. Library scans need a compatible legacy Office filename or provider hint; an unhinted compound file must be opened once for full DOC/XLS/PPT validation before it can be indexed. Compound storage alone does not establish a supported document type. Renaming a file does not convert it. Password-protected Office documents are rejected. PDF password handling is supported by the platform reader on Android 15+; availability on older releases differs.
 
-Focused JVM tests include loading each format while desktop AWT, Swing and ImageIO classes are deliberately unavailable. This checks the selected extraction paths; it does not replace real Android device verification. No proprietary WPS component is used.
+## Implementation and verification
 
-## Interoperability corpus
+The semantic Office reader is an attributed fork of ZFM's bounded Rust core, using quick-xml, flate2, cfb and encoding_rs. Source provenance and dependency notices live in `native/documents`; notices are bundled in the app. Visual engines remain separate upstream submodules.
 
-`scripts/generate-fixtures.py` produces synthetic DOCX, XLSX, PPTX, ODT, ODS, ODP, FODT, XML, TXT and PDF examples. Separate legacy DOC/XLS/PPT fixtures exercise the bounded read-only adapter (see their provenance file). The PPTX intentionally has presentation order that differs from numeric part names. Regression tests cover relationship order, sparse addresses, repeat bounds, protection, whitespace, encoding declarations, hostile XML/archive inputs, independent exports, preserved assets and edit/reopen roundtrips.
+Core JVM tests exercise document admission, Unicode boundaries, Markdown, HTML, FB2, exports and cancellation. Host JNI tests exercise DOCX, ODF / ODG, RTF and malformed packages; temporary Apache POI public samples also verified DOC, XLS and PPT extraction. Rust tests cover legacy Office parsing. `CoreDeviceTest` checks the JNI and XML path on Android. These are representative tests, not a promise that every feature of every document is supported.
 
-Model semantics are based on [Microsoft's PresentationML slide documentation](https://learn.microsoft.com/en-us/office/open-xml/presentation/working-with-presentation-slides) and the [OASIS OpenDocument 1.3 schema](https://docs.oasis-open.org/office/OpenDocument/v1.3/OpenDocument-v1.3-part3-schema.html).
-
-## Full document-engine requirement
-
-These compact fallbacks do **not** fulfill full Word/Excel/PowerPoint functionality. In particular, spreadsheet charts, formula editing/recalculation, full formatting, object insertion and complex layout are missing. The mature offline engine assessment is in `research/android-office-engine-feasibility-2026-10-03.md`. No verified compact full-featured native interactive engine has been integrated. A document-processing library or optional engine download must not be presented as solving interactive editing or total installed footprint.
-
-## Unexecuted real-world corpus
-
-`corpus/manifest.json` records 50 distinct upstream regression fixtures (820,665 bytes), pinned revisions, SHA-256 values, producer evidence and repository license notices. Eighteen files contain recorded producer metadata; 32 are unknown/not embedded. Only fixture/license hashes were verified. Harness execution stopped during dependency lookup before compilation, parser execution, mutations or export/reopen. No corpus operation is a pass; fixture-by-fixture redistribution review is incomplete. Synthetic tests are separate and do not substitute for real-file coverage.
+For a repeatable host JNI check, run `scripts/check-core` from the project root. It builds the host library, verifies pinned JVM tool dependencies, requires native loading before JUnit, and fails on skipped assumptions. The exact source and library hashes are recorded in `.tmp/core-check/receipt.json`. Default Gradle unit runs can skip JNI-only cases when no host library is configured; use this command or the Android device suite for native-reader evidence.

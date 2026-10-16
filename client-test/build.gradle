@@ -1,0 +1,16 @@
+plugins { id 'com.android.application' }
+android {
+ namespace 'app.smallthingz.alldoc.clienttest'; compileSdk 37
+ defaultConfig {
+  applicationId 'app.smallthingz.alldoc.clienttest'; minSdk 28; targetSdk 37
+  testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+ }
+ buildFeatures { aidl true }
+ compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+dependencies {
+ implementation project(':api')
+ androidTestImplementation 'androidx.test:core:1.7.0'
+ androidTestImplementation 'androidx.test:runner:1.7.0'
+ androidTestImplementation 'androidx.test.ext:junit:1.3.0'
+}

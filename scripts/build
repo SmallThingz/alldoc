@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Build all native readers and ABI-specific AllDoc APKs from the project root."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+ABIS = ("arm64-v8a", "x86_64")
+LIBRARIES = ("liballdoc.so", "liballpdf.so", "liballrender.so", "liballrun.so")
+
+def run(command, **kwargs):
+    subprocess.run(command, check=True, **kwargs)
+
+def java_environment(chosen):
+    env = os.environ.copy()
+    home = chosen or env.get("JAVA_HOME")
+    java = str(Path(home)/"bin/java") if home else shutil.which("java")
+    if not java or not Path(java).is_file():
+        raise RuntimeError("Set JAVA_HOME to a JDK 21 installation, or pass --java-home PATH")
+    result = subprocess.run([java, "-version"], text=True, capture_output=True, timeout=10)
+    match = re.search(r'version "(\d+)', result.stderr + result.stdout)
+    if result.returncode or not match or int(match.group(1)) != 21:
+        raise RuntimeError("This build is qualified with JDK 21. Set JAVA_HOME or --java-home to JDK 21")
+    if home:
+        env["JAVA_HOME"] = str(Path(home).resolve())
+    return env
+
+def submodules(check_only):
+    manifest = json.loads(Path("native/render/projection.json").read_text())
+    for name, item in manifest.items():
+        path = Path("upstream")/name
+        if not (path/".git").exists():
+            if check_only:
+                raise RuntimeError(f"Initialize upstream/{name} with git submodule update --init --recursive")
+            run(["git", "submodule", "update", "--init", "--recursive", "--", str(path)])
+        revision = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+        dirty = subprocess.check_output(["git", "-C", str(path), "status", "--porcelain"], text=True).strip()
+        if revision != item["commit"] or dirty:
+            raise RuntimeError(f"upstream/{name} must be clean at its reviewed pin {item['commit']}")
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--abis", nargs="+", choices=ABIS, default=list(ABIS))
+    parser.add_argument("--debug", action="store_true", help="build debug APKs instead of release")
+    parser.add_argument("--java-home", help="JDK 21 location (otherwise JAVA_HOME or java on PATH)")
+    parser.add_argument("--ndk", help="Android NDK 29.0.14206865 location")
+    parser.add_argument("--jobs", type=int, default=2)
+    parser.add_argument("--check", action="store_true", help="check prerequisites and packaged reader presence without building")
+    args = parser.parse_args()
+    if not Path("settings.gradle").is_file():
+        parser.error("Run scripts/build from the AllDoc project root")
+    if not 1 <= args.jobs <= 4:
+        parser.error("jobs must be 1 through 4")
+    env = java_environment(args.java_home)
+    for tool in ["git", "cargo", "rustup", "patch"]:
+        if not shutil.which(tool):
+            raise RuntimeError(f"Required build tool is missing: {tool}")
+    sdk = env.get("ANDROID_HOME") or env.get("ANDROID_SDK_ROOT")
+    ndk = Path(args.ndk) if args.ndk else (Path(sdk)/"ndk/29.0.14206865" if sdk else Path("../../.android/sdk/ndk/29.0.14206865"))
+    if not (ndk/"source.properties").is_file() or "Pkg.Revision = 29.0.14206865" not in (ndk/"source.properties").read_text():
+        raise RuntimeError("Install Android NDK 29.0.14206865, set ANDROID_HOME, or pass --ndk PATH")
+    if not sdk:
+        env["ANDROID_HOME"] = str(ndk.parent.parent.resolve())
+    targets = subprocess.check_output(["rustup", "target", "list", "--installed"], text=True).splitlines()
+    for abi in args.abis:
+        target = "aarch64-linux-android" if abi == "arm64-v8a" else "x86_64-linux-android"
+        if target not in targets:
+            raise RuntimeError(f"Install the Rust target: rustup target add {target}")
+    submodules(args.check)
+    if not args.check:
+        shared = ["--ndk", str(ndk), "--jobs", str(args.jobs)]
+        run([sys.executable, "native/build_documents.py", *args.abis, *shared], env=env)
+        run([sys.executable, "native/build_pdf.py", *args.abis, *shared], env=env)
+        run([sys.executable, "native/render/build.py", "--abis", *args.abis, *shared], env=env)
+    for abi in args.abis:
+        for library in LIBRARIES:
+            path = Path("app/src/main/jniLibs")/abi/library
+            if not path.is_file() or path.stat().st_size < 256:
+                raise RuntimeError(f"Missing native reader: {path}; run scripts/build")
+    if args.check:
+        print("Build prerequisites, reviewed submodules and native readers are present")
+        return
+    variant = "Debug" if args.debug else "Release"
+    run(["./gradlew", "--no-daemon", "-PalldocAbis="+",".join(args.abis), ":app:assemble"+variant, ":app:test"+variant+"UnitTest"], env=env)
+    print("APKs: app/build/outputs/apk/"+variant.lower())
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RuntimeError, subprocess.CalledProcessError) as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

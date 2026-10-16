@@ -1,12 +1,20 @@
 .gradle/
+.gradle-user/
 .kotlin/
 **/build/
 local.properties
+.tmp/
+**/__pycache__/
+**/target/
+app/src/main/jniLibs/
+native/render/vendor/
+
+# Local credentials and workspace notes
 *.jks
 *.keystore
+.env
+.env.*
 .idea/
-*.iml
-
-# Paused external corpus: keep local inputs/results, do not redistribute unreviewed files.
-/corpus/upstream/
-/corpus/results/
+.vscode/
+AGENTS.md
+REQUESTS.md

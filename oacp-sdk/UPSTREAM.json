@@ -1,0 +1,52 @@
+{
+  "repository": "https://github.com/OpenAppCapabilityProtocol/oacp-android-sdk",
+  "commit": "a9174ac8a2f4ccec2d7a2d4b8f8c04ef6f979d81",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "source": "oacp-android/src/main/kotlin/org/oacp/android/Oacp.kt",
+      "path": "src/main/kotlin/org/oacp/android/Oacp.kt",
+      "sha256": "b224a319e692f28302c97a8168db35c606fe36716d71f8b0a7adfd034801900d"
+    },
+    {
+      "source": "oacp-android/src/main/kotlin/org/oacp/android/OacpActivity.kt",
+      "path": "src/main/kotlin/org/oacp/android/OacpActivity.kt",
+      "sha256": "73786e1c169792d247ccbe31ef701f89d23188037834ff8b63ea18c85a9d517f"
+    },
+    {
+      "source": "oacp-android/src/main/kotlin/org/oacp/android/OacpEntitySource.kt",
+      "path": "src/main/kotlin/org/oacp/android/OacpEntitySource.kt",
+      "sha256": "6e4c906af26b11808ebc53cf555b3803b3b165b23844546a75328c60a3909fff"
+    },
+    {
+      "source": "oacp-android/src/main/kotlin/org/oacp/android/OacpParams.kt",
+      "path": "src/main/kotlin/org/oacp/android/OacpParams.kt",
+      "sha256": "fe5e0752a5ec345a758656266de17840b8ca4cd97cf900b10f9d8b55406a1c2c"
+    },
+    {
+      "source": "oacp-android/src/main/kotlin/org/oacp/android/OacpProvider.kt",
+      "path": "src/main/kotlin/org/oacp/android/OacpProvider.kt",
+      "sha256": "c64fa52d5e235dfd7ef524ee903f225a37b901e8a077270b9674dc4e037c1105"
+    },
+    {
+      "source": "oacp-android/src/main/kotlin/org/oacp/android/OacpReceiver.kt",
+      "path": "src/main/kotlin/org/oacp/android/OacpReceiver.kt",
+      "sha256": "f5dbf41ba5b1a0d5a7ec06d88fe688b6d0707a04b1afa26dc4b2e4eb1e899225"
+    },
+    {
+      "source": "oacp-android/src/main/kotlin/org/oacp/android/OacpResult.kt",
+      "path": "src/main/kotlin/org/oacp/android/OacpResult.kt",
+      "sha256": "f69814322b9b102cb8a7c68007906cbe69c70adb2887b52bb8fe26c5ddf05464"
+    },
+    {
+      "source": "oacp-android/src/main/AndroidManifest.xml",
+      "path": "src/main/AndroidManifest.xml",
+      "sha256": "6f33868c25bbf3941bbf582ee4abd45f4f8cd1846befa7a0f5542a141fe9e416"
+    },
+    {
+      "source": "LICENSE",
+      "path": "src/main/assets/oacp-sdk-license.txt",
+      "sha256": "5b8534a0f9614df8577c951837dfaa2bdb8e3e9a9173050aa201b8968e154c7e"
+    }
+  ]
+}

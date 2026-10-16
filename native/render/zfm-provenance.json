@@ -1,0 +1,2114 @@
+{
+  "schema": "zfm.render-sources.v1",
+  "runtime": {
+    "file": "libzfmrender.so",
+    "kind": "PIE_EXECUTABLE",
+    "launcher": "libzfmrun.so",
+    "input_limit": 16777216,
+    "output_limit": 16777216,
+    "external_deadline_seconds": 15,
+    "pages_limit": 128,
+    "zip_expanded_limit": 33554432,
+    "xml_nodes_limit": 64000,
+    "source_only_android_runtime_unqualified": true,
+    "available_abis": [
+      "arm64-v8a"
+    ],
+    "unavailable_abis": {
+      "x86_64": "No renderer binary; existing structural/platform handlers retained"
+    }
+  },
+  "components": [
+    {
+      "component": "Storytold/wordcraft",
+      "upstream": "https://github.com/storytold/wordcraft",
+      "commit": "db0cfed1f78f4e82b77b922b6006f56a842c8e50",
+      "license": "MIT OR Apache-2.0 for selected code; assets have separate notices",
+      "file": "storytold-wordcraft-db0cfed1f78f4e82b77b922b6006f56a842c8e50.tar.gz",
+      "source": "https://codeload.github.com/storytold/wordcraft/tar.gz/db0cfed1f78f4e82b77b922b6006f56a842c8e50",
+      "bytes": 6711664,
+      "sha256": "efa413ecd9ae86880a5c2d488555693410ad14f02990cf1640a9628d0ce41d3f",
+      "notices": [
+        {
+          "file": "native/render/notices/storytold-wordcraft-ATTRIBUTION.md",
+          "sha256": "c9fde90ab7de68768dad1ccc23ea916eea32577b2faa065d8f7a72ab934dbfdd"
+        },
+        {
+          "file": "native/render/notices/storytold-wordcraft-LICENSE-APACHE",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "file": "native/render/notices/storytold-wordcraft-LICENSE-MIT",
+          "sha256": "fc257de83c44ae49e4aad1cf777b886794be3ac9c8d00c010ef55935d5bbeba5"
+        },
+        {
+          "file": "native/render/notices/storytold-wordcraft-NOTICE",
+          "sha256": "b5d978d17cdec6a62eaa8cffb46085604650cd9c9eaf8d4f1ed6654e91cdf7fb"
+        },
+        {
+          "file": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-Inter.txt",
+          "sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"
+        },
+        {
+          "file": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-JetBrainsMono.txt",
+          "sha256": "a76abf002c49097d146e86740a3105a5d00450b1592e820a1109a8c5680cd697"
+        },
+        {
+          "file": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSans3.txt",
+          "sha256": "56af9b9c6715597e458284a474dc118a50a4150e9d547c70f7b4a33c3e6a9328"
+        },
+        {
+          "file": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSerif4.txt",
+          "sha256": "c21d7293d87b6d7ab1d0229a2f55b77f33a7613a6a4e66f6693d68d7d8d09464"
+        }
+      ],
+      "license_choice": "MIT for selected code; original Apache-2.0/MIT texts preserved; asset-specific licences retained",
+      "initial_vendoring_derivations": [
+        {
+          "file": "Cargo.toml",
+          "captured_normalized_sha256": "a03b3a65ee3ca2e3da419025a3ebeab87ad75198b8606cb1f4c5ae5a0b486a4d",
+          "original_upstream_sha256": "27b72698fd4544e95b41a96d9ee96998dd8796025f45f2512ac79f921d67bc0a",
+          "reason": "Workspace member/dependency closure normalized during initial vendoring"
+        }
+      ],
+      "source_archive_private_only": {
+        "file": "storytold-wordcraft-db0cfed1f78f4e82b77b922b6006f56a842c8e50.tar.gz",
+        "bytes": 6711664,
+        "sha256": "efa413ecd9ae86880a5c2d488555693410ad14f02990cf1640a9628d0ce41d3f",
+        "url": "https://codeload.github.com/storytold/wordcraft/tar.gz/db0cfed1f78f4e82b77b922b6006f56a842c8e50",
+        "reason": "Unrelated trademark brand assets omitted from export"
+      },
+      "export_artifact": {
+        "file": "storytold-wordcraft-db0cfed1f78f4e82b77b922b6006f56a842c8e50-selected-sources.tar.gz",
+        "bytes": 2893700,
+        "sha256": "308152d40a9f2aaf28046ceae9581276c90e23c2c015bcf27c39b7f556b91381",
+        "selected_original_members": 89,
+        "member_manifest": "wordcraft-projection-members.json",
+        "member_manifest_sha256": "a981dd8f55e0a77e36921e2a5a307aae1875b5dad6521c99003c30969aa3c906"
+      },
+      "private_changes_from_upstream": [
+        "Cargo.toml",
+        "crates/fonts/src/fontdb.rs",
+        "crates/render/Cargo.toml",
+        "crates/render/src/lib.rs",
+        "crates/fonts/Cargo.toml"
+      ]
+    },
+    {
+      "component": "Storytold/deckcraft",
+      "upstream": "https://github.com/storytold/deckcraft",
+      "commit": "286ff74c8ba9be7e8ec110783b3d22beb8052341",
+      "license": "MIT OR Apache-2.0 for selected code; assets have separate notices",
+      "file": "storytold-deckcraft-286ff74c8ba9be7e8ec110783b3d22beb8052341.tar.gz",
+      "source": "https://codeload.github.com/storytold/deckcraft/tar.gz/286ff74c8ba9be7e8ec110783b3d22beb8052341",
+      "bytes": 2780423,
+      "sha256": "a584499341da63df74ad5a65b34f631ea790e19e8007e7d06cf7cd3a1c00d9c5",
+      "notices": [
+        {
+          "file": "native/render/notices/storytold-deckcraft-ATTRIBUTION.md",
+          "sha256": "f5f8563947278a63e982534718dfc4035edafdb440252619264fdb68c4bf9d65"
+        },
+        {
+          "file": "native/render/notices/storytold-deckcraft-LICENSE-APACHE",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "file": "native/render/notices/storytold-deckcraft-LICENSE-MIT",
+          "sha256": "90e96fef569474cd526350e716e4b05dd32f179ca96d39d61e6b928485e35406"
+        },
+        {
+          "file": "native/render/notices/storytold-deckcraft-NOTICE",
+          "sha256": "77b755b4c3c7c2076076547580001a2ecdefd270dcd6536ed8a7da1b64960a45"
+        }
+      ],
+      "license_choice": "MIT for selected code; original Apache-2.0/MIT texts preserved; asset-specific licences retained",
+      "initial_vendoring_derivations": [
+        {
+          "file": "Cargo.toml",
+          "captured_normalized_sha256": "3a1b2890b4e8b7e4d2593d07a0611e0394972aa6478b24b58d2705100d4e0046",
+          "original_upstream_sha256": "ccd5b01150f85f3120af502f328767a29b293abc4f2d8e4b10a5781d33f50be6",
+          "reason": "Workspace member/dependency closure normalized during initial vendoring"
+        }
+      ],
+      "source_archive_private_only": {
+        "file": "storytold-deckcraft-286ff74c8ba9be7e8ec110783b3d22beb8052341.tar.gz",
+        "bytes": 2780423,
+        "sha256": "a584499341da63df74ad5a65b34f631ea790e19e8007e7d06cf7cd3a1c00d9c5",
+        "url": "https://codeload.github.com/storytold/deckcraft/tar.gz/286ff74c8ba9be7e8ec110783b3d22beb8052341",
+        "reason": "Unrelated trademark brand assets omitted from export"
+      },
+      "export_artifact": {
+        "file": "storytold-deckcraft-286ff74c8ba9be7e8ec110783b3d22beb8052341-selected-sources.tar.gz",
+        "bytes": 1130067,
+        "sha256": "dae0ac7423c8e4c79405d8f075b2f84a6631da937d05b1ad2ae94578476378cc",
+        "selected_original_members": 250,
+        "member_manifest": "deckcraft-projection-members.json",
+        "member_manifest_sha256": "d9e9c7fd69dcf647bf9c528b1ed6b505a1a8442fbacb4be3aedac2191bb148d6"
+      },
+      "private_changes_from_upstream": [
+        "Cargo.toml",
+        "crates/fonts/src/fontdb.rs",
+        "crates/render/Cargo.toml",
+        "crates/fonts/Cargo.toml",
+        "crates/render/src/lib.rs"
+      ]
+    },
+    {
+      "component": "Storytold/gridcraft",
+      "upstream": "https://github.com/storytold/gridcraft",
+      "commit": "c6b6f4177cbf52aa7a8bac8aa15650a7502926fe",
+      "license": "MIT OR Apache-2.0 for selected code; assets have separate notices",
+      "file": "storytold-gridcraft-c6b6f4177cbf52aa7a8bac8aa15650a7502926fe.tar.gz",
+      "source": "https://codeload.github.com/storytold/gridcraft/tar.gz/c6b6f4177cbf52aa7a8bac8aa15650a7502926fe",
+      "bytes": 3273712,
+      "sha256": "63b489b4379e0284766f153702ffc88e093482a92f4303ecc0f8bf048b9ef9be",
+      "notices": [
+        {
+          "file": "native/render/notices/storytold-gridcraft-ATTRIBUTION.md",
+          "sha256": "9da50e18b7cad550f61f3204843c9f677d039f918af9ce0efb8accea04bbed89"
+        },
+        {
+          "file": "native/render/notices/storytold-gridcraft-LICENSE-APACHE",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "file": "native/render/notices/storytold-gridcraft-LICENSE-MIT",
+          "sha256": "a87109bbb1ad43ca3920a5d7ff3806863b7e8470a73f4ded97a1447ac93333f5"
+        },
+        {
+          "file": "native/render/notices/storytold-gridcraft-NOTICE",
+          "sha256": "7c948d5b56639a6d53c362ce0b54a79badd6f272c542f0fc0f22e9ec31c61c2b"
+        },
+        {
+          "file": "native/render/notices/storytold-gridcraft-assets_app-icon_LICENSE.txt",
+          "sha256": "9596de48b5e42fbf727c924bb3863f0e28fcd9e38c47cca284e1174bd06481ce"
+        }
+      ],
+      "license_choice": "MIT for selected code; original Apache-2.0/MIT texts preserved; asset-specific licences retained",
+      "initial_vendoring_derivations": [
+        {
+          "file": "Cargo.toml",
+          "captured_normalized_sha256": "fd9c0ed81d4a5784035523456c4fbd4cf6d7c77d406e2ca92e13581165ede10b",
+          "original_upstream_sha256": "9f7f1cabf561780600499e7961e5dcd597b8c588eb94837bc0fa43cc932c6062",
+          "reason": "Workspace member/dependency closure normalized during initial vendoring"
+        }
+      ],
+      "source_archive_private_only": {
+        "file": "storytold-gridcraft-c6b6f4177cbf52aa7a8bac8aa15650a7502926fe.tar.gz",
+        "bytes": 3273712,
+        "sha256": "63b489b4379e0284766f153702ffc88e093482a92f4303ecc0f8bf048b9ef9be",
+        "url": "https://codeload.github.com/storytold/gridcraft/tar.gz/c6b6f4177cbf52aa7a8bac8aa15650a7502926fe",
+        "reason": "Unrelated trademark brand assets omitted from export"
+      },
+      "export_artifact": {
+        "file": "storytold-gridcraft-c6b6f4177cbf52aa7a8bac8aa15650a7502926fe-selected-sources.tar.gz",
+        "bytes": 750631,
+        "sha256": "751a761a71e9e9d5ccce289d9c5b9a0ae9b98f69e42fa1af617240c61b2db39c",
+        "selected_original_members": 138,
+        "member_manifest": "gridcraft-projection-members.json",
+        "member_manifest_sha256": "13d138d9c21770b7b1cc37200732e4c4f678343d580768203d14db4cc867225e"
+      },
+      "private_changes_from_upstream": [
+        "Cargo.toml",
+        "crates/engine/src/cmd/print.rs",
+        "crates/engine/Cargo.toml",
+        "crates/pdf/Cargo.toml",
+        "crates/pdf/src/lib.rs",
+        "crates/pdf/src/raster.rs",
+        "crates/pdf/src/tests.rs"
+      ]
+    },
+    {
+      "component": "Storytold/photocraft",
+      "upstream": "https://github.com/storytold/photocraft",
+      "commit": "5896f0b63e6f342e0311920b4d2a0ea5a94330fc",
+      "license": "MIT OR Apache-2.0 for selected code; assets have separate notices",
+      "file": "storytold-photocraft-5896f0b63e6f342e0311920b4d2a0ea5a94330fc.tar.gz",
+      "source": "https://codeload.github.com/storytold/photocraft/tar.gz/5896f0b63e6f342e0311920b4d2a0ea5a94330fc",
+      "bytes": 14332562,
+      "sha256": "a86503bda194fea18345d5489b0b67dc446a8f4e9a0f36499fa20f92530869f1",
+      "notices": [
+        {
+          "file": "native/render/notices/storytold-photocraft-ATTRIBUTION.md",
+          "sha256": "7b00cfd27548e4f5f9a2a70a84f9b633fa5faf5cd0bbf2570e593e70f853f5db"
+        },
+        {
+          "file": "native/render/notices/storytold-photocraft-LICENSE-APACHE",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "file": "native/render/notices/storytold-photocraft-LICENSE-MIT",
+          "sha256": "1a8f66d8a86b146f5336fa0d4b1186576c8aa98e60823080c85c7811cfd810af"
+        },
+        {
+          "file": "native/render/notices/storytold-photocraft-NOTICE",
+          "sha256": "fb7d6f0e57c396b6c94f6315d3dba13048a296d81e7546d33e2b7c77c71ea147"
+        },
+        {
+          "file": "native/render/notices/storytold-photocraft-assets_app-icon_LICENSE.txt",
+          "sha256": "a5cf25f3f3c2fe2c6d294db04f1bfea7259ac21e8edde5c7fabaa4c379e94795"
+        },
+        {
+          "file": "native/render/notices/storytold-photocraft-assets_dict_LICENSE-SCOWL.txt",
+          "sha256": "e2a852424fe4ee684225a6a8a34c73f8944f11ad825b7fc3a58ddcee617ed23d"
+        },
+        {
+          "file": "native/render/notices/storytold-photocraft-assets_fonts_OFL-Inter.txt",
+          "sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"
+        },
+        {
+          "file": "native/render/notices/storytold-photocraft-assets_fonts_OFL-JetBrainsMono.txt",
+          "sha256": "a76abf002c49097d146e86740a3105a5d00450b1592e820a1109a8c5680cd697"
+        },
+        {
+          "file": "native/render/notices/storytold-photocraft-assets_icons_LICENSE-lucide.txt",
+          "sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
+        },
+        {
+          "file": "native/render/notices/storytold-photocraft-assets_icons_LICENSE-noun-magnetic-lasso.txt",
+          "sha256": "667185ed8a375d40aff0d19f02ce880e786e355253b7c5adba2be7471b70c36a"
+        }
+      ],
+      "license_choice": "MIT for selected code; original Apache-2.0/MIT texts preserved; asset-specific licences retained",
+      "initial_vendoring_derivations": [
+        {
+          "file": "Cargo.toml",
+          "captured_normalized_sha256": "fc9afeb3abe1c8d7bbcd910e62d013c509890e8175e82879e20faf2837a348aa",
+          "original_upstream_sha256": "2ef95caeb0a56854c934975fdb60dc562b40914b41c98f0eccf07f72183fe4ff",
+          "reason": "Workspace member/dependency closure normalized during initial vendoring"
+        }
+      ],
+      "source_archive_private_only": {
+        "file": "storytold-photocraft-5896f0b63e6f342e0311920b4d2a0ea5a94330fc.tar.gz",
+        "bytes": 14332562,
+        "sha256": "a86503bda194fea18345d5489b0b67dc446a8f4e9a0f36499fa20f92530869f1",
+        "url": "https://codeload.github.com/storytold/photocraft/tar.gz/5896f0b63e6f342e0311920b4d2a0ea5a94330fc",
+        "reason": "Unrelated trademark brand assets omitted from export"
+      },
+      "export_artifact": {
+        "file": "storytold-photocraft-5896f0b63e6f342e0311920b4d2a0ea5a94330fc-selected-sources.tar.gz",
+        "bytes": 3034408,
+        "sha256": "8185bd6c2de304d89d4b3f9f1e06f2fd32716c863173321be48ac511158a5752",
+        "selected_original_members": 188,
+        "member_manifest": "photocraft-projection-members.json",
+        "member_manifest_sha256": "3278bf911b927b5dbc2f3e997cee9c8508fb2dee03d85eaa367fb72db4dfed65"
+      },
+      "private_changes_from_upstream": [
+        "Cargo.toml"
+      ]
+    }
+  ],
+  "crates": [
+    {
+      "crate": "adler2",
+      "version": "2.0.1",
+      "file": "adler2-2.0.1.crate",
+      "crate_sha256": "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa",
+      "bytes": 13366,
+      "source": "https://static.crates.io/crates/adler2/adler2-2.0.1.crate",
+      "license": "0BSD OR MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/adler2-2.0.1-LICENSE-0BSD",
+          "sha256": "861399f8c21c042b110517e76dc6b63a2b334276c8cf17412fc3c8908ca8dc17"
+        },
+        {
+          "file": "native/render/notices/adler2-2.0.1-LICENSE-APACHE",
+          "sha256": "8ada45cd9f843acf64e4722ae262c622a2b3b3007c7310ef36ac1061a30f6adb"
+        },
+        {
+          "file": "native/render/notices/adler2-2.0.1-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "aho-corasick",
+      "version": "1.1.5",
+      "file": "aho-corasick-1.1.5.crate",
+      "crate_sha256": "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba",
+      "bytes": 184315,
+      "source": "https://static.crates.io/crates/aho-corasick/aho-corasick-1.1.5.crate",
+      "license": "Unlicense OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/aho-corasick-1.1.5-COPYING",
+          "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f"
+        },
+        {
+          "file": "native/render/notices/aho-corasick-1.1.5-LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f"
+        },
+        {
+          "file": "native/render/notices/aho-corasick-1.1.5-UNLICENSE",
+          "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c"
+        }
+      ]
+    },
+    {
+      "crate": "arbitrary",
+      "version": "1.5.0",
+      "file": "arbitrary-1.5.0.crate",
+      "crate_sha256": "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed",
+      "bytes": 38686,
+      "source": "https://static.crates.io/crates/arbitrary/arbitrary-1.5.0.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/arbitrary-1.5.0-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/arbitrary-1.5.0-LICENSE-MIT",
+          "sha256": "15656cc11a8331f28c0986b8ab97220d3e76f98e60ed388b5ffad37dfac4710c"
+        }
+      ]
+    },
+    {
+      "crate": "arrayvec",
+      "version": "0.7.8",
+      "file": "arrayvec-0.7.8.crate",
+      "crate_sha256": "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56",
+      "bytes": 33260,
+      "source": "https://static.crates.io/crates/arrayvec/arrayvec-0.7.8.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/arrayvec-0.7.8-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/arrayvec-0.7.8-LICENSE-MIT",
+          "sha256": "4da95ec4ecb65b738d470b7d762894ad9c97da93e6cbfb18b570fc2c96f4b871"
+        }
+      ]
+    },
+    {
+      "crate": "autocfg",
+      "version": "1.5.1",
+      "file": "autocfg-1.5.1.crate",
+      "crate_sha256": "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53",
+      "bytes": 18911,
+      "source": "https://static.crates.io/crates/autocfg/autocfg-1.5.1.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/autocfg-1.5.1-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/autocfg-1.5.1-LICENSE-MIT",
+          "sha256": "27995d58ad5c1145c1a8cd86244ce844886958a35eb2b78c6b772748669999ac"
+        }
+      ]
+    },
+    {
+      "crate": "bitflags",
+      "version": "2.13.2",
+      "file": "bitflags-2.13.2.crate",
+      "crate_sha256": "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06",
+      "bytes": 51678,
+      "source": "https://static.crates.io/crates/bitflags/bitflags-2.13.2.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/bitflags-2.13.2-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/bitflags-2.13.2-LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb"
+        }
+      ]
+    },
+    {
+      "crate": "bumpalo",
+      "version": "3.20.3",
+      "file": "bumpalo-3.20.3.crate",
+      "crate_sha256": "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649",
+      "bytes": 98671,
+      "source": "https://static.crates.io/crates/bumpalo/bumpalo-3.20.3.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/bumpalo-3.20.3-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/bumpalo-3.20.3-LICENSE-MIT",
+          "sha256": "65f94e99ddaf4f5d1782a6dae23f35d4293a9a01444a13135a6887017d353cee"
+        }
+      ]
+    },
+    {
+      "crate": "bytemuck",
+      "version": "1.25.2",
+      "file": "bytemuck-1.25.2.crate",
+      "crate_sha256": "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797",
+      "bytes": 54075,
+      "source": "https://static.crates.io/crates/bytemuck/bytemuck-1.25.2.crate",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/bytemuck-1.25.2-LICENSE-APACHE",
+          "sha256": "e3ba223bb1423f0aad8c3dfce0fe3148db48926d41e6fbc3afbbf5ff9e1c89cb"
+        },
+        {
+          "file": "native/render/notices/bytemuck-1.25.2-LICENSE-MIT",
+          "sha256": "9df9ba60a11af705f2e451b53762686e615d86f76b169cf075c3237730dbd7e2"
+        },
+        {
+          "file": "native/render/notices/bytemuck-1.25.2-LICENSE-ZLIB",
+          "sha256": "84b34dd7608f7fb9b17bd588a6bf392bf7de504e2716f024a77d89f1b145a151"
+        }
+      ]
+    },
+    {
+      "crate": "bytemuck_derive",
+      "version": "1.12.1",
+      "file": "bytemuck_derive-1.12.1.crate",
+      "crate_sha256": "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c",
+      "bytes": 26509,
+      "source": "https://static.crates.io/crates/bytemuck_derive/bytemuck_derive-1.12.1.crate",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/bytemuck_derive-1.12.1-LICENSE-APACHE",
+          "sha256": "e3ba223bb1423f0aad8c3dfce0fe3148db48926d41e6fbc3afbbf5ff9e1c89cb"
+        },
+        {
+          "file": "native/render/notices/bytemuck_derive-1.12.1-LICENSE-MIT",
+          "sha256": "9df9ba60a11af705f2e451b53762686e615d86f76b169cf075c3237730dbd7e2"
+        },
+        {
+          "file": "native/render/notices/bytemuck_derive-1.12.1-LICENSE-ZLIB",
+          "sha256": "84b34dd7608f7fb9b17bd588a6bf392bf7de504e2716f024a77d89f1b145a151"
+        }
+      ]
+    },
+    {
+      "crate": "byteorder-lite",
+      "version": "0.1.0",
+      "file": "byteorder-lite-0.1.0.crate",
+      "crate_sha256": "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495",
+      "bytes": 15909,
+      "source": "https://static.crates.io/crates/byteorder-lite/byteorder-lite-0.1.0.crate",
+      "license": "Unlicense OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/byteorder-lite-0.1.0-LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f"
+        },
+        {
+          "file": "native/render/notices/byteorder-lite-0.1.0-UNLICENSE",
+          "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c"
+        }
+      ]
+    },
+    {
+      "crate": "cfg-if",
+      "version": "1.0.5",
+      "file": "cfg-if-1.0.5.crate",
+      "crate_sha256": "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600",
+      "bytes": 9578,
+      "source": "https://static.crates.io/crates/cfg-if/cfg-if-1.0.5.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/cfg-if-1.0.5-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/cfg-if-1.0.5-LICENSE-MIT",
+          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397"
+        }
+      ]
+    },
+    {
+      "crate": "color",
+      "version": "0.3.3",
+      "file": "color-0.3.3.crate",
+      "crate_sha256": "2ec7c5eb7a16992b1904d76c517d170ab353b0e0b3d5a0c81a8a0cd1037893cf",
+      "bytes": 75273,
+      "source": "https://static.crates.io/crates/color/color-0.3.3.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/color-0.3.3-LICENSE-APACHE",
+          "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+        },
+        {
+          "file": "native/render/notices/color-0.3.3-LICENSE-MIT",
+          "sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1"
+        }
+      ]
+    },
+    {
+      "crate": "color_quant",
+      "version": "1.1.0",
+      "file": "color_quant-1.1.0.crate",
+      "crate_sha256": "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b",
+      "bytes": 6649,
+      "source": "https://static.crates.io/crates/color_quant/color_quant-1.1.0.crate",
+      "license": "MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/color_quant-1.1.0-LICENSE",
+          "sha256": "592dc80f1a865d20d61a2006a2d29ce34a2bc28cd7e868ab300fdeed6da154ca"
+        }
+      ]
+    },
+    {
+      "crate": "crc32fast",
+      "version": "1.5.2",
+      "file": "crc32fast-1.5.2.crate",
+      "crate_sha256": "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78",
+      "bytes": 48100,
+      "source": "https://static.crates.io/crates/crc32fast/crc32fast-1.5.2.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/crc32fast-1.5.2-LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08"
+        },
+        {
+          "file": "native/render/notices/crc32fast-1.5.2-LICENSE-MIT",
+          "sha256": "61d383b05b87d78f94d2937e2580cce47226d17823c0430fbcad09596537efcf"
+        }
+      ]
+    },
+    {
+      "crate": "crunchy",
+      "version": "0.2.4",
+      "file": "crunchy-0.2.4.crate",
+      "crate_sha256": "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5",
+      "bytes": 3887,
+      "source": "https://static.crates.io/crates/crunchy/crunchy-0.2.4.crate",
+      "license": "MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/crunchy-0.2.4-LICENSE",
+          "sha256": "3eab77734a181b2a2e8418af9004f960f715f04aac4d76a26cf774f63a7b13d1"
+        }
+      ]
+    },
+    {
+      "crate": "derive_arbitrary",
+      "version": "1.5.0",
+      "file": "derive_arbitrary-1.5.0.crate",
+      "crate_sha256": "1b034bd7d5f032402a2479444dcc6f74e36a03f31854d41680fb240ef682a1ac",
+      "bytes": 12306,
+      "source": "https://static.crates.io/crates/derive_arbitrary/derive_arbitrary-1.5.0.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/derive_arbitrary-1.5.0-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/derive_arbitrary-1.5.0-LICENSE-MIT",
+          "sha256": "15656cc11a8331f28c0986b8ab97220d3e76f98e60ed388b5ffad37dfac4710c"
+        }
+      ]
+    },
+    {
+      "crate": "epaint_default_fonts",
+      "version": "0.36.2",
+      "file": "epaint_default_fonts-0.36.2.crate",
+      "crate_sha256": "773fa9c96dd0dbef887e39d0ed6177f141cce4d68e6041df77570aa3702dfa13",
+      "bytes": 789970,
+      "source": "https://static.crates.io/crates/epaint_default_fonts/epaint_default_fonts-0.36.2.crate",
+      "license": "(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0",
+      "notices": [
+        {
+          "file": "native/render/notices/epaint_default_fonts-0.36.2-fonts_Hack-Regular.txt",
+          "sha256": "47c0cccbeec7e8614548cc485588b28149e7874188df5f41b36efebcee285c87"
+        },
+        {
+          "file": "native/render/notices/epaint_default_fonts-0.36.2-fonts_OFL.txt",
+          "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+        },
+        {
+          "file": "native/render/notices/epaint_default_fonts-0.36.2-fonts_UFL.txt",
+          "sha256": "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002"
+        },
+        {
+          "file": "native/render/notices/epaint_default_fonts-0.36.2-fonts_emoji-icon-font-mit-license.txt",
+          "sha256": "b9d2c1d909aa149996fd4c91dcb92b2362a04431640c1d200959da94caf8cde1"
+        }
+      ]
+    },
+    {
+      "crate": "equivalent",
+      "version": "1.0.2",
+      "file": "equivalent-1.0.2.crate",
+      "crate_sha256": "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f",
+      "bytes": 7419,
+      "source": "https://static.crates.io/crates/equivalent/equivalent-1.0.2.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/equivalent-1.0.2-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/equivalent-1.0.2-LICENSE-MIT",
+          "sha256": "7365cc8878a1d7ce155a58c4ca09c3d7a6be413efa5334a80ea842912b669349"
+        }
+      ]
+    },
+    {
+      "crate": "euclid",
+      "version": "0.22.14",
+      "file": "euclid-0.22.14.crate",
+      "crate_sha256": "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06",
+      "bytes": 88222,
+      "source": "https://static.crates.io/crates/euclid/euclid-0.22.14.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/euclid-0.22.14-COPYRIGHT",
+          "sha256": "ec82b96487e9e778ee610c7ab245162464782cfa1f555c2299333f8dbe5c036a"
+        },
+        {
+          "file": "native/render/notices/euclid-0.22.14-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/euclid-0.22.14-LICENSE-MIT",
+          "sha256": "62065228e42caebca7e7d7db1204cbb867033de5982ca4009928915e4095f3a3"
+        }
+      ]
+    },
+    {
+      "crate": "fax",
+      "version": "0.2.7",
+      "file": "fax-0.2.7.crate",
+      "crate_sha256": "caf1079563223d5d59d83c85886a56e586cfd5c1a26292e971a0fa266531ac5a",
+      "bytes": 25616,
+      "source": "https://static.crates.io/crates/fax/fax-0.2.7.crate",
+      "license": "MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/fax-0.2.7-LICENSE",
+          "sha256": "7101390b4c8edd752f4c0de47f35d61b44d9cf0ee8dd032115e25644e277cfff"
+        }
+      ]
+    },
+    {
+      "crate": "fdeflate",
+      "version": "0.3.7",
+      "file": "fdeflate-0.3.7.crate",
+      "crate_sha256": "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c",
+      "bytes": 27188,
+      "source": "https://static.crates.io/crates/fdeflate/fdeflate-0.3.7.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/fdeflate-0.3.7-LICENSE-APACHE",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "file": "native/render/notices/fdeflate-0.3.7-LICENSE-MIT",
+          "sha256": "c77a4cf9da729987d0fe7ccd811e3bd27393914ddf3d23467c18cc22954513b3"
+        }
+      ]
+    },
+    {
+      "crate": "fearless_simd",
+      "version": "0.4.1",
+      "file": "fearless_simd-0.4.1.crate",
+      "crate_sha256": "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693",
+      "bytes": 224254,
+      "source": "https://static.crates.io/crates/fearless_simd/fearless_simd-0.4.1.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/fearless_simd-0.4.1-LICENSE-APACHE",
+          "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+        },
+        {
+          "file": "native/render/notices/fearless_simd-0.4.1-LICENSE-MIT",
+          "sha256": "23c23145f6eac25c28cdcc03d38506a5712a9a8cffb5bd5301457f6173ea696e"
+        }
+      ]
+    },
+    {
+      "crate": "flate2",
+      "version": "1.1.10",
+      "file": "flate2-1.1.10.crate",
+      "crate_sha256": "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb",
+      "bytes": 80244,
+      "source": "https://static.crates.io/crates/flate2/flate2-1.1.10.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/flate2-1.1.10-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/flate2-1.1.10-LICENSE-MIT",
+          "sha256": "025436edff4cfcdde17a5811fdea78892d8482efd1abdec5a17872d07a4f2112"
+        }
+      ]
+    },
+    {
+      "crate": "foldhash",
+      "version": "0.2.0",
+      "file": "foldhash-0.2.0.crate",
+      "crate_sha256": "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb",
+      "bytes": 23329,
+      "source": "https://static.crates.io/crates/foldhash/foldhash-0.2.0.crate",
+      "license": "Zlib",
+      "notices": [
+        {
+          "file": "native/render/notices/foldhash-0.2.0-LICENSE",
+          "sha256": "b1181a40b2a7b25cf66fd01481713bc1005df082c53ef73e851e55071b102744"
+        }
+      ]
+    },
+    {
+      "crate": "font-types",
+      "version": "0.12.6",
+      "file": "font-types-0.12.6.crate",
+      "crate_sha256": "6c92d9081c7ab3bd83ef1eecdfad090f3d966e3ce74106779664114cfe1a6274",
+      "bytes": 32485,
+      "source": "https://static.crates.io/crates/font-types/font-types-0.12.6.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/font-types-0.12.6-LICENSE-APACHE",
+          "sha256": "eba684204073ed715c4abb48129acdfd2bff8ae48339e6a7da3b341d3027b7f0"
+        },
+        {
+          "file": "native/render/notices/font-types-0.12.6-LICENSE-MIT",
+          "sha256": "7b4c9a3946dfcea7967582760e963e27799e225dcf20565c8ef55324bb017427"
+        }
+      ]
+    },
+    {
+      "crate": "gif",
+      "version": "0.14.2",
+      "file": "gif-0.14.2.crate",
+      "crate_sha256": "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159",
+      "bytes": 38710,
+      "source": "https://static.crates.io/crates/gif/gif-0.14.2.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/gif-0.14.2-LICENSE-APACHE",
+          "sha256": "769f80b5bcb42ed0af4e4d2fd74e1ac9bf843cb80c5a29219d1ef3544428a6bb"
+        },
+        {
+          "file": "native/render/notices/gif-0.14.2-LICENSE-MIT",
+          "sha256": "77257f3d2181236b1aee78920238062ae64efe13c5d858b2db126e79c9e1b14f"
+        }
+      ]
+    },
+    {
+      "crate": "glifo",
+      "version": "0.3.0",
+      "file": "glifo-0.3.0.crate",
+      "crate_sha256": "282a26c1e23de04bdab3e34a21b6f877a479b96737792516b9b8b8f69b6661be",
+      "bytes": 55919,
+      "source": "https://static.crates.io/crates/glifo/glifo-0.3.0.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/glifo-0.3.0-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/glifo-0.3.0-LICENSE-MIT",
+          "sha256": "3252fc481fda4d2bad9e1ae675065889abd35c8abb500499ac01e70aaffa02b9"
+        }
+      ]
+    },
+    {
+      "crate": "guillotiere",
+      "version": "0.7.0",
+      "file": "guillotiere-0.7.0.crate",
+      "crate_sha256": "6b17e70c989c36bad147b27a58d148c0741c51448aa5653436547323e524d0ab",
+      "bytes": 19983,
+      "source": "https://static.crates.io/crates/guillotiere/guillotiere-0.7.0.crate",
+      "license": "MIT/Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/guillotiere-0.7.0-LICENSE-APACHE",
+          "sha256": "644d05561bc2dc5993f19d6602894315d925744d854a0413876e203f86c35830"
+        },
+        {
+          "file": "native/render/notices/guillotiere-0.7.0-LICENSE-MIT",
+          "sha256": "cab31b979edfb1d6ff72a9a84e1092a9b68954022fc3f253338e64879961b8d2"
+        }
+      ]
+    },
+    {
+      "crate": "half",
+      "version": "2.7.1",
+      "file": "half-2.7.1.crate",
+      "crate_sha256": "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b",
+      "bytes": 61040,
+      "source": "https://static.crates.io/crates/half/half-2.7.1.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/half-2.7.1-LICENSE-APACHE",
+          "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+        },
+        {
+          "file": "native/render/notices/half-2.7.1-LICENSE-MIT",
+          "sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1"
+        }
+      ]
+    },
+    {
+      "crate": "harfrust",
+      "version": "0.13.3",
+      "file": "harfrust-0.13.3.crate",
+      "crate_sha256": "948d0741125ba89cd3e1c23e5642415b6ade7e1d29d67ba25fb925b533e989d6",
+      "bytes": 316244,
+      "source": "https://static.crates.io/crates/harfrust/harfrust-0.13.3.crate",
+      "license": "MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/harfrust-0.13.3-LICENSE",
+          "sha256": "3a7c3f0b887abb7c638faf022d29257418458614c6724b120ceeffb279f9c7d2"
+        }
+      ]
+    },
+    {
+      "crate": "hashbrown",
+      "version": "0.17.1",
+      "file": "hashbrown-0.17.1.crate",
+      "crate_sha256": "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a",
+      "bytes": 155512,
+      "source": "https://static.crates.io/crates/hashbrown/hashbrown-0.17.1.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/hashbrown-0.17.1-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/hashbrown-0.17.1-LICENSE-MIT",
+          "sha256": "ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2"
+        }
+      ]
+    },
+    {
+      "crate": "image",
+      "version": "0.25.10",
+      "file": "image-0.25.10.crate",
+      "crate_sha256": "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104",
+      "bytes": 303647,
+      "source": "https://static.crates.io/crates/image/image-0.25.10.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/image-0.25.10-LICENSE-APACHE",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "file": "native/render/notices/image-0.25.10-LICENSE-MIT",
+          "sha256": "c77a4cf9da729987d0fe7ccd811e3bd27393914ddf3d23467c18cc22954513b3"
+        }
+      ]
+    },
+    {
+      "crate": "image-webp",
+      "version": "0.2.4",
+      "file": "image-webp-0.2.4.crate",
+      "crate_sha256": "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3",
+      "bytes": 68478,
+      "source": "https://static.crates.io/crates/image-webp/image-webp-0.2.4.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/image-webp-0.2.4-LICENSE-APACHE",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "file": "native/render/notices/image-webp-0.2.4-LICENSE-MIT",
+          "sha256": "c77a4cf9da729987d0fe7ccd811e3bd27393914ddf3d23467c18cc22954513b3"
+        }
+      ]
+    },
+    {
+      "crate": "indexmap",
+      "version": "2.14.2",
+      "file": "indexmap-2.14.2.crate",
+      "crate_sha256": "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855",
+      "bytes": 103014,
+      "source": "https://static.crates.io/crates/indexmap/indexmap-2.14.2.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/indexmap-2.14.2-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/indexmap-2.14.2-LICENSE-MIT",
+          "sha256": "ecc269ef87fd38a1d98e30bfac9ba964a9dbd9315c3770fed98d4d7cb5882055"
+        }
+      ]
+    },
+    {
+      "crate": "itoa",
+      "version": "1.0.18",
+      "file": "itoa-1.0.18.crate",
+      "crate_sha256": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682",
+      "bytes": 15935,
+      "source": "https://static.crates.io/crates/itoa/itoa-1.0.18.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/itoa-1.0.18-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/itoa-1.0.18-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "kurbo",
+      "version": "0.13.1",
+      "file": "kurbo-0.13.1.crate",
+      "crate_sha256": "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2",
+      "bytes": 169000,
+      "source": "https://static.crates.io/crates/kurbo/kurbo-0.13.1.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/kurbo-0.13.1-LICENSE-APACHE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "file": "native/render/notices/kurbo-0.13.1-LICENSE-MIT",
+          "sha256": "23c23145f6eac25c28cdcc03d38506a5712a9a8cffb5bd5301457f6173ea696e"
+        }
+      ]
+    },
+    {
+      "crate": "linebender_resource_handle",
+      "version": "0.1.1",
+      "file": "linebender_resource_handle-0.1.1.crate",
+      "crate_sha256": "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4",
+      "bytes": 10920,
+      "source": "https://static.crates.io/crates/linebender_resource_handle/linebender_resource_handle-0.1.1.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/linebender_resource_handle-0.1.1-LICENSE-APACHE",
+          "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+        },
+        {
+          "file": "native/render/notices/linebender_resource_handle-0.1.1-LICENSE-MIT",
+          "sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1"
+        }
+      ]
+    },
+    {
+      "crate": "log",
+      "version": "0.4.34",
+      "file": "log-0.4.34.crate",
+      "crate_sha256": "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6",
+      "bytes": 53395,
+      "source": "https://static.crates.io/crates/log/log-0.4.34.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/log-0.4.34-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/log-0.4.34-LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb"
+        }
+      ]
+    },
+    {
+      "crate": "memchr",
+      "version": "2.8.3",
+      "file": "memchr-2.8.3.crate",
+      "crate_sha256": "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98",
+      "bytes": 99165,
+      "source": "https://static.crates.io/crates/memchr/memchr-2.8.3.crate",
+      "license": "Unlicense OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/memchr-2.8.3-COPYING",
+          "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f"
+        },
+        {
+          "file": "native/render/notices/memchr-2.8.3-LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f"
+        },
+        {
+          "file": "native/render/notices/memchr-2.8.3-UNLICENSE",
+          "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c"
+        }
+      ]
+    },
+    {
+      "crate": "miniz_oxide",
+      "version": "0.8.9",
+      "file": "miniz_oxide-0.8.9.crate",
+      "crate_sha256": "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316",
+      "bytes": 67132,
+      "source": "https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.8.9.crate",
+      "license": "MIT OR Zlib OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/miniz_oxide-0.8.9-LICENSE",
+          "sha256": "4108245a1f2df9d4e94df8abed5b4ba0759bb2f9b40a6b939f1be141077ae50b"
+        },
+        {
+          "file": "native/render/notices/miniz_oxide-0.8.9-LICENSE-APACHE.md",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "file": "native/render/notices/miniz_oxide-0.8.9-LICENSE-MIT.md",
+          "sha256": "799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d"
+        },
+        {
+          "file": "native/render/notices/miniz_oxide-0.8.9-LICENSE-ZLIB.md",
+          "sha256": "0a54e647fe54104658b5e563c04c6f9edf251710e47bce692e0bd990a4ddaa39"
+        }
+      ]
+    },
+    {
+      "crate": "miniz_oxide",
+      "version": "0.9.1",
+      "file": "miniz_oxide-0.9.1.crate",
+      "crate_sha256": "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c",
+      "bytes": 70519,
+      "source": "https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.9.1.crate",
+      "license": "MIT OR Zlib OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/miniz_oxide-0.9.1-LICENSE",
+          "sha256": "4108245a1f2df9d4e94df8abed5b4ba0759bb2f9b40a6b939f1be141077ae50b"
+        },
+        {
+          "file": "native/render/notices/miniz_oxide-0.9.1-LICENSE-APACHE.md",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "file": "native/render/notices/miniz_oxide-0.9.1-LICENSE-MIT.md",
+          "sha256": "799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d"
+        },
+        {
+          "file": "native/render/notices/miniz_oxide-0.9.1-LICENSE-ZLIB.md",
+          "sha256": "0a54e647fe54104658b5e563c04c6f9edf251710e47bce692e0bd990a4ddaa39"
+        }
+      ]
+    },
+    {
+      "crate": "moxcms",
+      "version": "0.8.1",
+      "file": "moxcms-0.8.1.crate",
+      "crate_sha256": "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b",
+      "bytes": 188252,
+      "source": "https://static.crates.io/crates/moxcms/moxcms-0.8.1.crate",
+      "license": "BSD-3-Clause OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/moxcms-0.8.1-LICENSE-APACHE.md",
+          "sha256": "90bf2d659c43045111b65c733ab2a6d4cbcb422a098368c8c58a9ba3db4ed0c5"
+        },
+        {
+          "file": "native/render/notices/moxcms-0.8.1-LICENSE.md",
+          "sha256": "2aa92cada6431e75615e3fe6cb1a9082c98f777d48ae1c087c0da0e37f7b8bff"
+        }
+      ]
+    },
+    {
+      "crate": "num-traits",
+      "version": "0.2.19",
+      "file": "num-traits-0.2.19.crate",
+      "crate_sha256": "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
+      "bytes": 51631,
+      "source": "https://static.crates.io/crates/num-traits/num-traits-0.2.19.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/num-traits-0.2.19-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/num-traits-0.2.19-LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb"
+        }
+      ]
+    },
+    {
+      "crate": "once_cell",
+      "version": "1.21.4",
+      "file": "once_cell-1.21.4.crate",
+      "crate_sha256": "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50",
+      "bytes": 35010,
+      "source": "https://static.crates.io/crates/once_cell/once_cell-1.21.4.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/once_cell-1.21.4-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/once_cell-1.21.4-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "peniko",
+      "version": "0.6.1",
+      "file": "peniko-0.6.1.crate",
+      "crate_sha256": "839c8299360d2e998bdb106dc0a6cd71dcc5f4df51df1b620361bf50e283cca6",
+      "bytes": 21265,
+      "source": "https://static.crates.io/crates/peniko/peniko-0.6.1.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/peniko-0.6.1-LICENSE-APACHE",
+          "sha256": "f9946796a8a5bd5981565142fa42e3b0cc36aef6f80e86beaf5905b3c0fef1b5"
+        },
+        {
+          "file": "native/render/notices/peniko-0.6.1-LICENSE-MIT",
+          "sha256": "23c23145f6eac25c28cdcc03d38506a5712a9a8cffb5bd5301457f6173ea696e"
+        }
+      ]
+    },
+    {
+      "crate": "png",
+      "version": "0.18.1",
+      "file": "png-0.18.1.crate",
+      "crate_sha256": "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61",
+      "bytes": 125800,
+      "source": "https://static.crates.io/crates/png/png-0.18.1.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/png-0.18.1-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/png-0.18.1-LICENSE-MIT",
+          "sha256": "eaf40297c75da471f7cda1f3458e8d91b4b2ec866e609527a13acfa93b638652"
+        }
+      ]
+    },
+    {
+      "crate": "polycool",
+      "version": "0.4.0",
+      "file": "polycool-0.4.0.crate",
+      "crate_sha256": "50596ddc09eb5ad5f75cacd40209568e66df71baf86e1499a0e99c4cff12a5a6",
+      "bytes": 22738,
+      "source": "https://static.crates.io/crates/polycool/polycool-0.4.0.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/polycool-0.4.0-LICENSE-APACHE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "file": "native/render/notices/polycool-0.4.0-LICENSE-MIT",
+          "sha256": "23c23145f6eac25c28cdcc03d38506a5712a9a8cffb5bd5301457f6173ea696e"
+        }
+      ]
+    },
+    {
+      "crate": "proc-macro2",
+      "version": "1.0.107",
+      "file": "proc-macro2-1.0.107.crate",
+      "crate_sha256": "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9",
+      "bytes": 59588,
+      "source": "https://static.crates.io/crates/proc-macro2/proc-macro2-1.0.107.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/proc-macro2-1.0.107-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/proc-macro2-1.0.107-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "pxfm",
+      "version": "0.1.30",
+      "file": "pxfm-0.1.30.crate",
+      "crate_sha256": "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea",
+      "bytes": 879463,
+      "source": "https://static.crates.io/crates/pxfm/pxfm-0.1.30.crate",
+      "license": "BSD-3-Clause OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/pxfm-0.1.30-LICENSE-APACHE.md",
+          "sha256": "90bf2d659c43045111b65c733ab2a6d4cbcb422a098368c8c58a9ba3db4ed0c5"
+        },
+        {
+          "file": "native/render/notices/pxfm-0.1.30-LICENSE.md",
+          "sha256": "2aa92cada6431e75615e3fe6cb1a9082c98f777d48ae1c087c0da0e37f7b8bff"
+        }
+      ]
+    },
+    {
+      "crate": "quick-error",
+      "version": "2.0.1",
+      "file": "quick-error-2.0.1.crate",
+      "crate_sha256": "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3",
+      "bytes": 14265,
+      "source": "https://static.crates.io/crates/quick-error/quick-error-2.0.1.crate",
+      "license": "MIT/Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/quick-error-2.0.1-LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08"
+        },
+        {
+          "file": "native/render/notices/quick-error-2.0.1-LICENSE-MIT",
+          "sha256": "058f01fe181608d027fcde7e528fc03ea3cf90f30903c407644b0a9bbc54f500"
+        }
+      ]
+    },
+    {
+      "crate": "quick-xml",
+      "version": "0.38.4",
+      "file": "quick-xml-0.38.4.crate",
+      "crate_sha256": "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c",
+      "bytes": 205035,
+      "source": "https://static.crates.io/crates/quick-xml/quick-xml-0.38.4.crate",
+      "license": "MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/quick-xml-0.38.4-LICENSE-MIT.md",
+          "sha256": "5b2c207dcf571267ebe0bbdd5bf321f561ddc22ff597e7b363e96f4539507a29"
+        }
+      ]
+    },
+    {
+      "crate": "quote",
+      "version": "1.0.47",
+      "file": "quote-1.0.47.crate",
+      "crate_sha256": "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001",
+      "bytes": 31622,
+      "source": "https://static.crates.io/crates/quote/quote-1.0.47.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/quote-1.0.47-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/quote-1.0.47-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "read-fonts",
+      "version": "0.41.0",
+      "file": "read-fonts-0.41.0.crate",
+      "crate_sha256": "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709",
+      "bytes": 567271,
+      "source": "https://static.crates.io/crates/read-fonts/read-fonts-0.41.0.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/read-fonts-0.41.0-LICENSE-APACHE",
+          "sha256": "eba684204073ed715c4abb48129acdfd2bff8ae48339e6a7da3b341d3027b7f0"
+        },
+        {
+          "file": "native/render/notices/read-fonts-0.41.0-LICENSE-MIT",
+          "sha256": "7b4c9a3946dfcea7967582760e963e27799e225dcf20565c8ef55324bb017427"
+        }
+      ]
+    },
+    {
+      "crate": "read-fonts",
+      "version": "0.43.3",
+      "file": "read-fonts-0.43.3.crate",
+      "crate_sha256": "005c8acf251756c478b0bf402885bfd88a1476020c4c7e6060edc1aa68da38ea",
+      "bytes": 590946,
+      "source": "https://static.crates.io/crates/read-fonts/read-fonts-0.43.3.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/read-fonts-0.43.3-LICENSE-APACHE",
+          "sha256": "eba684204073ed715c4abb48129acdfd2bff8ae48339e6a7da3b341d3027b7f0"
+        },
+        {
+          "file": "native/render/notices/read-fonts-0.43.3-LICENSE-MIT",
+          "sha256": "7b4c9a3946dfcea7967582760e963e27799e225dcf20565c8ef55324bb017427"
+        }
+      ]
+    },
+    {
+      "crate": "read-fonts",
+      "version": "0.44.0",
+      "file": "read-fonts-0.44.0.crate",
+      "crate_sha256": "d5a0cf4bb6cbce4c29756270d189a5e400ac05e91192161d83a0bcb6e68492e8",
+      "bytes": 585175,
+      "source": "https://static.crates.io/crates/read-fonts/read-fonts-0.44.0.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/read-fonts-0.44.0-LICENSE-APACHE",
+          "sha256": "eba684204073ed715c4abb48129acdfd2bff8ae48339e6a7da3b341d3027b7f0"
+        },
+        {
+          "file": "native/render/notices/read-fonts-0.44.0-LICENSE-MIT",
+          "sha256": "7b4c9a3946dfcea7967582760e963e27799e225dcf20565c8ef55324bb017427"
+        }
+      ]
+    },
+    {
+      "crate": "regex",
+      "version": "1.13.1",
+      "file": "regex-1.13.1.crate",
+      "crate_sha256": "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d",
+      "bytes": 157118,
+      "source": "https://static.crates.io/crates/regex/regex-1.13.1.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/regex-1.13.1-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/regex-1.13.1-LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb"
+        }
+      ]
+    },
+    {
+      "crate": "regex-automata",
+      "version": "0.4.18",
+      "file": "regex-automata-0.4.18.crate",
+      "crate_sha256": "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2",
+      "bytes": 628707,
+      "source": "https://static.crates.io/crates/regex-automata/regex-automata-0.4.18.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/regex-automata-0.4.18-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/regex-automata-0.4.18-LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb"
+        }
+      ]
+    },
+    {
+      "crate": "regex-syntax",
+      "version": "0.8.11",
+      "file": "regex-syntax-0.8.11.crate",
+      "crate_sha256": "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4",
+      "bytes": 359055,
+      "source": "https://static.crates.io/crates/regex-syntax/regex-syntax-0.8.11.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/regex-syntax-0.8.11-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/regex-syntax-0.8.11-LICENSE-MIT",
+          "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb"
+        },
+        {
+          "file": "native/render/notices/regex-syntax-0.8.11-src_unicode_tables_LICENSE-UNICODE",
+          "sha256": "74db5baf44a41b1000312c673544b3374e4198af5605c7f9080a402cec42cfa3"
+        }
+      ]
+    },
+    {
+      "crate": "serde",
+      "version": "1.0.229",
+      "file": "serde-1.0.229.crate",
+      "crate_sha256": "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba",
+      "bytes": 83669,
+      "source": "https://static.crates.io/crates/serde/serde-1.0.229.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/serde-1.0.229-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/serde-1.0.229-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "serde_core",
+      "version": "1.0.229",
+      "file": "serde_core-1.0.229.crate",
+      "crate_sha256": "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48",
+      "bytes": 63100,
+      "source": "https://static.crates.io/crates/serde_core/serde_core-1.0.229.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/serde_core-1.0.229-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/serde_core-1.0.229-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "serde_derive",
+      "version": "1.0.229",
+      "file": "serde_derive-1.0.229.crate",
+      "crate_sha256": "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348",
+      "bytes": 59864,
+      "source": "https://static.crates.io/crates/serde_derive/serde_derive-1.0.229.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/serde_derive-1.0.229-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/serde_derive-1.0.229-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "serde_json",
+      "version": "1.0.151",
+      "file": "serde_json-1.0.151.crate",
+      "crate_sha256": "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14",
+      "bytes": 156556,
+      "source": "https://static.crates.io/crates/serde_json/serde_json-1.0.151.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/serde_json-1.0.151-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/serde_json-1.0.151-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "simd-adler32",
+      "version": "0.3.10",
+      "file": "simd-adler32-0.3.10.crate",
+      "crate_sha256": "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea",
+      "bytes": 18760,
+      "source": "https://static.crates.io/crates/simd-adler32/simd-adler32-0.3.10.crate",
+      "license": "MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/simd-adler32-0.3.10-LICENSE.md",
+          "sha256": "42a35170233e83e18856792e748de4c1ce4a63b2afce9a370c89ef3fe23f9f2d"
+        }
+      ]
+    },
+    {
+      "crate": "skrifa",
+      "version": "0.44.0",
+      "file": "skrifa-0.44.0.crate",
+      "crate_sha256": "819ab7d62b1d3e72d9d9dea5650bac30424f9111364bb94928dbf5ecad1baa68",
+      "bytes": 299025,
+      "source": "https://static.crates.io/crates/skrifa/skrifa-0.44.0.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/skrifa-0.44.0-LICENSE-APACHE",
+          "sha256": "eba684204073ed715c4abb48129acdfd2bff8ae48339e6a7da3b341d3027b7f0"
+        },
+        {
+          "file": "native/render/notices/skrifa-0.44.0-LICENSE-MIT",
+          "sha256": "7b4c9a3946dfcea7967582760e963e27799e225dcf20565c8ef55324bb017427"
+        }
+      ]
+    },
+    {
+      "crate": "skrifa",
+      "version": "0.47.0",
+      "file": "skrifa-0.47.0.crate",
+      "crate_sha256": "526e654b303ff4ad73a5a40b25de2b3ce3d039c5e3b6da5f89ae6e57004cb40f",
+      "bytes": 304536,
+      "source": "https://static.crates.io/crates/skrifa/skrifa-0.47.0.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/skrifa-0.47.0-LICENSE-APACHE",
+          "sha256": "eba684204073ed715c4abb48129acdfd2bff8ae48339e6a7da3b341d3027b7f0"
+        },
+        {
+          "file": "native/render/notices/skrifa-0.47.0-LICENSE-MIT",
+          "sha256": "7b4c9a3946dfcea7967582760e963e27799e225dcf20565c8ef55324bb017427"
+        }
+      ]
+    },
+    {
+      "crate": "smallvec",
+      "version": "1.16.2",
+      "file": "smallvec-1.16.2.crate",
+      "crate_sha256": "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e",
+      "bytes": 34874,
+      "source": "https://static.crates.io/crates/smallvec/smallvec-1.16.2.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/smallvec-1.16.2-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/smallvec-1.16.2-LICENSE-MIT",
+          "sha256": "0b28172679e0009b655da42797c03fd163a3379d5cfa67ba1f1655e974a2a1a9"
+        }
+      ]
+    },
+    {
+      "crate": "syn",
+      "version": "2.0.119",
+      "file": "syn-2.0.119.crate",
+      "crate_sha256": "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297",
+      "bytes": 307407,
+      "source": "https://static.crates.io/crates/syn/syn-2.0.119.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/syn-2.0.119-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/syn-2.0.119-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "syn",
+      "version": "3.0.6",
+      "file": "syn-3.0.6.crate",
+      "crate_sha256": "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee",
+      "bytes": 313821,
+      "source": "https://static.crates.io/crates/syn/syn-3.0.6.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/syn-3.0.6-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/syn-3.0.6-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "thiserror",
+      "version": "2.0.21",
+      "file": "thiserror-2.0.21.crate",
+      "crate_sha256": "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e",
+      "bytes": 29021,
+      "source": "https://static.crates.io/crates/thiserror/thiserror-2.0.21.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/thiserror-2.0.21-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/thiserror-2.0.21-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "thiserror-impl",
+      "version": "2.0.21",
+      "file": "thiserror-impl-2.0.21.crate",
+      "crate_sha256": "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524",
+      "bytes": 21637,
+      "source": "https://static.crates.io/crates/thiserror-impl/thiserror-impl-2.0.21.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/thiserror-impl-2.0.21-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/thiserror-impl-2.0.21-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "tiff",
+      "version": "0.11.3",
+      "file": "tiff-0.11.3.crate",
+      "crate_sha256": "b63feaf3343d35b6ca4d50483f94843803b0f51634937cc2ec519fc32232bc52",
+      "bytes": 102026,
+      "source": "https://static.crates.io/crates/tiff/tiff-0.11.3.crate",
+      "license": "MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/tiff-0.11.3-LICENSE",
+          "sha256": "20c097d0de27e2adc179140a3d542091951a030699c7e1c78655f2a2d08d4e3e"
+        },
+        {
+          "file": "native/render/notices/tiff-0.11.3-tests_COPYRIGHT",
+          "sha256": "c6d1d56bb6e2fe4f0aed4aa8553261dd65247db6db50c87c9e9f3fbe095e2202"
+        }
+      ]
+    },
+    {
+      "crate": "unicode-bidi",
+      "version": "0.3.18",
+      "file": "unicode-bidi-0.3.18.crate",
+      "crate_sha256": "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5",
+      "bytes": 58300,
+      "source": "https://static.crates.io/crates/unicode-bidi/unicode-bidi-0.3.18.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/unicode-bidi-0.3.18-COPYRIGHT",
+          "sha256": "edb20b474f6cbd4f4db066b54a9e0f687d0009d309412a63431189b59b8e2a07"
+        },
+        {
+          "file": "native/render/notices/unicode-bidi-0.3.18-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/unicode-bidi-0.3.18-LICENSE-MIT",
+          "sha256": "7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0"
+        }
+      ]
+    },
+    {
+      "crate": "unicode-ident",
+      "version": "1.0.26",
+      "file": "unicode-ident-1.0.26.crate",
+      "crate_sha256": "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954",
+      "bytes": 48425,
+      "source": "https://static.crates.io/crates/unicode-ident/unicode-ident-1.0.26.crate",
+      "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "notices": [
+        {
+          "file": "native/render/notices/unicode-ident-1.0.26-LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "file": "native/render/notices/unicode-ident-1.0.26-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        },
+        {
+          "file": "native/render/notices/unicode-ident-1.0.26-LICENSE-UNICODE",
+          "sha256": "f7db81051789b729fea528a63ec4c938fdcb93d9d61d97dc8cc2e9df6d47f2a1"
+        }
+      ]
+    },
+    {
+      "crate": "unicode-linebreak",
+      "version": "0.1.5",
+      "file": "unicode-linebreak-0.1.5.crate",
+      "crate_sha256": "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f",
+      "bytes": 15324,
+      "source": "https://static.crates.io/crates/unicode-linebreak/unicode-linebreak-0.1.5.crate",
+      "license": "Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/unicode-linebreak-0.1.5-LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        }
+      ]
+    },
+    {
+      "crate": "unicode-segmentation",
+      "version": "1.13.3",
+      "file": "unicode-segmentation-1.13.3.crate",
+      "crate_sha256": "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8",
+      "bytes": 112325,
+      "source": "https://static.crates.io/crates/unicode-segmentation/unicode-segmentation-1.13.3.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/unicode-segmentation-1.13.3-COPYRIGHT",
+          "sha256": "23860c2a7b5d96b21569afedf033469bab9fe14a1b24a35068b8641c578ce24d"
+        },
+        {
+          "file": "native/render/notices/unicode-segmentation-1.13.3-LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+        },
+        {
+          "file": "native/render/notices/unicode-segmentation-1.13.3-LICENSE-MIT",
+          "sha256": "7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0"
+        }
+      ]
+    },
+    {
+      "crate": "vello_common",
+      "version": "0.2.0",
+      "file": "vello_common-0.2.0.crate",
+      "crate_sha256": "bbb2141a2bca6e6d598e471fd4d1d7eed8e020aad6a28187edda07f091a325dd",
+      "bytes": 132078,
+      "source": "https://static.crates.io/crates/vello_common/vello_common-0.2.0.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/vello_common-0.2.0-LICENSE-APACHE",
+          "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+        },
+        {
+          "file": "native/render/notices/vello_common-0.2.0-LICENSE-MIT",
+          "sha256": "adf157330f722fe7cfd5964a2a6974eff851b718228c6735724a11706e6f4dec"
+        }
+      ]
+    },
+    {
+      "crate": "vello_cpu",
+      "version": "0.2.0",
+      "file": "vello_cpu-0.2.0.crate",
+      "crate_sha256": "ace506ca414548966fcf3c283be94eb1cad8254de488791ee698bf438b0890a9",
+      "bytes": 126331,
+      "source": "https://static.crates.io/crates/vello_cpu/vello_cpu-0.2.0.crate",
+      "license": "Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/vello_cpu-0.2.0-LICENSE-APACHE",
+          "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+        },
+        {
+          "file": "native/render/notices/vello_cpu-0.2.0-LICENSE-MIT",
+          "sha256": "adf157330f722fe7cfd5964a2a6974eff851b718228c6735724a11706e6f4dec"
+        }
+      ]
+    },
+    {
+      "crate": "weezl",
+      "version": "0.1.12",
+      "file": "weezl-0.1.12.crate",
+      "crate_sha256": "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88",
+      "bytes": 46045,
+      "source": "https://static.crates.io/crates/weezl/weezl-0.1.12.crate",
+      "license": "MIT OR Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/weezl-0.1.12-LICENSE-APACHE",
+          "sha256": "769f80b5bcb42ed0af4e4d2fd74e1ac9bf843cb80c5a29219d1ef3544428a6bb"
+        },
+        {
+          "file": "native/render/notices/weezl-0.1.12-LICENSE-MIT",
+          "sha256": "573f5227db835cd30bbdd3aed3f82615f80119a4d5c82b4daf642dbfe2b6afde"
+        }
+      ]
+    },
+    {
+      "crate": "zerocopy",
+      "version": "0.8.61",
+      "file": "zerocopy-0.8.61.crate",
+      "crate_sha256": "879fb705ce98c32e41ebdb970fbe1204f8492423b314c6ab0354c3e7b5542866",
+      "bytes": 319536,
+      "source": "https://static.crates.io/crates/zerocopy/zerocopy-0.8.61.crate",
+      "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/zerocopy-0.8.61-LICENSE-APACHE",
+          "sha256": "9d185ac6703c4b0453974c0d85e9eee43e6941009296bb1f5eb0b54e2329e9f3"
+        },
+        {
+          "file": "native/render/notices/zerocopy-0.8.61-LICENSE-BSD",
+          "sha256": "83c1763356e822adde0a2cae748d938a73fdc263849ccff6b27776dff213bd32"
+        },
+        {
+          "file": "native/render/notices/zerocopy-0.8.61-LICENSE-MIT",
+          "sha256": "1a2f5c12ddc934d58956aa5dbdd3255fe55fd957633ab7d0d39e4f0daa73f7df"
+        }
+      ]
+    },
+    {
+      "crate": "zerocopy-derive",
+      "version": "0.8.61",
+      "file": "zerocopy-derive-0.8.61.crate",
+      "crate_sha256": "708882a28301d604fa039cc7727607a98d04c4b86dc76ec9cc683f805d709759",
+      "bytes": 137257,
+      "source": "https://static.crates.io/crates/zerocopy-derive/zerocopy-derive-0.8.61.crate",
+      "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/zerocopy-derive-0.8.61-LICENSE-APACHE",
+          "sha256": "9d185ac6703c4b0453974c0d85e9eee43e6941009296bb1f5eb0b54e2329e9f3"
+        },
+        {
+          "file": "native/render/notices/zerocopy-derive-0.8.61-LICENSE-BSD",
+          "sha256": "83c1763356e822adde0a2cae748d938a73fdc263849ccff6b27776dff213bd32"
+        },
+        {
+          "file": "native/render/notices/zerocopy-derive-0.8.61-LICENSE-MIT",
+          "sha256": "1a2f5c12ddc934d58956aa5dbdd3255fe55fd957633ab7d0d39e4f0daa73f7df"
+        }
+      ]
+    },
+    {
+      "crate": "zip",
+      "version": "3.0.0",
+      "file": "zip-3.0.0.crate",
+      "crate_sha256": "12598812502ed0105f607f941c386f43d441e00148fce9dec3ca5ffb0bde9308",
+      "bytes": 112450,
+      "source": "https://static.crates.io/crates/zip/zip-3.0.0.crate",
+      "license": "MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/zip-3.0.0-LICENSE",
+          "sha256": "04dc52136d82400b11df5f474949863a70a5d05d2278dec45b99c479494450a6"
+        }
+      ]
+    },
+    {
+      "crate": "zlib-rs",
+      "version": "0.6.8",
+      "file": "zlib-rs-0.6.8.crate",
+      "crate_sha256": "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112",
+      "bytes": 215857,
+      "source": "https://static.crates.io/crates/zlib-rs/zlib-rs-0.6.8.crate",
+      "license": "Zlib",
+      "notices": [
+        {
+          "file": "native/render/notices/zlib-rs-0.6.8-LICENSE",
+          "sha256": "e72111c52b7d96ebe25348dee19f0744f444d3c95ae6b1ecb6ccaecc5bce05ba"
+        }
+      ]
+    },
+    {
+      "crate": "zmij",
+      "version": "1.0.23",
+      "file": "zmij-1.0.23.crate",
+      "crate_sha256": "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b",
+      "bytes": 28612,
+      "source": "https://static.crates.io/crates/zmij/zmij-1.0.23.crate",
+      "license": "MIT",
+      "notices": [
+        {
+          "file": "native/render/notices/zmij-1.0.23-LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ]
+    },
+    {
+      "crate": "zopfli",
+      "version": "0.8.3",
+      "file": "zopfli-0.8.3.crate",
+      "crate_sha256": "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249",
+      "bytes": 51589,
+      "source": "https://static.crates.io/crates/zopfli/zopfli-0.8.3.crate",
+      "license": "Apache-2.0",
+      "notices": [
+        {
+          "file": "native/render/notices/zopfli-0.8.3-COPYING",
+          "sha256": "018b1cb87efdf7a04c2fcc13d57ed63f62149113fb207b27ea13430d64f13513"
+        }
+      ]
+    },
+    {
+      "crate": "zune-core",
+      "version": "0.5.3",
+      "file": "zune-core-0.5.3.crate",
+      "crate_sha256": "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b",
+      "bytes": 30419,
+      "source": "https://static.crates.io/crates/zune-core/zune-core-0.5.3.crate",
+      "license": "MIT OR Apache-2.0 OR Zlib",
+      "notices": [
+        {
+          "file": "native/render/notices/zune-core-0.5.3-LICENSE-APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        },
+        {
+          "file": "native/render/notices/zune-core-0.5.3-LICENSE-MIT",
+          "sha256": "d30047bca3b516639339a3c279bb84c3483124fb5a9dafe3c75056a85090e745"
+        },
+        {
+          "file": "native/render/notices/zune-core-0.5.3-LICENSE-ZLIB",
+          "sha256": "d201d14804d3bcd3b944147173175e4abfbd838b7c8069b6bd3452496bf13e6c"
+        }
+      ]
+    },
+    {
+      "crate": "zune-jpeg",
+      "version": "0.5.15",
+      "file": "zune-jpeg-0.5.15.crate",
+      "crate_sha256": "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296",
+      "bytes": 88879,
+      "source": "https://static.crates.io/crates/zune-jpeg/zune-jpeg-0.5.15.crate",
+      "license": "MIT OR Apache-2.0 OR Zlib",
+      "notices": [
+        {
+          "file": "native/render/notices/zune-jpeg-0.5.15-LICENSE-APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        },
+        {
+          "file": "native/render/notices/zune-jpeg-0.5.15-LICENSE-MIT",
+          "sha256": "d30047bca3b516639339a3c279bb84c3483124fb5a9dafe3c75056a85090e745"
+        },
+        {
+          "file": "native/render/notices/zune-jpeg-0.5.15-LICENSE-ZLIB",
+          "sha256": "d201d14804d3bcd3b944147173175e4abfbd838b7c8069b6bd3452496bf13e6c"
+        }
+      ]
+    }
+  ],
+  "fonts": [
+    {
+      "component": "WordCraft/Inter-Medium.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/Inter-Medium.ttf",
+      "embedded": true,
+      "bytes": 417300,
+      "sha256": "97ad806f526e41546d46365bb3a393145f75b7b1568913db74549ad8b8dba872",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-Inter.txt",
+      "notice_sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"
+    },
+    {
+      "component": "WordCraft/Inter-Regular.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/Inter-Regular.ttf",
+      "embedded": true,
+      "bytes": 411640,
+      "sha256": "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-Inter.txt",
+      "notice_sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"
+    },
+    {
+      "component": "WordCraft/Inter-SemiBold.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/Inter-SemiBold.ttf",
+      "embedded": true,
+      "bytes": 419744,
+      "sha256": "78a843fade9d4612a5567302fb595b56976eb5fcebf4fea5a5912d638bafcde3",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-Inter.txt",
+      "notice_sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"
+    },
+    {
+      "component": "WordCraft/JetBrainsMono-Regular.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/JetBrainsMono-Regular.ttf",
+      "embedded": true,
+      "bytes": 270224,
+      "sha256": "e6fd0d7e91550b3ed2b735d4312474362c4716edc4fc0577a0f61ed782d5aed1",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-JetBrainsMono.txt",
+      "notice_sha256": "a76abf002c49097d146e86740a3105a5d00450b1592e820a1109a8c5680cd697"
+    },
+    {
+      "component": "WordCraft/SourceSans3-Bold.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/SourceSans3-Bold.ttf",
+      "embedded": true,
+      "bytes": 428176,
+      "sha256": "9214b9d95e4231c609802815c2646c98174e2102d0d37f88978a7f8e71006e6a",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSans3.txt",
+      "notice_sha256": "56af9b9c6715597e458284a474dc118a50a4150e9d547c70f7b4a33c3e6a9328"
+    },
+    {
+      "component": "WordCraft/SourceSans3-It.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/SourceSans3-It.ttf",
+      "embedded": true,
+      "bytes": 315812,
+      "sha256": "192afd78f0f54a3c69eaf02d43f4d9a821e9d6110e41d3d25d61a7385cd580e4",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSans3.txt",
+      "notice_sha256": "56af9b9c6715597e458284a474dc118a50a4150e9d547c70f7b4a33c3e6a9328"
+    },
+    {
+      "component": "WordCraft/SourceSans3-Regular.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/SourceSans3-Regular.ttf",
+      "embedded": true,
+      "bytes": 431196,
+      "sha256": "4644c81b86ec9caaa76b634889968ed3c4f4f52f054855933acc7c2b21e53b0f",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSans3.txt",
+      "notice_sha256": "56af9b9c6715597e458284a474dc118a50a4150e9d547c70f7b4a33c3e6a9328"
+    },
+    {
+      "component": "WordCraft/SourceSans3-Semibold.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/SourceSans3-Semibold.ttf",
+      "embedded": true,
+      "bytes": 425904,
+      "sha256": "a3f4f8dcf343a8f24dc61951de93f3ba1558b15cd250ba24af8a40e957081b7d",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSans3.txt",
+      "notice_sha256": "56af9b9c6715597e458284a474dc118a50a4150e9d547c70f7b4a33c3e6a9328"
+    },
+    {
+      "component": "WordCraft/SourceSerif4-Bold.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/SourceSerif4-Bold.ttf",
+      "embedded": true,
+      "bytes": 271568,
+      "sha256": "7cf4f4e1ad74f45058d5bc61716b82560442fbdcd9d3654d2dea96bf6c683d86",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSerif4.txt",
+      "notice_sha256": "c21d7293d87b6d7ab1d0229a2f55b77f33a7613a6a4e66f6693d68d7d8d09464"
+    },
+    {
+      "component": "WordCraft/SourceSerif4-BoldIt.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/SourceSerif4-BoldIt.ttf",
+      "embedded": true,
+      "bytes": 191832,
+      "sha256": "7b215b37f8873f5579f3f8d2ded3ca7c588e2f435cd996605ebfc5befe2cd5eb",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSerif4.txt",
+      "notice_sha256": "c21d7293d87b6d7ab1d0229a2f55b77f33a7613a6a4e66f6693d68d7d8d09464"
+    },
+    {
+      "component": "WordCraft/SourceSerif4-It.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/SourceSerif4-It.ttf",
+      "embedded": true,
+      "bytes": 187808,
+      "sha256": "9d2950a8f1da66e21502c35d646a1d2148e79f9ea43fd2158cf02f5232e7f430",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSerif4.txt",
+      "notice_sha256": "c21d7293d87b6d7ab1d0229a2f55b77f33a7613a6a4e66f6693d68d7d8d09464"
+    },
+    {
+      "component": "WordCraft/SourceSerif4-Regular.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/SourceSerif4-Regular.ttf",
+      "embedded": true,
+      "bytes": 261868,
+      "sha256": "e5a4ee6a3d87bb9024796be390c6771e2a0eb1883dae25effaf57ca01668e24b",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSerif4.txt",
+      "notice_sha256": "c21d7293d87b6d7ab1d0229a2f55b77f33a7613a6a4e66f6693d68d7d8d09464"
+    },
+    {
+      "component": "WordCraft/SourceSerif4-Semibold.ttf",
+      "file": "native/render/vendor/wordcraft/assets/fonts/SourceSerif4-Semibold.ttf",
+      "embedded": true,
+      "bytes": 272088,
+      "sha256": "36db62940cb5728b12b1802476dc7fcf4c6c519a7bdd476ba23a4e555fc4655f",
+      "license": "OFL-1.1",
+      "notice": "native/render/notices/storytold-wordcraft-assets_fonts_OFL-SourceSerif4.txt",
+      "notice_sha256": "c21d7293d87b6d7ab1d0229a2f55b77f33a7613a6a4e66f6693d68d7d8d09464"
+    },
+    {
+      "component": "epaint_default_fonts/Ubuntu-Light.ttf",
+      "file": "crate:fonts/Ubuntu-Light.ttf",
+      "embedded": true,
+      "bytes": 361676,
+      "sha256": "80307b8da7649aa4ee4d484b232140e3ce1ec0ca093073d3c53c8f5a5ced7a70",
+      "license": "Ubuntu-Font-1.0",
+      "notices_from_crate": "epaint_default_fonts",
+      "notice": "native/render/notices/epaint_default_fonts-0.36.2-fonts_UFL.txt",
+      "notice_sha256": "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002"
+    }
+  ],
+  "missing_notice_files": [],
+  "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1\n"
+}

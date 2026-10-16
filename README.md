@@ -1,56 +1,77 @@
-# alldoc
+# AllDoc
 
-An offline-first Android document workspace by SmallThingz. **Active development; not yet a replacement for a full office suite.**
+![Android](https://img.shields.io/badge/android-9%2B-3ddc84?logo=android&logoColor=0f172a)
+![Kotlin](https://img.shields.io/badge/kotlin-2.3.0-7c3aed?logo=kotlin&logoColor=ffffff)
+![Compose](https://img.shields.io/badge/ui-Jetpack%20Compose-2563eb)
 
-## Immersive workspace (next preview)
+Offline document reader for Android. Open documents, keep your place, and share text, structured data or page images with other apps.
 
-- Kotlin / Jetpack Compose, Android 8.0+, system document picker
-- Searchable document library, light/dark themes and chrome-free document surfaces
-- A deliberate single tap reveals overlay controls; scrolling, pinching and double taps stay immersive
-- Direct source editing, with no redundant read-only Text mode
-- Isolated-process Android PDF viewing, pagination and zoom; Android 15+ AcroForm text filling
-- Offline approximate DOCX preview and horizontally scrolling XLSX/ODS grids
-- Continuous pages or single-slide PPTX/ODP presentation modes, supported styles and bounded PNG/JPEG pictures
-- Source-preserving RTF body-text edits with bounded safe parsing
-- Genuine read-only legacy DOC/XLS/PPT extraction; current PPT slide order excludes historical/master-placeholder text
-- ODT and flat OpenDocument, validated XML/SVG, and inert HTML/CSS/text source editing
-- Structured OOXML / ODF content editing with explicit fidelity warnings
-- Export-copy only: source provider files are never opened for write
-- Atomic draft recovery, unchanged-byte exports, and visible recovery archives for pre-0.2 Office drafts
-- No Internet, broad storage, analytics, account, advertising or AI permissions
+## Highlights
 
-See [format boundaries](docs/FORMATS.md), [security model](docs/SECURITY.md), and [verification](docs/VERIFICATION.md). The compact app has a 5 MiB APK budget. A large native-office experiment was rejected and is not part of main. Full Office functionality, including spreadsheet chart editing and formula recalculation, remains unresolved. See the [mature-engine feasibility assessment](research/android-office-engine-feasibility-2026-10-03.md); no compact full-featured offline engine has been integrated. The preserved 0.2.0 APK does not contain the new immersive/RTF/presentation changes.
+- **Reading views.** Scroll vertically in Normal, or move one page at a time in Present. Markdown has one continuous formatted reading view, with a Text alternative. Extractable documents also offer a Text view.
+- **Your place, remembered.** Position, zoom, rotation, reading view and appearance follow the document's SHA-256 hash, even when its name or source changes.
+- **Recents and Library.** Six recent documents, a three-column cover grid, incremental content-aware indexing, type groups and fuzzy filename filtering. Open individual files or grant access to storage and selected folders.
+- **Document colors.** System, Light, Dark, Paper, Original, Contrast and Invert, with separate image handling. Paper roughness is adjustable; System, Light, Dark and AMOLED app themes are independent of document colors.
+- **Notes and navigation.** Search, PDF contents, and supported speaker notes/comments below the page in portrait or alongside it in landscape.
+- **Export and integration.** Text, hierarchical JSON, page images and Print to PDF. Descriptor-based previews for Android apps; OACP capabilities for assistants.
+- **46 offline examples.** Small authored documents covering every supported extension.
+
+Temporary shares can be retained as deduplicated copies in **Documents/AllDoc**, with configurable storage and file-count limits. Source files remain separate from the reader's working cache. [Reading state and storage](docs/STATE.md).
+
+**Android 9+ · `app.smallthingz.alldoc` · arm64 and x86-64**
+
+## Formats
+
+| Family | Reading support |
+| --- | --- |
+| PDF | Pages, extractable text, contents and annotations |
+| Word, PowerPoint, Excel | Best-effort OOXML pages; semantic reading for legacy binary formats |
+| OpenDocument, RTF, EPUB, FictionBook | Text and document structure |
+| Pages, Numbers, Keynote | Saved embedded previews, when present |
+| Markdown | Formatted headings, lists, emphasis, tables and code in one continuous document |
+| HTML, XHTML | Readable document text; scripts and remote resources are ignored |
+
+Rendering fidelity varies by format. Standalone images, plain text, source code, data files, email and 3D models are outside the reader’s scope. Apple IWA content is not decoded; scanned pages have no OCR. Macros and active content do not run. Bounded or omitted content is reported. See the [full format matrix](docs/FORMATS.md) for extensions and limits.
 
 ## Build
 
-JDK 21, Android SDK platform 37 and build tools 36.0.0; Gradle wrapper 9.6.0.
+Requires a **Linux x86-64 host**, JDK 21, Python 3, Git, `patch`, Rust with `rustup`, Android SDK Platform 37 and **NDK 29.0.14206865**. Set `ANDROID_HOME` and `JAVA_HOME` first.
 
 ```sh
-./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+rustup target add aarch64-linux-android x86_64-linux-android
+git submodule update --init --recursive
+scripts/build
 ```
 
-Small installable preview:
+Use `scripts/build --abis arm64-v8a` for a phone-only build or `--debug` for debug APKs. `scripts/build --check` checks prerequisites. Separate ABI APKs are written under `app/build/outputs/apk/release/`.
+
+Release builds enable R8, resource shrinking, and compressed DEX/native libraries. They currently use the local Android debug key; configure a private release key before store distribution. [Native build details](native/render/README.md).
 
 ```sh
-./gradlew :app:assemblePreview
-python scripts/check-apk-size.py app/build/outputs/apk/preview/app-preview.apk
+scripts/check-core
+./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
+./gradlew :app:connectedDebugAndroidTest :client-test:connectedDebugAndroidTest
 ```
 
-The `alldoc Preview` APK uses R8/resource shrinking and a development signing key, with its own `.preview` application ID. It is an evaluation build, not a production-signed release. Debug builds include test tooling and are larger. No production signing key is included.
+Build native libraries before running Gradle packaging. `scripts/check-core` exercises the host JNI reader; device tests cover rendering, gestures, persistence, cancellation and cross-app descriptor ownership. Tests use synthetic fixtures.
 
-The Gradle test task is the supported full verification path. Core parser tests can also run without the Android SDK, using the Apache POI/runtime dependencies pinned in the build:
+## Integration
 
-```sh
-JUNIT_JAR=/path/junit-4.13.2.jar HAMCREST_JAR=/path/hamcrest-core-1.3.jar \
-POI_CP="/path/to/poi-and-runtime-dependencies/*" ./scripts/test-core.sh
-```
+Android apps can bind to `app.smallthingz.alldoc.ipc.DocumentService` through the small `:api` module. Pass a caller-owned file descriptor, retain a session while viewing, and request text, JSON or PNG through bounded descriptor streams. Document bytes stay out of Binder messages; parsing and rendering run on workers.
 
-## Design principles
+- [Android API and client example](api/PROTOCOL.md)
+- [OACP discovery and assistant capabilities](api/OACP.md)
+- [Reader interface](docs/INTERFACE.md)
+- [Document color handling](docs/DARK_MODE.md)
 
-Quiet, accessible native controls. The original remains yours. Every unsupported feature is visible, never disguised as complete support. Imports and exports run off the UI thread. Structured content lists and grids are virtualized; direct source editing has an explicit size bound. No proprietary WPS code or assets are used.
+## Sources and acknowledgements
 
-## Upgrading from 0.1.x
+[WordCraft](https://github.com/storytold/wordcraft), [DeckCraft](https://github.com/storytold/deckcraft), and [GridCraft](https://github.com/storytold/gridcraft) are pinned submodules. AllDoc uses their parser/rendering components with local mobile adapters; upstream updates require rebuilding and checking the format fixtures. Native source inventories, patches and dependency notices are retained under `native/`.
 
-Office draft IDs changed with improved sheet/slide order and ODS cell modeling. Earlier drafts are never guessed onto new document blocks. alldoc preserves the unchanged original plus all old draft text in a verified recovery archive first. Use **More → Recovered drafts → Save recovered draft** to save the ZIP. Archives remain available after opening other files.
+[Reverb](https://github.com/SmallThingz/reverb), MJ PDF and Dark Reader inform the interface and document colors. [Design references](docs/UI_REFERENCE.md). Dependency notices are available from **Licenses** on Home.
 
-See [immersive interaction](docs/IMMERSIVE_INTERACTION.md), [design decisions](docs/DESIGN.md) and the verification log for actual test coverage and remaining device-only checks.
+## License
+
+Original AllDoc contributions are [Apache-2.0](LICENSE). Third-party and ZFM-derived
+code retains its own terms; the ZFM crate and repository contain conflicting license
+declarations. See [NOTICE](NOTICE) for scope, provenance and retained license texts.

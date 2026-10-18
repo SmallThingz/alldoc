@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
 import android.system.Os
+import android.system.ErrnoException
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -35,13 +36,13 @@ internal object NativePdfExports {
 
     fun available(): Boolean = module?.let { it.executable.canExecute() && it.launcher.canExecute() } == true
 
-    fun json(fd: ParcelFileDescriptor, signal: CancellationSignal): String = run(fd, signal)
+    fun json(fd: ParcelFileDescriptor, signal: CancellationSignal, snapshot: File? = null): String = run(fd, signal, snapshot = snapshot)
 
-    fun outline(fd: ParcelFileDescriptor, password: String?, signal: CancellationSignal): String = run(fd, signal, password, "outline")
+    fun outline(fd: ParcelFileDescriptor, password: String?, signal: CancellationSignal, snapshot: File? = null): String = run(fd, signal, password, "outline", snapshot)
 
-    fun notes(fd: ParcelFileDescriptor, password: String?, signal: CancellationSignal): String = run(fd, signal, password, "notes")
+    fun notes(fd: ParcelFileDescriptor, password: String?, signal: CancellationSignal, snapshot: File? = null): String = run(fd, signal, password, "notes", snapshot)
 
-    private fun run(fd: ParcelFileDescriptor, signal: CancellationSignal, password: String? = null, mode: String? = null): String {
+    private fun run(fd: ParcelFileDescriptor, signal: CancellationSignal, password: String? = null, mode: String? = null, snapshot: File? = null): String {
         val config = module?.takeIf { available() } ?: throw PdfTextUnavailableException()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
         fun check() {
@@ -60,18 +61,7 @@ internal object NativePdfExports {
             directory = Files.createTempDirectory(config.cache.toPath(), "pdf-export-").toFile()
             val input = File(directory, "input.pdf")
             val output = File(directory, "result.json")
-            input.outputStream().use { destination ->
-                val buffer = ByteArray(64 * 1024)
-                var offset = 0L
-                while (true) {
-                    check()
-                    val count = Os.pread(fd.fileDescriptor, buffer, 0, buffer.size, offset)
-                    if (count <= 0) break
-                    offset += count
-                    if (offset > MAX_INPUT) throw IOException("PDF exceeds the 128 MiB text export limit")
-                    destination.write(buffer, 0, count)
-                }
-            }
+            prepareInput(fd, input, snapshot, ::check)
             check()
             val command = mutableListOf(config.launcher.absolutePath, android.os.Process.myPid().toString(), config.executable.absolutePath,
                 input.absolutePath, output.absolutePath)
@@ -128,6 +118,43 @@ internal object NativePdfExports {
             directory?.listFiles()?.forEach { it.delete() }
             directory?.delete()
             if (acquired) slot.release()
+        }
+    }
+
+    /** Only engine-owned immutable snapshots may be linked; external descriptors are copied. */
+    internal fun prepareInput(fd: ParcelFileDescriptor, input: File, snapshot: File?, check: () -> Unit) {
+        try {
+            check()
+            val source = Os.fstat(fd.fileDescriptor)
+            if (source.st_size > MAX_INPUT) throw IOException("PDF exceeds the 128 MiB text export limit")
+            if (snapshot != null) {
+                try {
+                    Os.link(snapshot.absolutePath, input.absolutePath)
+                    val linked = Os.stat(input.absolutePath)
+                    if (linked.st_dev == source.st_dev && linked.st_ino == source.st_ino) {
+                        check()
+                        return
+                    }
+                } catch (_: ErrnoException) { }
+                catch (_: SecurityException) { }
+                if (input.exists() && !input.delete()) throw IOException("Cannot prepare PDF input")
+            }
+            input.outputStream().use { destination ->
+                val buffer = ByteArray(64 * 1024)
+                var offset = 0L
+                while (true) {
+                    check()
+                    val count = Os.pread(fd.fileDescriptor, buffer, 0, buffer.size, offset)
+                    if (count <= 0) break
+                    offset += count
+                    if (offset > MAX_INPUT) throw IOException("PDF exceeds the 128 MiB text export limit")
+                    destination.write(buffer, 0, count)
+                }
+            }
+            check()
+        } catch (failure: Throwable) {
+            input.delete()
+            throw failure
         }
     }
 

@@ -84,7 +84,7 @@ class ReaderHomeTest {
                 }
                 if (!opened.get()) {
                     visit { node ->
-                        node.isEnabled && node.isVisibleToUser && node.isScrollable &&
+                        node.isEnabled && node.isVisibleToUser && node.isScrollable && !matches(node, "Document tabs") &&
                             node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                     }
                     SystemClock.sleep(50)
@@ -121,9 +121,7 @@ class ReaderHomeTest {
                     }
                 } }
                 awaitHome {
-                    count(first.title) == 1 && count(second.title) == 1 && count(third.title) == 1 && count("Open") == 1 &&
-                        visit { node -> node.isVisibleToUser && node.isScrollable &&
-                            node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD } }
+                    count(first.title) == 1 && count(second.title) == 1 && count(third.title) == 1 && count("Open") == 1
                 }
                 scenario.onActivity {
                     assertTrue("Hidden Home must not request previews", requests.isEmpty())
@@ -134,7 +132,7 @@ class ReaderHomeTest {
                 awaitHome(detail = {
                     "current=${documentRow(first.title)}, recent=${documentRow(second.title)}, " +
                         "titleCount=${count(first.title)}, pageCount=${count("2 / 5")}, backward=" +
-                        visit { node -> node.isVisibleToUser && node.isScrollable &&
+                        visit { node -> node.isVisibleToUser && node.isScrollable && !matches(node, "Document tabs") &&
                             node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD } }
                 }) {
                     val resume = documentRow(first.title)
@@ -142,7 +140,9 @@ class ReaderHomeTest {
                     resume != null && recent != null && resume.bounds.bottom <= recent.bounds.top &&
                         count(first.title) == 1 && count("2 / 5") == 1 &&
                         resume.state == "Continue reading" &&
-                        !visit { node -> node.isVisibleToUser && node.isScrollable &&
+                        visit { node -> node.isVisibleToUser && node.isScrollable && !matches(node, "Document tabs") &&
+                            node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD } } &&
+                        !visit { node -> node.isVisibleToUser && node.isScrollable && !matches(node, "Document tabs") &&
                             node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD } }
                 }
                 awaitHome {
@@ -160,6 +160,36 @@ class ReaderHomeTest {
                 clickLabel("Open"); awaitHome { opened.get() == 1 }
             }
         } finally { image.recycle() }
+    }
+
+    @Test fun confirmedMissingCurrentIsHiddenUntilItsSourceRecovers() {
+        val current = StoredDocument("d".repeat(64), DocumentMetadata("Deleted.pdf", "application/pdf", 2048), DocumentState(), 2)
+        val other = StoredDocument("e".repeat(64), DocumentMetadata("Available.pdf", "application/pdf", 1024), DocumentState(), 1)
+        val available = mutableStateOf(true)
+        val recent = mutableStateOf(listOf(current, other))
+        val reopened = AtomicReference<String?>()
+        val resumed = AtomicInteger()
+        ActivityScenario.launch(ReaderTestActivity::class.java).use { scenario ->
+            scenario.onActivity { activity -> activity.setContent {
+                ReaderTheme(dark = true) {
+                    Box(Modifier.fillMaxSize()) {
+                        ReaderHome({}, Modifier.width(360.dp).height(360.dp).clipToBounds(), recent.value,
+                            currentTitle = current.title, currentHash = current.hash, currentAvailable = available.value,
+                            currentPage = 1, currentPageCount = 5, onResume = { resumed.incrementAndGet() }, onRecent = reopened::set)
+                    }
+                }
+            } }
+            awaitHome { count(current.title) == 1 && count("2 / 5") == 1 }
+            scenario.onActivity { recent.value = listOf(other); available.value = false }
+            awaitHome { count(current.title) == 0 && count("2 / 5") == 0 && count(other.title) == 1 }
+            clickLabel(other.title)
+            awaitHome { reopened.get() == other.hash }
+            assertEquals("The surviving history row must not resume the missing snapshot", 0, resumed.get())
+            scenario.onActivity { recent.value = listOf(current, other); available.value = true }
+            awaitHome { count(current.title) == 1 && count(other.title) == 1 && count("2 / 5") == 1 }
+            clickLabel(current.title)
+            awaitHome { resumed.get() == 1 }
+        }
     }
 
     @Test fun recentsStayShortAndLibraryShowsRealPortraitCoversForOnlyItsViewport() {
@@ -202,7 +232,7 @@ class ReaderHomeTest {
                 val seen = linkedSetOf<String>()
                 repeat(10) {
                     history.forEach { if (count(it.title) > 0) seen += it.title }
-                    visit { node -> node.isVisibleToUser && node.isScrollable &&
+                    visit { node -> node.isVisibleToUser && node.isScrollable && !matches(node, "Document tabs") &&
                         node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) }
                     instrumentation.waitForIdleSync()
                     SystemClock.sleep(100)
@@ -231,7 +261,7 @@ class ReaderHomeTest {
                 clickLabel(documents[1].title)
                 awaitHome { opened.get() == documents[1] }
                 assertEquals("A featured Library cover must reopen its source, not resume a snapshot", 0, resumed.get())
-                assertTrue(visit { node -> node.isVisibleToUser && node.isScrollable &&
+                assertTrue(visit { node -> node.isVisibleToUser && node.isScrollable && !matches(node, "Document tabs") &&
                     node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) })
                 awaitHome { visible.get().isNotEmpty() && visible.get().none { it.id == 1L } && visible.get().any { it.id > 4 } }
                 assertTrue("Scrolling must replace the bounded viewport window", visible.get().size <= 12)
@@ -276,13 +306,13 @@ class ReaderHomeTest {
             } }
             awaitHome { count("Recents") == 1 && count(history.first().title) == 1 }
             dragList(up = true)
-            awaitHome { count("Recents") == 0 && count("Open") == 0 && count("Examples") == 0 }
+            awaitHome { count("Recents") == 1 && count("Open") == 1 && count("Examples") == 1 }
             dragList(up = false)
             awaitHome { count("Recents") == 1 && count("Open") == 1 && count("Examples") == 1 }
             clickLabel("Library")
             awaitHome { count("Documents") == 1 && count(documents.first().title) == 1 }
             dragList(up = true)
-            awaitHome { count("Library") == 0 && count("Document type") == 0 }
+            awaitHome { count("Library") == 1 && count("Document type") == 0 }
             dragList(up = false)
             awaitHome { count("Library") == 1 && count("Document type") == 1 }
             assertTrue("Old storage/action strips must not survive", count("Storage") + count("Add folder") + count("Refresh library") == 0)
@@ -401,7 +431,7 @@ class ReaderHomeTest {
             clickLabel("Library")
             awaitHome { count(documents.first().title) == 1 && count("Document type") == 1 }
             dragList(up = true)
-            awaitHome { count("Library") == 0 && count("Open") == 0 && count("Examples") == 0 }
+            awaitHome { count("Library") == 1 && count("Open") == 1 && count("Examples") == 1 && count("Document type") == 0 }
             // A scan/filter update can remove the grid's scroll actions. Controls must return
             // without a physical recovery drag, so accessibility users can still reach them.
             pages.value = libraryPageData(documents.take(3), "short")
@@ -467,7 +497,7 @@ class ReaderHomeTest {
                 repeat(4) {
                     if (documents.take(12).none { count(it.title) > 0 }) {
                         assertTrue("Earlier rows must be reachable with accessibility scrolling", visit { node ->
-                            node.isVisibleToUser && node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD } &&
+                            node.isVisibleToUser && !matches(node, "Document tabs") && node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD } &&
                                 node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
                         })
                         instrumentation.waitForIdleSync()
@@ -488,6 +518,68 @@ class ReaderHomeTest {
         } finally { cover.recycle() }
     }
 
+    @Test fun swipingTabsPreservesLibraryFilterAndScrollWithBottomActions() {
+        val documents = (1L..45L).map { id -> LibraryDocument(id, null, "Swipe %02d.pdf".format(id),
+            "application/pdf", 1024, "content://home-swipe/$id", 1, 1) }
+        val pages = MutableStateFlow(libraryPageData(documents))
+        val requested = AtomicReference<Pair<String, LibraryCategory?>>()
+        val selected = AtomicBoolean()
+        val opened = AtomicBoolean()
+        ActivityScenario.launch(ReaderTestActivity::class.java).use { scenario ->
+            scenario.onActivity { activity -> activity.setContent { MaterialTheme {
+                ReaderHome({ opened.set(true) }, Modifier.width(360.dp).height(520.dp).clipToBounds(),
+                    library = pages.collectAsLazyPagingItems(), onLibrarySelected = selected::set,
+                    onLibraryFilter = { text, category -> requested.set(text to category) })
+            } } }
+            swipeTabs(left = true)
+            awaitHome { selected.get() && count(documents.first().title) == 1 }
+            awaitHome { visit { it.isVisibleToUser && it.isEditable && it.performAction(
+                AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "swp") }) } }
+            awaitHome { requested.get() == ("swp" to null) }
+            dragList(up = true)
+            awaitHome { count(documents.first().title) == 0 }
+            val anchor = documents.first { count(it.title) == 1 }.title
+            swipeTabs(left = false)
+            awaitHome { !selected.get() && count("Recents") == 1 && count("Library") == 1 }
+            swipeTabs(left = true)
+            awaitHome { selected.get() && count(anchor) == 1 && count(documents.first().title) == 0 }
+            assertEquals("Tab swipes must preserve the filter", "swp" to null, requested.get())
+            val nav = requireNotNull(documentRow("Library")).bounds
+            val open = requireNotNull(documentRow("Open")).bounds
+            assertTrue("Open floats above the bottom navigation", open.bottom <= nav.top)
+            assertTrue("Open stays on the right", open.centerX() > nav.left)
+            clickLabel("Open")
+            awaitHome { opened.get() }
+        }
+    }
+
+    private fun swipeTabs(left: Boolean) {
+        var viewport: Rect? = null
+        awaitHome { visit { node ->
+            if (node.isVisibleToUser && matches(node, "Document tabs")) {
+                viewport = Rect().also(node::getBoundsInScreen); true
+            } else false
+        } }
+        val bounds = requireNotNull(viewport)
+        val from = bounds.left + bounds.width() * if (left) .85f else .15f
+        val to = bounds.left + bounds.width() * if (left) .15f else .85f
+        val y = bounds.top + bounds.height() * .55f
+        val start = SystemClock.uptimeMillis()
+        fun send(action: Int, x: Float) {
+            val event = MotionEvent.obtain(start, SystemClock.uptimeMillis(), action, x, y, 0).apply {
+                source = InputDevice.SOURCE_TOUCHSCREEN
+            }
+            try { assertTrue(instrumentation.uiAutomation.injectInputEvent(event, true)) } finally { event.recycle() }
+        }
+        send(MotionEvent.ACTION_DOWN, from)
+        for (step in 1..12) {
+            SystemClock.sleep(15); send(MotionEvent.ACTION_MOVE, from + (to - from) * step / 12f)
+        }
+        send(MotionEvent.ACTION_UP, to)
+        instrumentation.waitForIdleSync()
+    }
+
     // Static test data must explicitly finish loading, including empty filter results.
     private fun libraryPageData(documents: List<LibraryDocument>, key: String = "") = PagingData.from(documents,
         sourceLoadStates = LoadStates(LoadState.NotLoading(false), LoadState.NotLoading(true), LoadState.NotLoading(true)))
@@ -496,7 +588,7 @@ class ReaderHomeTest {
     private fun revealControls(label: String) {
         awaitHome(detail = { "Missing $label and a backward accessibility action" }) {
             count(label) > 0 || visit { node ->
-                node.isVisibleToUser && node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD } &&
+                node.isVisibleToUser && !matches(node, "Document tabs") && node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD } &&
                     node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
             }
         }
@@ -506,7 +598,7 @@ class ReaderHomeTest {
     private fun dragList(up: Boolean, bounds: Rect? = null) {
         var viewport = bounds
         if (viewport == null) awaitHome {
-            visit { node -> if (node.isVisibleToUser && node.isScrollable) {
+            visit { node -> if (node.isVisibleToUser && node.isScrollable && !matches(node, "Document tabs")) {
                 viewport = Rect().also(node::getBoundsInScreen); true
             } else false }
             viewport?.height()?.let { it > 80 } == true

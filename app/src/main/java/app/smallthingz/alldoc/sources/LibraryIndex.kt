@@ -28,7 +28,8 @@ internal data class LibraryScanProgress(val discovered: Long = 0, val indexed: L
     val skipped: Long = 0, val changed: Boolean = false, val complete: Boolean = false, val changes: Long = 0)
 
 /** One finite worker call; the caller owns its cancellation and scheduling priority. */
-internal class LibraryIndex(context: Context, private val catalog: LibraryCatalog) {
+internal class LibraryIndex(context: Context, private val catalog: LibraryCatalog,
+    private val elapsed: () -> Long = SystemClock::elapsedRealtime) {
     private val context = context.applicationContext
 
     fun scan(signal: CancellationSignal, onProgress: (LibraryScanProgress) -> Unit = {}): LibraryScanProgress {
@@ -71,7 +72,7 @@ internal class LibraryIndex(context: Context, private val catalog: LibraryCatalo
                 var rootComplete = true
                 val hints = ArrayList<LibraryFile>(BATCH)
                 val identified = ArrayList<LibraryFile>(BATCH)
-                var published = SystemClock.elapsedRealtime()
+                var published = elapsed()
                 fun publish() {
                     if (hints.isEmpty() && identified.isEmpty()) return
                     signal.throwIfCanceled()
@@ -80,10 +81,12 @@ internal class LibraryIndex(context: Context, private val catalog: LibraryCatalo
                     if (identified.isNotEmpty()) discoveredCount += catalog.discoverBatch(identified, rootName, generation,
                         onChanged = ::changed).size
                     hints.clear(); identified.clear()
-                    published = SystemClock.elapsedRealtime()
+                    published = elapsed()
                     onProgress(snapshot())
                 }
                 fun discovered(file: LibraryFile) {
+                    // Rejected entries must not hold an already-discovered document until the folder ends.
+                    if ((hints.isNotEmpty() || identified.isNotEmpty()) && elapsed() - published >= 75) publish()
                     if (file.uri.length > MAX_URI) { rootComplete = false; skippedCount++; return }
                     // Known names appear immediately; signatures and hashes are verified after discovery.
                     val known = DocumentFormats.supportedName(file.title)
@@ -91,6 +94,8 @@ internal class LibraryIndex(context: Context, private val catalog: LibraryCatalo
                     // A renamed document can still belong to an enabled group.
                     val provisional = known && LibraryCategory.of(hint.title, hint.mimeType) !in excluded
                     val candidate = if (provisional) hint else {
+                        // Provider open/read may block before the next per-entry deadline check.
+                        publish()
                         val detected = try { LibraryInput.mime(context, Uri.parse(file.uri), signal) }
                         catch (cancelled: OperationCanceledException) { throw cancelled }
                         catch (_: Exception) { signal.throwIfCanceled(); rootComplete = false; skippedCount++; return }
@@ -128,7 +133,7 @@ internal class LibraryIndex(context: Context, private val catalog: LibraryCatalo
                     if (LibraryCategory.of(candidate.title, candidate.mimeType) in excluded) return
                     val batch = if (provisional) hints else identified
                     batch.add(candidate)
-                    if (batch.size == BATCH || SystemClock.elapsedRealtime() - published >= 75) publish()
+                    if (batch.size == BATCH || elapsed() - published >= 75) publish()
                 }
                 try {
                     Frontier(database).use { frontier ->
@@ -169,7 +174,7 @@ internal class LibraryIndex(context: Context, private val catalog: LibraryCatalo
                 onProgress(snapshot())
             }
             // URI keysets bound both verification passes. All cheap signatures precede full-file I/O.
-            var notified = SystemClock.elapsedRealtime()
+            var notified = elapsed()
             for (hashing in listOf(false, true)) for ((root, generation) in scans) {
                 var after = ""
                 while (true) {
@@ -226,7 +231,7 @@ internal class LibraryIndex(context: Context, private val catalog: LibraryCatalo
                             if (document.hash != null && catalog.invalidate(document)) changed()
                             complete = false; skippedCount++
                         }
-                        val now = SystemClock.elapsedRealtime()
+                        val now = elapsed()
                         if (now - notified >= 250) { onProgress(snapshot()); notified = now }
                     }
                     if (!hashing && verified.isNotEmpty()) catalog.verifyBatch(verified, root, generation, ::changed)
@@ -286,6 +291,11 @@ internal class LibraryIndex(context: Context, private val catalog: LibraryCatalo
                     if (cursor.isNull(modified)) 0 else cursor.getLong(modified).coerceAtLeast(0)))
             }
             signal.throwIfCanceled()
+            // Async providers may return partial rows without throwing; those rows cannot prove deletion.
+            val extras = cursor.extras
+            if (extras.getBoolean(DocumentsContract.EXTRA_LOADING, false) ||
+                !extras.getString(DocumentsContract.EXTRA_ERROR).isNullOrEmpty())
+                throw IOException("The folder listing is incomplete.")
         } ?: throw IOException("The folder listing is unavailable.")
     }
 

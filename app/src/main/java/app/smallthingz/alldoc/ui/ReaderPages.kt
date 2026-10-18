@@ -2,6 +2,23 @@ package app.smallthingz.alldoc.ui
 
 import android.graphics.Bitmap
 import android.graphics.RectF
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.MutatePriority
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.scrollBy
@@ -22,6 +39,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -30,6 +48,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -37,6 +56,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +97,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import app.smallthingz.alldoc.state.ViewportState
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
@@ -93,6 +114,7 @@ private data class PageScroll(val page: Int, val offset: Int, val height: Int, v
     val ready: Boolean, val placement: Int)
 private data class TransformPage(val index: Int, val offset: Float, val extent: Float)
 private class PageGesture(var pose: ViewportState, var page: TransformPage? = null)
+private class PageZoom { var job: Job? = null; var revision = 0L }
 private data class PageLayout(val width: Float, val height: Float, val pose: ViewportState, val horizontal: Boolean, val leading: Float)
 
 /** Continuous vertical pages or viewport-wide presentation slots; only visible pages render. */
@@ -121,8 +143,11 @@ internal fun ReaderPages(
     onScrollDirection: (Boolean) -> Unit = {},
     onTap: () -> Unit = {},
     normalEdgePadding: Dp = 16.dp,
+    onZoomAnimation: (Boolean) -> Unit = {},
+    active: Boolean = true,
 ) {
     if (pageCount <= 0) return
+    val enabled by rememberUpdatedState(active)
     val currentPose by rememberUpdatedState(viewport.normalized())
     val gesture = remember(documentKey) { PageGesture(viewport.normalized()) }
     SideEffect {
@@ -136,9 +161,11 @@ internal fun ReaderPages(
     val currentPage by rememberUpdatedState(onCurrentPage)
     val scrollDirection by rememberUpdatedState(onScrollDirection)
     val tap by rememberUpdatedState(onTap)
+    val zoomAnimation by rememberUpdatedState(onZoomAnimation)
     val ratios by rememberUpdatedState(aspects)
     val count by rememberUpdatedState(pageCount)
     val scope = rememberCoroutineScope()
+    val focus = remember(documentKey) { FocusRequester() }
     var settling by remember(documentKey) { mutableStateOf<Job?>(null) }
     val list = remember(documentKey) { LazyListState(firstVisibleItemIndex = page.coerceIn(0, pageCount - 1)) }
     var anchor by remember(documentKey) { mutableStateOf(PageAnchor(page.coerceIn(0, pageCount - 1), fraction.initialPageFraction())) }
@@ -147,7 +174,20 @@ internal fun ReaderPages(
     var placement by remember(documentKey) { mutableIntStateOf(0) }
     var requestedZoom by remember(documentKey) { mutableStateOf<Float?>(null) }
     var transforming by remember(documentKey) { mutableStateOf(false) }
-    BoxWithConstraints(modifier.readerBackground(color = MaterialTheme.colorScheme.surfaceContainerLowest).clipToBounds()) {
+    val zooming = remember(documentKey) { PageZoom() }
+    fun cancelZoom(releaseGate: Boolean = true) {
+        val job = zooming.job ?: return
+        zooming.revision++
+        zooming.job = null
+        job.cancel()
+        if (releaseGate) {
+            transforming = false
+            zoomAnimation(false)
+            finish()
+        }
+    }
+    val cancelZoomAnimation by rememberUpdatedState({ cancelZoom() })
+    BoxWithConstraints(modifier.readerInput(active).readerBackground(color = MaterialTheme.colorScheme.surfaceContainerLowest).clipToBounds()) {
         val density = LocalDensity.current
         val width = constraints.maxWidth.toFloat()
         val height = constraints.maxHeight.toFloat()
@@ -196,10 +236,10 @@ internal fun ReaderPages(
                 .also { anchor = it; position(it.page, it.fraction) }
         }
         fun transform(focus: Offset, pan: Offset, change: Float) {
-            if (!usable) return
+            if (!enabled || !usable) return
             val before = gesture.pose
             val factor = change.takeIf { it.isFinite() && it > 0f } ?: 1f
-            val zoom = (before.zoom * factor).coerceIn(1f, 8f)
+            val zoom = (before.zoom * factor).coerceIn(ViewportState.MIN_ZOOM, ViewportState.MAX_ZOOM)
             val axis = if (horizontal) height else width
             val crossFocus = if (horizontal) focus.y else focus.x
             val crossPan = if (horizontal) pan.y else pan.x
@@ -229,7 +269,7 @@ internal fun ReaderPages(
                     val offset = pageScrollOffset(requested, newHeight, width, horizontal, row.index == 0)
                     gesture.page = TransformPage(row.index, leading - offset, newHeight)
                     list.requestScrollToItem(row.index, offset)
-                    anchor = PageAnchor(row.index, (offset.toFloat() / (newHeight + gap)).pageFraction())
+                    anchor = pageOffsetAnchor(row.index, offset.toFloat(), gap.toFloat(), count) { rowLength(it, next) }
                     position(anchor.page, anchor.fraction)
                 }
             }
@@ -240,6 +280,7 @@ internal fun ReaderPages(
         val currentCapture by rememberUpdatedState(::capture)
         val currentTransform by rememberUpdatedState(::transform)
         fun settle() {
+            if (!enabled) return
             settling?.cancel()
             settling = scope.launch {
                 // Frame callbacks precede layout; capture after the requested remeasure completed.
@@ -251,11 +292,53 @@ internal fun ReaderPages(
             }
         }
         val settleTransform by rememberUpdatedState(::settle)
+        fun animateZoom(focus: Offset, target: Float) {
+            if (!enabled) return
+            cancelZoom(releaseGate = false)
+            settling?.cancel()
+            val revision = ++zooming.revision
+            val job = scope.launch(start = CoroutineStart.LAZY) {
+                transforming = true
+                zoomAnimation(true)
+                try {
+                    animate(gesture.pose.zoom, target.coerceIn(ViewportState.MIN_ZOOM, ViewportState.MAX_ZOOM),
+                        animationSpec = tween(220, easing = FastOutSlowInEasing)) { zoom, _ ->
+                        currentTransform(focus, Offset.Zero, zoom / gesture.pose.zoom)
+                    }
+                } finally {
+                    if (revision == zooming.revision) {
+                        zooming.job = null
+                        transforming = false
+                        zoomAnimation(false)
+                        settleTransform()
+                    }
+                }
+            }
+            zooming.job = job
+            job.start()
+        }
+        val zoomTo by rememberUpdatedState(::animateZoom)
+        LaunchedEffect(documentKey, active) {
+            if (active) return@LaunchedEffect
+            settling?.cancel()
+            settling = null
+            cancelZoom()
+            transforming = false
+            list.stopScroll(MutatePriority.PreventUserInput)
+            // Input is already disabled; let the last gesture request finish remeasuring.
+            repeat(2) { withFrameNanos { } }
+            gesture.page = null
+            // Finish a Present step while covered; returning must not advance a retained page.
+            if (horizontal) snapPresentation(if (list.lastScrolledForward) Float.MAX_VALUE else -Float.MAX_VALUE)
+            if (anchor.fraction >= 0f) currentCapture()
+            finish()
+        }
         val restoredPosition = remember(documentKey, positionRevision) {
             PageAnchor(page.coerceIn(0, pageCount - 1), fraction.initialPageFraction())
         }
         // Relayout never saves a clamped temporary position over the document anchor.
         LaunchedEffect(documentKey, positionRevision, width, height, leading, viewport.rotation, horizontal, usable) {
+            cancelZoom()
             if (!usable) return@LaunchedEffect
             var target = if (appliedRevision != positionRevision) restoredPosition else anchor
             val old = previousLayout
@@ -318,7 +401,7 @@ internal fun ReaderPages(
             previousLayout = previousLayout?.let { it.copy(pose = it.pose.copy(zoom = viewport.zoom)) }
             val gesture = requestedZoom == viewport.zoom
             requestedZoom = null
-            if (ready && changed && !gesture) place(anchor)
+            if (ready && changed && !gesture) { cancelZoom(); place(anchor) }
         }
         var previousAspects by remember(documentKey) { mutableStateOf(aspects) }
         LaunchedEffect(aspects) {
@@ -327,15 +410,15 @@ internal fun ReaderPages(
             if (ready && (anchor.fraction < 0f || old != (aspects[anchor.page] ?: DefaultPageAspect)) &&
                 !list.isScrollInProgress && !transforming) place(anchor)
         }
-        LaunchedEffect(list, documentKey, usable) {
-            if (!usable) return@LaunchedEffect
+        LaunchedEffect(list, documentKey, usable, active) {
+            if (!active || !usable) return@LaunchedEffect
             snapshotFlow {
                 val visible = list.layoutInfo.visibleItemsInfo
                 if (visible.isEmpty()) null else visible.first().index..visible.last().index
             }.collect { range -> if (range != null) requestPages(range) }
         }
-        LaunchedEffect(list, documentKey, usable, horizontal, width, height) {
-            if (!usable) return@LaunchedEffect
+        LaunchedEffect(list, documentKey, usable, horizontal, width, height, active) {
+            if (!active || !usable) return@LaunchedEffect
             snapshotFlow {
                 if (!ready) null else list.layoutInfo.let { layout ->
                     pageAtProbe(layout.visibleItemsInfo,
@@ -344,7 +427,8 @@ internal fun ReaderPages(
                 }
             }.collect { index -> if (index != null) currentPage(index) }
         }
-        LaunchedEffect(list, documentKey, width, height, viewport.rotation, horizontal, viewport.zoom, aspects) {
+        LaunchedEffect(list, documentKey, width, height, viewport.rotation, horizontal, viewport.zoom, aspects, active) {
+            if (!active) return@LaunchedEffect
             var moved = false
             var previous: PageScroll? = null
             snapshotFlow {
@@ -382,7 +466,7 @@ internal fun ReaderPages(
             }
         }
         DisposableEffect(documentKey) {
-            onDispose { settling?.cancel(); finish() }
+            onDispose { settling?.cancel(); cancelZoom(); finish() }
         }
         val scrollObserver = remember(documentKey, horizontal, density) {
             object : NestedScrollConnection {
@@ -404,12 +488,27 @@ internal fun ReaderPages(
         val gestures = Modifier.fillMaxSize().nestedScroll(scrollObserver).semantics {
                 contentDescription = "Document pages"
                 customActions = listOf(
-                    CustomAccessibilityAction("Zoom in") { currentTransform(Offset(width / 2, constraints.maxHeight / 2f), Offset.Zero, 1.5f); settleTransform(); true },
-                    CustomAccessibilityAction("Zoom out") { currentTransform(Offset(width / 2, constraints.maxHeight / 2f), Offset.Zero, 1f / 1.5f); settleTransform(); true },
+                    CustomAccessibilityAction("Zoom in") { zoomTo(Offset(width / 2, constraints.maxHeight / 2f), currentPose.zoom * 1.5f); true },
+                    CustomAccessibilityAction("Zoom out") { zoomTo(Offset(width / 2, constraints.maxHeight / 2f), currentPose.zoom / 1.5f); true },
                 ) + listOfNotNull(onReadText?.let { read -> CustomAccessibilityAction("Read document text") { read(); true } })
-            }.pointerInput(documentKey, horizontal) {
+            }.onPreviewKeyEvent { event ->
+                if (!active || event.type != KeyEventType.KeyDown || event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) false
+                else {
+                    val direction = when (event.key) { Key.PageDown -> 1; Key.PageUp -> -1; else -> 0 }
+                    if (direction == 0) false else {
+                        cancelZoom()
+                        settling?.cancel()
+                        gesture.page = null
+                        settling = scope.launch { list.animateScrollBy(direction * if (horizontal) width else height) }
+                        true
+                    }
+                }
+            }.focusRequester(focus).focusable(active).pointerInput(documentKey, horizontal, active) {
+                if (!active) return@pointerInput
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    focus.requestFocus()
+                    cancelZoomAnimation()
                     settling?.cancel()
                     gesture.page = null
                     var motion = Offset.Zero
@@ -442,15 +541,14 @@ internal fun ReaderPages(
                             }
                         } while (event.changes.any { it.pressed })
                     } finally {
-                        transforming = false
+                        if (zooming.job == null) transforming = false
                         if (changed) settleTransform()
                     }
                 }
-            }.pointerInput(documentKey, horizontal) {
+            }.pointerInput(documentKey, horizontal, active) {
+                if (!active) return@pointerInput
                 detectTapGestures(onTap = { tap() }, onDoubleTap = { focus ->
-                    val zoom = currentPose.zoom
-                    currentTransform(focus, Offset.Zero, (if (zoom > 1.5f) 1f else 2f) / zoom)
-                    settleTransform()
+                    zoomTo(focus, if (currentPose.zoom > 1.5f) 1f else 2f)
                 })
             }
         val placeholderInk = if (paper.luminance() > .5f) Color(0xff334155) else Color(0xffe2e8f0)
@@ -462,7 +560,11 @@ internal fun ReaderPages(
                 PageImage(rendered, currentPose, paper, horizontal, if (horizontal) breathing else 0f, size
                     .semantics {
                         contentDescription = "Page ${index + 1}"
-                        stateDescription = when { rendered != null -> "Ready"; index in failedPages -> "Unavailable"; else -> "Loading" }
+                        stateDescription = when {
+                            index in failedPages -> if (rendered != null) "Detail unavailable" else "Unavailable"
+                            rendered != null -> "Ready"
+                            else -> "Loading"
+                        }
                         if (index in failedPages) customActions = listOf(CustomAccessibilityAction("Retry page ${index + 1}") { onRetryPage(index); true })
                     }) {
                     if (index in failedPages) Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -483,10 +585,27 @@ internal fun ReaderPages(
                     override fun calculateSnapOffset(velocity: Float) = snapOffset(velocity)
                 }
             }
-            LazyRow(state = list, horizontalArrangement = Arrangement.spacedBy(8.dp),
+            LazyRow(state = list, userScrollEnabled = active, horizontalArrangement = Arrangement.spacedBy(8.dp),
                 flingBehavior = rememberSnapFlingBehavior(snap), modifier = gestures, content = content)
-        } else LazyColumn(state = list, verticalArrangement = Arrangement.spacedBy(8.dp),
+        } else LazyColumn(state = list, userScrollEnabled = active, verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = with(density) { leading.toDp() }), modifier = gestures, content = content)
+        // Keep recovery inside the viewport even when a zoomed page extends beyond it.
+        val retainedFailure by remember(list, failedPages, images, horizontal, width, height) {
+            derivedStateOf {
+                if (failedPages.isEmpty()) null else {
+                    val layout = list.layoutInfo
+                    pageAtProbe(layout.visibleItemsInfo,
+                        layout.viewportStartOffset + (if (horizontal) width else height) / 3f,
+                        { it.offset.toFloat() }, { it.size.toFloat() })?.index
+                        ?.takeIf { it in failedPages && images[it] != null }
+                }
+            }
+        }
+        retainedFailure?.let { index ->
+            FilledTonalButton(onClick = { onRetryPage(index) },
+                modifier = Modifier.align(Alignment.Center).heightIn(min = 48.dp)
+                    .semantics { contentDescription = "Retry page ${index + 1}" }) { Text("Retry") }
+        }
     }
 }
 
@@ -549,15 +668,28 @@ internal fun pageFocalAnchor(page: Int, fraction: Float, viewport: Float, count:
 /** Continuous reading can span earlier rows; Present stays within the focal page. */
 internal fun pageScrollAnchor(page: Int, center: Float, viewport: Float, gap: Float, discrete: Boolean = false,
     probeOffset: Float = viewport / 2f, extent: (Int) -> Float): PageAnchor {
-    var index = page
-    val length = extent(index)
-    var offset = center * length - probeOffset
+    val length = extent(page)
+    val offset = center * length - probeOffset
     if (discrete) return PageAnchor(page, offset.coerceIn(0f, (length - viewport).coerceAtLeast(0f)) / (length + gap))
+    return pageOffsetAnchor(page, offset, gap, page + 1, extent)
+}
+
+/** Save an equivalent row anchor before a gesture's scroll request is measured. */
+internal inline fun pageOffsetAnchor(page: Int, requested: Float, gap: Float, count: Int, extent: (Int) -> Float): PageAnchor {
+    var index = page
+    var offset = requested
+    var length = extent(index)
     while (index > 0 && offset < 0f) {
-        index--
-        offset += extent(index) + gap
+        length = extent(--index)
+        offset += length.roundToInt() + gap
     }
-    return PageAnchor(index, (offset / (extent(index) + gap)).pageFraction())
+    while (index + 1 < count) {
+        val span = length.roundToInt() + gap
+        if (offset < span) break
+        offset -= span
+        length = extent(++index)
+    }
+    return PageAnchor(index, (offset / (length + gap)).pageFraction())
 }
 
 internal fun pageFocalPose(pose: ViewportState, previousRotation: Int, alongCenter: Float, horizontal: Boolean): ViewportState {
@@ -615,7 +747,7 @@ private fun PageImage(rendered: ReaderPageImage?, pose: ViewportState, paper: Co
                 val sideways = pose.rotation % 2 != 0
                 val rotatedWidth = if (sideways) region.height else region.width
                 val rotatedHeight = if (sideways) region.width else region.height
-                val scale = if (horizontal) min(size.width / rotatedWidth, (size.height - 2f * inset).coerceAtLeast(1f) / rotatedHeight * pose.zoom)
+                val scale = if (horizontal) min(size.width / rotatedWidth * min(1f, pose.zoom), (size.height - 2f * inset).coerceAtLeast(1f) / rotatedHeight * pose.zoom)
                     else min(size.width / rotatedWidth * pose.zoom, size.height / rotatedHeight)
                 val center = pageCrossCenter(pose, (pose.rotation + if (horizontal) 3 else 0) % 4)
                 val axis = if (horizontal) size.height else size.width

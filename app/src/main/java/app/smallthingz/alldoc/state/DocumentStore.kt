@@ -21,7 +21,7 @@ import java.util.Locale
 class DocumentStore(context: Context, name: String = "documents.db", private val maxEntries: Int = MAX_ENTRIES,
     private val clock: () -> Long = System::currentTimeMillis) : Closeable {
     init { require(maxEntries in 1..MAX_ENTRIES) }
-    private val helper = object : SQLiteOpenHelper(context.applicationContext, name, null, 5,
+    private val helper = object : SQLiteOpenHelper(context.applicationContext, name, null, 6,
         DatabaseErrorHandler { throw SQLiteDatabaseCorruptException("Saved document state is damaged; the database was preserved.") }) {
         override fun onConfigure(db: SQLiteDatabase) {
             db.rawQuery("PRAGMA journal_mode=TRUNCATE", null).use { check(it.moveToFirst()) }
@@ -45,7 +45,8 @@ class DocumentStore(context: Context, name: String = "documents.db", private val
                 text_offset INTEGER NOT NULL, text_fraction REAL NOT NULL, view INTEGER NOT NULL,
                 appearance INTEGER NOT NULL, preserve_images INTEGER NOT NULL, hide_margins INTEGER NOT NULL DEFAULT 0,
                 page_fraction REAL NOT NULL DEFAULT 0, horizontal_pages INTEGER NOT NULL DEFAULT 0, notes_visible INTEGER NOT NULL DEFAULT 0,
-                paper_roughness INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID""")
+                paper_roughness INTEGER NOT NULL DEFAULT 0, sheet INTEGER NOT NULL DEFAULT -1,
+                sheet_x REAL NOT NULL DEFAULT 0, sheet_y REAL NOT NULL DEFAULT 0, sheet_zoom REAL NOT NULL DEFAULT 1) WITHOUT ROWID""")
             db.execSQL("CREATE INDEX documents_recency ON documents(opened DESC,hash DESC)")
             db.execSQL("CREATE TRIGGER document_insert AFTER INSERT ON documents BEGIN UPDATE ledger SET entries=entries+1 WHERE id=1; END")
             db.execSQL("CREATE TRIGGER document_delete AFTER DELETE ON documents BEGIN UPDATE ledger SET entries=entries-1 WHERE id=1; END")
@@ -61,6 +62,12 @@ class DocumentStore(context: Context, name: String = "documents.db", private val
             }
             if (oldVersion < 4) db.execSQL("ALTER TABLE documents ADD COLUMN notes_visible INTEGER NOT NULL DEFAULT 0")
             if (oldVersion < 5) db.execSQL("ALTER TABLE documents ADD COLUMN paper_roughness INTEGER NOT NULL DEFAULT 0")
+            if (oldVersion < 6) {
+                db.execSQL("ALTER TABLE documents ADD COLUMN sheet INTEGER NOT NULL DEFAULT -1")
+                db.execSQL("ALTER TABLE documents ADD COLUMN sheet_x REAL NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE documents ADD COLUMN sheet_y REAL NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE documents ADD COLUMN sheet_zoom REAL NOT NULL DEFAULT 1")
+            }
         }
         override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = error("Refusing destructive document-state downgrade")
     }.apply { setWriteAheadLoggingEnabled(false) }
@@ -198,7 +205,7 @@ class DocumentStore(context: Context, name: String = "documents.db", private val
         DocumentMetadata(getString(1), nullString(2), getLong(3), nullString(4), nullString(5)),
         DocumentState(getInt(7), ViewportState(getFloat(8), getFloat(9), getFloat(10), getInt(11)),
             TextPosition(getInt(12), getFloat(13)), if (getInt(14) == 1) DocumentViewMode.TEXT else DocumentViewMode.PAGES,
-            ThemeSettings(readingMode(getInt(15)), ImageTreatment.fromCode(getInt(16)), getInt(21)), getInt(17) != 0, getFloat(18), getInt(19) != 0, getInt(20) != 0).normalized(), getLong(6))
+            ThemeSettings(readingMode(getInt(15)), ImageTreatment.fromCode(getInt(16)), getInt(21)), getInt(17) != 0, getFloat(18), getInt(19) != 0, getInt(20) != 0, SheetPosition(getInt(22), getDouble(23), getDouble(24), getFloat(25))).normalized(), getLong(6))
 
     private data class Key(val hex: String, val bytes: ByteArray) { val where get() = "hash=X'$hex'" }
     private fun key(value: String): Key {
@@ -220,6 +227,8 @@ class DocumentStore(context: Context, name: String = "documents.db", private val
     private fun Cursor.nullString(index: Int): String? = if (isNull(index)) null else getString(index)
     private fun scalar(db: SQLiteDatabase, sql: String): Long = db.rawQuery(sql, null).use { check(it.moveToFirst()); it.getLong(0) }
     private fun stateValues(value: DocumentState) = ContentValues().apply {
+        put("sheet", value.sheetPosition.sheet); put("sheet_x", value.sheetPosition.x)
+        put("sheet_y", value.sheetPosition.y); put("sheet_zoom", value.sheetPosition.zoom)
         put("paper_roughness", value.appearance.paperRoughness)
         put("hide_margins", if (value.hideMargins) 1 else 0); put("page_fraction", value.pageFraction)
         put("horizontal_pages", if (value.horizontalPages) 1 else 0); put("notes_visible", if (value.notesVisible) 1 else 0)

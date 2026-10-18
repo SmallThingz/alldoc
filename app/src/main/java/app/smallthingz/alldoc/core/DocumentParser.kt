@@ -9,6 +9,10 @@ import java.util.concurrent.CancellationException
 import java.util.zip.ZipFile
 import javax.xml.parsers.SAXParserFactory
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
+import org.jsoup.nodes.Node
+import org.jsoup.nodes.TextNode
+import org.jsoup.select.NodeVisitor
 import org.xml.sax.Attributes
 import org.xml.sax.SAXException
 import org.xml.sax.InputSource
@@ -117,14 +121,102 @@ object DocumentParser {
         val document = Jsoup.parse(text)
         check(cancel)
         document.select("script,style,noscript,template").remove()
-        val textBody = document.body().text()
-        val body = textBody.takeScalarSafe(TEXT_LIMIT)
+        val blocks = ArrayList<Block>()
+        val buffer = StringBuilder()
+        var remaining = TEXT_LIMIT
+        var omitted = truncated
+        var level = 0
+        var pre = 0
+        var cells = 0
+        var rowDepth = 0
+        val columns = ArrayDeque<Int>()
+        data class ListCounter(var next: Long, val step: Long)
+        val lists = ArrayDeque<ListCounter?>()
+        fun flush() {
+            val value = if (pre > 0) buffer.toString().trimEnd()
+                else if (rowDepth > 0) buffer.toString().trimEnd(' ', '\r', '\n') else buffer.toString().trim()
+            buffer.setLength(0)
+            if (value.isBlank()) return
+            if (blocks.size == BLOCK_LIMIT || remaining == 0) { omitted = true; return }
+            val part = value.takeScalarSafe(remaining)
+            omitted = omitted || part.length != value.length
+            remaining -= part.length
+            blocks += Block(if (level > 0) "heading" else "paragraph", part, level = level)
+        }
+        fun boundary() {
+            if (cells == 0) flush()
+            else if (buffer.isNotEmpty() && buffer.last() !in "\n\t") buffer.append('\n')
+        }
+        val tableContainers = setOf("table", "thead", "tbody", "tfoot", "tr")
+        val joinedContainers = setOf("table", "thead", "tbody", "tfoot", "td", "th")
+        document.body().traverse(object : NodeVisitor {
+            override fun head(node: Node, depth: Int) {
+                check(cancel)
+                if (node is TextNode) {
+                    val value = node.wholeText
+                    if (node.parent()?.nodeName() in tableContainers && value.isBlank()) return
+                    if (pre > 0) buffer.append(value)
+                    else for (char in value) {
+                        if (char in " \t\r\n\u000c") {
+                            if (buffer.isNotEmpty() && buffer.last() !in " \n\t") buffer.append(' ')
+                        } else buffer.append(char)
+                    }
+                    return
+                }
+                if (node !is Element) return
+                val tag = node.normalName()
+                if ((node.isBlock || tag == "summary" || tag == "legend") && tag !in joinedContainers) boundary()
+                when (tag) {
+                    "pre" -> pre++
+                    "br" -> buffer.append('\n')
+                    "ol" -> {
+                        val reversed = node.hasAttr("reversed")
+                        val start = node.attr("start").trim().toIntOrNull()?.toLong()
+                            ?: if (reversed) node.children().count { it.normalName() == "li" }.toLong() else 1L
+                        lists.addLast(ListCounter(start, if (reversed) -1L else 1L))
+                    }
+                    "ul" -> lists.addLast(null)
+                    "li" -> {
+                        val counter = lists.lastOrNull()
+                        if (counter == null) buffer.append("• ") else {
+                            val number = node.attr("value").trim().toIntOrNull()?.toLong() ?: counter.next
+                            buffer.append("$number. ")
+                            counter.next = number + counter.step
+                        }
+                    }
+                    "tr" -> { rowDepth++; columns.addLast(0) }
+                    "td", "th" -> {
+                        val column = if (columns.isEmpty()) 0 else columns.removeLast()
+                        if (column > 0) buffer.append('\t')
+                        columns.addLast(column + 1)
+                        cells++
+                    }
+                    "h1", "h2", "h3", "h4", "h5", "h6" -> level = tag[1] - '0'
+                }
+            }
+            override fun tail(node: Node, depth: Int) {
+                if (node !is Element) return
+                val tag = node.normalName()
+                if ((node.isBlock || tag == "summary" || tag == "legend") && tag !in joinedContainers) boundary()
+                when (tag) {
+                    "pre" -> pre--
+                    "td", "th" -> {
+                        while (buffer.isNotEmpty() && buffer.last() in " \r\n") buffer.setLength(buffer.length - 1)
+                        cells--
+                    }
+                    "tr" -> { rowDepth--; if (columns.isNotEmpty()) columns.removeLast() }
+                    "ol", "ul" -> if (lists.isNotEmpty()) lists.removeLast()
+                    "h1", "h2", "h3", "h4", "h5", "h6" -> level = 0
+                }
+            }
+        })
+        flush()
         val originalTitle = document.title()
         val title = originalTitle.takeScalarSafe(1024)
-        return Document("html", truncated = truncated || body != textBody || title != originalTitle,
+        return Document("html", truncated = omitted || title != originalTitle,
             warnings = listOf("Text reading order; images, styling and external resources are omitted.") +
                 if (title != originalTitle) listOf("Document title was shortened.") else emptyList(),
-            sections = listOf(Section(title, blocks = listOf(Block("paragraph", body)))))
+            sections = listOf(Section(title, blocks = blocks)))
     }
 
     private fun fictionBook(text: String, excerpt: Boolean, cancel: () -> Boolean): Document {
@@ -133,6 +225,8 @@ object DocumentParser {
         val blocks = ArrayList<Block>()
         val body = StringBuilder()
         var depth = 0; var capture = 0; var title = false; var events = 0; var truncated = false
+        var row = -1; var column = -1; var capturedKind = "paragraph"
+        val capturedTags = setOf("p", "v", "subtitle", "td", "th")
         val factory = SAXParserFactory.newInstance().apply {
             isNamespaceAware = true
             setFeature("http://xml.org/sax/features/external-general-entities", false)
@@ -145,12 +239,24 @@ object DocumentParser {
                 if (depth == 0 && localName != "FictionBook") throw SAXException("Not a FictionBook document")
                 if (++depth > 64 || ++events > 100_000) throw SAXException("XML structure limit")
                 if (localName == "title") title = true
-                if (localName in setOf("p", "v", "subtitle")) { capture++; if (capture == 1) body.setLength(0) }
+                if (localName == "tr") { row++; column = -1 }
+                if (localName == "td" || localName == "th") column++
+                if (localName in capturedTags) {
+                    capture++
+                    if (capture == 1) {
+                        body.setLength(0)
+                        capturedKind = if (localName == "td" || localName == "th") "cell"
+                            else if (title || localName == "subtitle") "heading" else "paragraph"
+                    }
+                }
             }
             override fun characters(chars: CharArray, start: Int, length: Int) { if (capture > 0 && body.length < TEXT_LIMIT) body.append(chars, start, minOf(length, TEXT_LIMIT - body.length)) }
             override fun endElement(uri: String?, localName: String, qName: String?) {
-                if (localName in setOf("p", "v", "subtitle") && --capture == 0) {
-                    if (blocks.size < BLOCK_LIMIT) blocks += Block(if (title) "heading" else "paragraph", body.toString(), level = if (title) 1 else 0) else truncated = true
+                if (localName in capturedTags && --capture == 0) {
+                    if (blocks.size < BLOCK_LIMIT) blocks += Block(capturedKind, body.toString(),
+                        row = if (capturedKind == "cell") row.coerceAtLeast(0) else -1,
+                        column = if (capturedKind == "cell") column.coerceAtLeast(0) else -1,
+                        level = if (capturedKind == "heading") 1 else 0) else truncated = true
                 }
                 if (localName == "title") title = false
                 depth--
@@ -172,7 +278,7 @@ object DocumentParser {
             sections = listOf(Section("Saved previews", blocks = entries.map { Block("metadata", it) })))
     }
 
-    private val previewNames = setOf("QuickLook/Preview.pdf", "QuickLook/Thumbnail.jpg", "preview.jpg", "preview-micro.jpg", "preview-web.jpg")
+    private val previewNames = setOf("QuickLook/Preview.pdf", "preview.jpg", "preview-web.jpg", "QuickLook/Thumbnail.jpg", "preview-micro.jpg")
     data class EmbeddedPreview(val name: String, val mime: String, val bytes: ByteArray)
     fun embeddedPreview(file: File, cancel: () -> Boolean = { false }): EmbeddedPreview? {
         if (file.length() > INPUT_LIMIT) throw IOException("iWork preview input exceeds 16 MiB.")

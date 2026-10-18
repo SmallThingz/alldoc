@@ -14,11 +14,16 @@ import android.os.ParcelFileDescriptor
 import android.system.Os
 import android.util.JsonWriter
 import java.io.Closeable
+import java.io.File
 import java.io.IOException
 import java.io.StringWriter
+import java.io.InterruptedIOException
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 import app.smallthingz.alldoc.engine.DocumentOutlineEntry
 import app.smallthingz.alldoc.engine.DocumentNote
 import app.smallthingz.alldoc.engine.DocumentNotes
+import app.smallthingz.alldoc.theme.RasterRegion
 
 class PdfTextUnavailableException : IOException("PDF text extraction module is unavailable. Image pages remain available; OCR is not included.")
 class PdfPasswordUnsupportedException : IOException("Password-protected PDFs require Android 15 or newer.")
@@ -35,11 +40,15 @@ class PdfDocument private constructor(
     val name: String,
     private val exportDescriptor: ParcelFileDescriptor?,
     private var metadataPassword: String?,
+    private val snapshot: File?,
 ) : Closeable {
     val pageCount: Int = renderer.pageCount
     val textAvailable: Boolean get() = Build.VERSION.SDK_INT >= 35 || NativePdfExports.available()
     private var exportedJson: String? = null
     private var contents: List<DocumentOutlineEntry>? = null
+    private val contentsLock = Semaphore(1, true)
+    private var pageRasterRegions: Array<List<RasterRegion>?>? = null
+    private var rasterHintsLoaded = false
     private var annotationNotes: DocumentNotes? = null
     private val notesLock = Any()
     private var closed = false
@@ -84,14 +93,77 @@ class PdfDocument private constructor(
         }
     }
 
-    fun outline(signal: CancellationSignal): List<DocumentOutlineEntry> {
+    fun outline(signal: CancellationSignal): List<DocumentOutlineEntry> = contentsRead(signal) { readOutline(signal) }
+
+    /** Complete source image footprints; null means the shared metadata proof was inconclusive. */
+    fun rasterRegions(index: Int, signal: CancellationSignal): List<RasterRegion>? = contentsRead(signal) {
+        synchronized(this) {
+            ready(signal)
+            require(index in 0 until pageCount) { "PDF page is out of range" }
+            if (rasterHintsLoaded) return@contentsRead pageRasterRegions?.getOrNull(index)
+        }
+        try { readOutline(signal) }
+        catch (failure: Exception) {
+            signal.throwIfCanceled()
+            if (failure is InterruptedIOException || Thread.currentThread().isInterrupted) throw failure
+            synchronized(this) { ready(signal); rasterHintsLoaded = true }
+        }
+        synchronized(this) { ready(signal); pageRasterRegions?.getOrNull(index) }
+    }
+
+    private fun <T> contentsRead(signal: CancellationSignal, action: () -> T): T {
+        try {
+            while (!contentsLock.tryAcquire(10, TimeUnit.MILLISECONDS)) {
+                synchronized(this) { ready(signal) }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw InterruptedIOException("PDF contents cancelled")
+        }
+        try { synchronized(this) { ready(signal) }; return action() }
+        finally { contentsLock.release() }
+    }
+
+    private fun parseRasterRegions(result: JSONObject, signal: CancellationSignal): Array<List<RasterRegion>?>? {
+        if (result.optInt("rasterPageCount", -1) != pageCount) return null
+        val entries = result.optJSONArray("rasterRegions") ?: return null
+        if (entries.length() > minOf(pageCount, MAX_EXPORT_PAGES)) return null
+        val proven = arrayOfNulls<List<RasterRegion>>(minOf(pageCount, MAX_EXPORT_PAGES))
+        var count = 0
+        for (at in 0 until entries.length()) {
+            signal.throwIfCanceled()
+            val entry = entries.optJSONObject(at) ?: return null
+            val index = entry.optInt("page", -1)
+            if (index !in proven.indices || proven[index] != null) return null
+            val values = entry.optJSONArray("regions") ?: return null
+            if (values.length() > 64 || count + values.length() > 4096) return null
+            count += values.length()
+            val regions = ArrayList<RasterRegion>(values.length())
+            for (n in 0 until values.length()) {
+                signal.throwIfCanceled()
+                val coordinates = values.optJSONArray(n) ?: return null
+                if (coordinates.length() != 4) return null
+                val left = coordinates.optDouble(0, Double.NaN).toFloat()
+                val top = coordinates.optDouble(1, Double.NaN).toFloat()
+                val right = coordinates.optDouble(2, Double.NaN).toFloat()
+                val bottom = coordinates.optDouble(3, Double.NaN).toFloat()
+                if (!left.isFinite() || !top.isFinite() || !right.isFinite() || !bottom.isFinite() ||
+                    left < 0f || top < 0f || right > 1f || bottom > 1f || left >= right || top >= bottom) return null
+                regions += RasterRegion(left, top, right, bottom)
+            }
+            proven[index] = if (regions.isEmpty()) emptyList() else java.util.Collections.unmodifiableList(regions)
+        }
+        return proven
+    }
+
+    private fun readOutline(signal: CancellationSignal): List<DocumentOutlineEntry> {
         val source = synchronized(this) {
             ready(signal)
             contents?.let { return it }
             ParcelFileDescriptor.dup(checkNotNull(exportDescriptor).fileDescriptor) to metadataPassword
         }
         val result = source.first.use { descriptor ->
-            JSONObject(NativePdfExports.outline(descriptor, source.second, signal))
+            JSONObject(NativePdfExports.outline(descriptor, source.second, signal, snapshot))
         }
         check(result.getInt("version") == 1 && result.getString("format") == "pdf-outline")
         val entries = result.getJSONArray("entries")
@@ -105,8 +177,11 @@ class PdfDocument private constructor(
             require(title.isNotBlank() && title.length <= 512 && page in 0 until pageCount && level in 0..32) { "Invalid PDF contents entry" }
             DocumentOutlineEntry(title, page, level)
         }
+        val proven = parseRasterRegions(result, signal)
         return synchronized(this) {
             ready(signal)
+            pageRasterRegions = proven
+            rasterHintsLoaded = true
             contents ?: java.util.Collections.unmodifiableList(parsed).also { contents = it }
         }
     }
@@ -118,7 +193,7 @@ class PdfDocument private constructor(
             ParcelFileDescriptor.dup(checkNotNull(exportDescriptor).fileDescriptor) to metadataPassword
         }
         val result = source.first.use { descriptor ->
-            JSONObject(NativePdfExports.notes(descriptor, source.second, signal))
+            JSONObject(NativePdfExports.notes(descriptor, source.second, signal, snapshot))
         }
         check(result.getInt("version") == 1 && result.getString("format") == "pdf-notes")
         val entries = result.getJSONArray("entries")
@@ -250,7 +325,7 @@ class PdfDocument private constructor(
     private fun nativeJson(signal: CancellationSignal): String {
         signal.throwIfCanceled()
         exportedJson?.let { return it }
-        val raw = NativePdfExports.json(checkNotNull(exportDescriptor), signal)
+        val raw = NativePdfExports.json(checkNotNull(exportDescriptor), signal, snapshot)
         val document = JSONObject(raw)
         check(document.getInt("version") == 1 && document.getString("format") == "pdf")
         return document.put("name", name).toString().also { exportedJson = it }
@@ -271,6 +346,8 @@ class PdfDocument private constructor(
                 try { exportDescriptor?.close() } finally {
                     exportedJson = null
                     contents = null
+                    pageRasterRegions = null
+                    rasterHintsLoaded = false
                     annotationNotes = null
                     metadataPassword = null
                 }
@@ -292,7 +369,13 @@ class PdfDocument private constructor(
             name: String,
             password: String? = null,
             signal: CancellationSignal = CancellationSignal(),
-        ): PdfDocument {
+        ): PdfDocument = open(fd, name, password, signal, null)
+
+        internal fun openSnapshot(fd: ParcelFileDescriptor, name: String, password: String?,
+            signal: CancellationSignal, snapshot: File): PdfDocument = open(fd, name, password, signal, snapshot)
+
+        private fun open(fd: ParcelFileDescriptor, name: String, password: String?,
+            signal: CancellationSignal, snapshot: File?): PdfDocument {
             var renderer: PdfRenderer? = null
             var exportDescriptor: ParcelFileDescriptor? = null
             try {
@@ -307,7 +390,7 @@ class PdfDocument private constructor(
                     PdfRenderer(fd)
                 }
                 signal.throwIfCanceled()
-                return PdfDocument(renderer, name, exportDescriptor, password)
+                return PdfDocument(renderer, name, exportDescriptor, password, snapshot)
             } catch (failure: Throwable) {
                 try {
                     try { if (renderer != null) renderer.close() else fd.close() }

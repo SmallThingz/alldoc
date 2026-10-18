@@ -474,13 +474,24 @@ class DocumentSourcesTest {
         collision.delete() // This object belongs to the fixture, never to the retained-copy index.
     }
 
-    @Test fun safCleanupVerifiesEveryCandidateBeforeDeletingAnything() {
+    @Test fun safCleanupVerifiesEveryCandidateBeforeDeletingAnything() = safCleanupCases()
+
+    @Test fun loadingRecoveryListingKeepsUnknownCreationUntilCompleteLookup() =
+        safCleanupCases(android.provider.DocumentsContract.EXTRA_LOADING)
+
+    @Test fun erroredRecoveryListingKeepsUnknownCreationUntilCompleteLookup() =
+        safCleanupCases(android.provider.DocumentsContract.EXTRA_ERROR)
+
+    private fun safCleanupCases(incomplete: String? = null) {
         org.junit.Assume.assumeTrue(android.os.Build.VERSION.SDK_INT >= 29)
         val body = "owned bytes"
         val replacement = "replacement bytes"
         data class Case(val pending: Int, val old: String?, val newer: String?, val unreadable: String? = null,
             val notFound: Boolean = false, val deletionFailure: String? = null, val lostUri: Boolean = false, val media: Boolean = false)
-        val cases = listOf(Case(3, replacement, replacement), Case(4, replacement, body),
+        val cases = if (incomplete != null) listOf(
+            // Missing rows cannot discard a creation journal; a positive match remains usable.
+            Case(1, body, null, lostUri = true), Case(1, null, null, lostUri = true), Case(1, body, null)
+        ) else listOf(Case(3, replacement, replacement), Case(4, replacement, body),
             Case(4, body, replacement), Case(4, null, body), Case(4, body, null), Case(4, null, null),
             Case(4, body, body, "old"), Case(4, body, body, "new"),
             Case(2, replacement, null), Case(2, body, null), Case(2, null, null),
@@ -523,14 +534,16 @@ class DocumentSourcesTest {
                 }
                 override fun query(uri: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?): android.database.Cursor? {
                     val collection = if (case.media) uri == mediaCollection else uri.lastPathSegment == "children"
-                    if (collection && locatorUnavailable) return null
+                    if (collection && locatorUnavailable && incomplete == null) return null
+                    val partial = collection && incomplete != null && (locatorUnavailable || !case.lostUri)
                     if (!collection && deletionAttempted) {
                         absenceQueries++
                         if (deletionFailure == "null") return null
                         if (deletionFailure == "error") throw java.io.FileNotFoundException("Synthetic item query unavailable")
                     }
                     return MatrixCursor(projection ?: arrayOf("document_id", "_display_name")).apply {
-                        val ids = if (collection) files.keys else files.keys.filter { it == itemId(uri) }
+                        val ids = if (partial && case.lostUri) emptyList() else if (collection) files.keys
+                            else files.keys.filter { it == itemId(uri) }
                         for (id in ids) addRow(columnNames.map { column -> when (column) {
                             "_id" -> if (id == "old") 1L else 2L
                             "document_id" -> id
@@ -538,6 +551,12 @@ class DocumentSourcesTest {
                                 else "${if (id == "old") "Old" else "New"}-$token.md"
                             else -> null
                         } }.toTypedArray<Any?>())
+                        if (incomplete != null) setExtras(android.os.Bundle().apply {
+                            putBoolean(android.provider.DocumentsContract.EXTRA_LOADING,
+                                partial && incomplete == android.provider.DocumentsContract.EXTRA_LOADING)
+                            putString(android.provider.DocumentsContract.EXTRA_ERROR,
+                                if (partial && incomplete == android.provider.DocumentsContract.EXTRA_ERROR) "Provider unavailable" else "")
+                        })
                     }
                 }
                 override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {

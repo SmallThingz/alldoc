@@ -32,6 +32,7 @@ dependencies = [
 name = "allpdf"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "lopdf",
  "pdf-extract",
  "serde_json",

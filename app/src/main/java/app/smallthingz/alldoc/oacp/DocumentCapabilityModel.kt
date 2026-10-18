@@ -1,6 +1,7 @@
 package app.smallthingz.alldoc.oacp
 
 import android.app.Application
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.CancellationSignal
@@ -38,7 +39,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 internal sealed interface CapabilityOutcome {
     data class Success(val file: File, val uri: Uri, val mime: String, val format: String, val fidelity: String,
-        val warnings: List<String>, val page: Int, val bytes: Long, val continuous: Boolean) : CapabilityOutcome
+        val warnings: List<String>, val page: Int, val bytes: Long, val continuous: Boolean,
+        val worksheet: Map<String, Any>? = null) : CapabilityOutcome
     data class Failure(val code: String, val message: String) : CapabilityOutcome
 }
 
@@ -77,6 +79,7 @@ internal class DocumentCapabilityModel(application: Application) : AndroidViewMo
                 val outcome = try { export(request) }
                 catch (error: Exception) {
                     val code = when (error) {
+                        is CapabilityFailure -> error.code
                         is OperationCanceledException -> Oacp.ERROR_CANCELLED
                         is SecurityException -> Oacp.ERROR_NOT_AUTHORIZED
                         is PdfPasswordException -> Oacp.ERROR_NOT_AUTHENTICATED
@@ -123,19 +126,24 @@ internal class DocumentCapabilityModel(application: Application) : AndroidViewMo
         signal.throwIfCanceled()
         val resolver = context.contentResolver
         var name = request.name ?: source.lastPathSegment?.takeScalarSafe(256) ?: "Document"
-        if (request.name == null) resolver.query(source, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null, signal)?.use {
-            if (it.moveToFirst() && !it.isNull(0)) name = it.getString(0).takeScalarSafe(256)
-        }
-        val mime = request.mime ?: resolver.getType(source)
+        if (request.name == null) optionalMetadata {
+            resolver.query(source, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null, signal)?.use {
+                if (it.moveToFirst() && !it.isNull(0)) it.getString(0).takeScalarSafe(256) else null
+            }
+        }?.let { name = it }
+        val mime = request.mime ?: optionalMetadata { resolver.getType(source) }
         val descriptor = resolver.openFileDescriptor(source, "r", signal) ?: throw IOException("The provider returned no document.")
         DocumentEngine.open(context, descriptor, name, mime, signal, request.password.takeIf { it.isNotEmpty() }).use { session ->
+            val worksheet = request.sheet?.resolve(session, request.width, signal,
+                (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES)
             var file = CapabilityFiles.create(context)
             try {
                 val outputMime = when (request.format) { "json" -> "application/json"; "png" -> "image/png"; else -> "text/plain" }
                 FileOutputStream(file).use { raw ->
                     val output = LimitedOutput(raw, signal)
                     if (request.format == "png") {
-                        val bitmap = session.renderPage(request.page, request.width, ThemeSettings(ReadingMode.ORIGINAL), signal)
+                        val bitmap = if (worksheet != null) session.renderSheet(worksheet.viewport, worksheet.settings, signal)
+                            else session.renderPage(request.page, request.width, ThemeSettings(ReadingMode.ORIGINAL), signal)
                         try { if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) throw IOException("Could not encode the page.") }
                         finally { bitmap.recycle() }
                     } else {
@@ -147,11 +155,20 @@ internal class DocumentCapabilityModel(application: Application) : AndroidViewMo
                 file = CapabilityFiles.publish(context, file, if (request.format == "text") "txt" else request.format)
                 signal.throwIfCanceled()
                 pendingFile.set(file)
-                return CapabilityOutcome.Success(file, CapabilityFiles.uri(context, file), outputMime, request.format, session.info.fidelity.take(80),
-                    session.info.warnings.take(16).map { it.takeScalarSafe(200) }, request.page, file.length(), session.info.continuous)
+                val metadata = if (request.format == "png") session.info else session.textInfo
+                val warnings = if (worksheet == null) metadata.warnings else (metadata.warnings + worksheet.warnings).distinct()
+                return CapabilityOutcome.Success(file, CapabilityFiles.uri(context, file), outputMime, request.format, metadata.fidelity.takeScalarSafe(80),
+                    warnings.take(16).map { it.takeScalarSafe(200) },
+                    request.page, file.length(), session.info.continuous, worksheet?.metadata())
             } catch (error: Throwable) { pendingFile.compareAndSet(file, null); CapabilityFiles.discard(file); throw error }
         }
     }
+
+    private inline fun <T> optionalMetadata(read: () -> T): T? = try {
+        signal.throwIfCanceled()
+        read().also { signal.throwIfCanceled() }
+    } catch (cancelled: OperationCanceledException) { throw cancelled }
+    catch (_: Exception) { signal.throwIfCanceled(); null }
 
     private class LimitedOutput(private val output: OutputStream, private val signal: CancellationSignal) : OutputStream() {
         private var count = 0L

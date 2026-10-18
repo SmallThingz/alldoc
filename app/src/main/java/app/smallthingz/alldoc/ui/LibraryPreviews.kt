@@ -13,6 +13,7 @@ import app.smallthingz.alldoc.sources.LibrarySourceMissingException
 import app.smallthingz.alldoc.state.LibraryCategory
 import app.smallthingz.alldoc.state.LibraryDocument
 import app.smallthingz.alldoc.theme.BitmapTheme
+import app.smallthingz.alldoc.theme.RasterRegion
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.io.Closeable
@@ -31,19 +32,20 @@ internal class LibraryPreviews(
     private val onSourceChanged: (LibraryDocument) -> Unit = {},
     private val onSourceMissing: (LibraryDocument) -> Unit = {},
     private val validate: (LibraryDocument) -> Unit = {},
+    private val memory: PreviewMemory? = null,
     private val publish: (LibraryDocument, Bitmap, Long) -> Unit,
 ) : Closeable {
-    data class Preview(val hash: String, val image: Bitmap, val mimeType: String?)
-    private data class Work(val document: LibraryDocument, val signal: CancellationSignal, val generation: Long, val appearance: ThemeSettings)
+    data class Preview(val hash: String, val image: Bitmap, val mimeType: String?, val regions: List<RasterRegion>? = null)
+    private data class Work(val document: LibraryDocument, val signal: CancellationSignal, val generation: Long, val appearance: ThemeSettings, val memoryGeneration: Long)
 
     constructor(context: Context, onSourceChanged: (LibraryDocument) -> Unit = {},
         onSourceMissing: (LibraryDocument) -> Unit = {}, publish: (LibraryDocument, Bitmap, Long) -> Unit) : this(
-        DocumentPreviews.cacheDirectory(context, "library-previews-v4", "library-previews-v1", "library-previews-v2", "library-previews-v3"),
+        DocumentPreviews.cacheDirectory(context, "library-previews-v7", "library-previews-v1", "library-previews-v2", "library-previews-v3", "library-previews-v4", "library-previews-v5", "library-previews-v6"),
         { document, signal -> render(context.applicationContext, document, signal) }, onSourceChanged = onSourceChanged,
         onSourceMissing = onSourceMissing, validate = { document ->
             if (LibraryInput.isMissingPrivateFile(context.applicationContext, Uri.parse(document.uri)))
                 throw LibrarySourceMissingException()
-        }, publish = publish)
+        }, memory = PreviewMemory.forApplication(context), publish = publish)
 
     private val lock = Any()
     private val visible = LinkedHashMap<Long, LibraryDocument>()
@@ -86,6 +88,14 @@ internal class LibraryPreviews(
         cancel?.cancel()
     }
 
+    /** A warm cover is safe to display immediately; source validation still runs on the worker. */
+    fun cached(document: LibraryDocument): Bitmap? = synchronized(lock) {
+        if (closed) null else document.hash?.takeIf(DocumentPreviews::validHash)?.let {
+            memory?.get(memoryKey(it, document.mimeType, appearance))
+                ?.takeIf { image -> image.width >= DocumentPreviews.minimumCoverWidth(document.title, document.mimeType, WIDTH) }
+        }
+    }
+
     fun isCurrent(id: Long, revision: Long, value: Long): Boolean = synchronized(lock) {
         !closed && generation == value && visible[id]?.revision == revision
     }
@@ -96,6 +106,7 @@ internal class LibraryPreviews(
             generation++
             attempted.clear()
             clearing = true
+            memory?.clear("library:")
             schedule()
             running?.signal
         }
@@ -129,24 +140,35 @@ internal class LibraryPreviews(
             synchronized(lock) {
                 clear = clearing
                 clearing = false
+                if (clear) memory?.clear("library:")
                 val next = if (clear || closed) null else visible.values.firstOrNull { attempted[it.id] != it.revision }
                 if (!clear && next == null) { scheduled = false; running = null; return }
                 work = next?.let {
                     attempted[it.id] = it.revision
-                    Work(it, CancellationSignal(), generation, appearance)
+                    Work(it, CancellationSignal(), generation, appearance, memory?.generation() ?: 0)
                 }
                 running = work
             }
             var image: Bitmap? = null
             var deadline: java.util.concurrent.Future<*>? = null
             try {
-                if (work != null) deadline = timeouts.schedule({ work.signal.cancel() }, TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                if (work != null) deadline = cancelAfterTimeout(work.signal)
+                if (work != null) {
+                    work.signal.throwIfCanceled()
+                    validate(work.document)
+                    work.signal.throwIfCanceled()
+                    val warm = work.document.hash?.let { memory?.get(memoryKey(it, work.document.mimeType, work.appearance)) }
+                    if (warm != null && warm.width >= DocumentPreviews.minimumCoverWidth(work.document.title, work.document.mimeType, WIDTH)) {
+                        if (current(work)) publish(work.document, warm, work.generation)
+                        continue
+                    }
+                }
                 val folder = try {
                     directory().also {
                         check(it.isDirectory || it.mkdirs())
                         if (!prepared || clear) {
                             it.listFiles()?.forEach { file ->
-                                if (file.name.startsWith(".pending-") || clear && file.name.matches(DocumentPreviews.FILE_NAME)) file.delete()
+                                if (file.name.startsWith(".pending-") || clear && file.name.matches(DocumentPreviews.CACHE_FILE_NAME)) file.delete()
                             }
                             DocumentPreviews.trim(it)
                             prepared = true
@@ -156,10 +178,11 @@ internal class LibraryPreviews(
                 if (work != null) {
                     val document = work.document
                     work.signal.throwIfCanceled()
-                    validate(document)
-                    work.signal.throwIfCanceled()
-                    image = if (folder != null && document.hash != null)
-                        DocumentPreviews.read(cacheFile(folder, document.hash, document.mimeType), WIDTH, HEIGHT) else null
+                    val cached = if (folder != null && document.hash != null)
+                        DocumentPreviews.readCached(cacheFile(folder, document.hash, document.mimeType), WIDTH, HEIGHT,
+                            DocumentPreviews.minimumCoverWidth(document.title, document.mimeType, WIDTH)) else null
+                    image = cached?.image
+                    var regions = cached?.regions
                     var hash = document.hash
                     var mime = document.mimeType
                     if (image == null) {
@@ -169,22 +192,26 @@ internal class LibraryPreviews(
                             check(DocumentPreviews.validHash(loaded.hash) && (hash == null || hash == loaded.hash))
                             hash = loaded.hash
                             mime = loaded.mimeType
+                            regions = RasterRegion.snapshot(loaded.regions)
                             image = DocumentPreviews.page(loaded.image, android.graphics.Color.TRANSPARENT, WIDTH, HEIGHT)
                         } finally { loaded.image.recycle() }
                         if (folder != null && current(work)) try {
-                            DocumentPreviews.write(folder, cacheFile(folder, requireNotNull(hash), mime), requireNotNull(image))
+                            DocumentPreviews.write(folder, cacheFile(folder, requireNotNull(hash), mime), requireNotNull(image), regions)
                         } catch (_: Exception) { /* The in-memory preview remains useful. */ }
                     }
                     if (current(work)) {
                         val original = requireNotNull(image)
-                        image = BitmapTheme.apply(original, work.appearance, work.signal)
+                        image = BitmapTheme.apply(original, work.appearance, work.signal, regions)
                         if (image !== original) original.recycle()
                     }
-                    if (current(work)) {
-                        publish(document.copy(hash = requireNotNull(hash), mimeType = mime,
-                            category = LibraryCategory.of(document.title, mime)), requireNotNull(image), work.generation)
-                        image = null // Compose may retain a delivered bitmap after its map entry is evicted.
+                    val delivered = synchronized(lock) {
+                        if (!current(work)) null else requireNotNull(image).also {
+                            memory?.put(memoryKey(requireNotNull(hash), mime, work.appearance), it, work.memoryGeneration)
+                            image = null // Shared bitmaps may outlive this worker and its visible map.
+                        }
                     }
+                    if (delivered != null) publish(document.copy(hash = requireNotNull(hash), mimeType = mime,
+                        category = LibraryCategory.of(document.title, mime)), delivered, work.generation)
                 }
             } catch (_: LibrarySourceChangedException) {
                 if (work != null && current(work)) try { onSourceChanged(work.document) }
@@ -222,27 +249,44 @@ internal class LibraryPreviews(
         }.apply { removeOnCancelPolicy = true }
 
         // Include the parsed type: a cover cannot confirm an old alias's provisional MIME.
+        private fun memoryKey(hash: String, mime: String?, appearance: ThemeSettings) =
+            PreviewMemory.Key("library:$hash:${mime.orEmpty()}", WIDTH, HEIGHT, appearance)
+
         private fun cacheFile(folder: File, hash: String, mime: String?): File {
             val key = MessageDigest.getInstance("SHA-256").digest("$hash:${mime.orEmpty()}".toByteArray()).toHexString()
             return File(folder, "$key.png")
         }
 
-        private fun render(context: Context, document: LibraryDocument, signal: CancellationSignal): Preview {
+        internal fun cancelAfterTimeout(signal: CancellationSignal) = timeouts.schedule({ signal.cancel() }, TIMEOUT_SECONDS, TimeUnit.SECONDS)
+
+        internal fun render(context: Context, document: LibraryDocument, signal: CancellationSignal,
+            width: Int = WIDTH, height: Int = HEIGHT): Preview {
             var image: Bitmap? = null
             var mime: String? = null
+            var regions: List<RasterRegion>? = null
             try {
                 val hash = DocumentSources(context).use { sources ->
                     sources.openIndexed(document, signal).use { prepared ->
                         val session = prepared.session
                         mime = session.info.mimeType
-                        image = if (session.info.reflowable && !session.info.continuous)
-                            DocumentPreviews.text(session.bodyText(signal).takeScalarSafe(768), WIDTH, HEIGHT)
-                        else DocumentPreviews.nativePage(session, 0, signal, WIDTH, HEIGHT)
+                        image = if (session.info.supportsSheets) {
+                            val cover = DocumentPreviews.nativeSheet(session, signal, width, height)
+                            regions = cover.regions
+                            cover.image
+                        } else if (session.info.reflowable && !session.info.continuous) {
+                            regions = emptyList()
+                            DocumentPreviews.text(session.bodyText(signal).takeScalarSafe(768), width, height)
+                        } else {
+                            DocumentPreviews.nativePage(session, 0, signal, width, height).also { native ->
+                                try { regions = RasterRegion.snapshot(session.rasterRegions(0, signal)) }
+                                catch (failure: Throwable) { native.recycle(); throw failure }
+                            }
+                        }
                         signal.throwIfCanceled()
                         prepared.hash
                     }
                 }
-                return Preview(hash, requireNotNull(image), mime).also { image = null }
+                return Preview(hash, requireNotNull(image), mime, regions).also { image = null }
             } finally { image?.recycle() }
         }
     }

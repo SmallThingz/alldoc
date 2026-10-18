@@ -11,6 +11,7 @@ import app.smallthingz.alldoc.engine.DocumentSession
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.smallthingz.alldoc.theme.BitmapTheme
+import app.smallthingz.alldoc.theme.RasterRegion
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.io.File
@@ -91,7 +92,7 @@ class DocumentPreviewsTest {
                 source.recycle()
                 tasks.removeFirst().run()
                 assertEquals(Color.BLACK, results.single().image.getPixel(0, 0))
-                val original = requireNotNull(DocumentPreviews.read(File(folder, "${hash(1)}.png")))
+                val original = requireNotNull(DocumentPreviews.readCached(File(folder, "${hash(1)}.png"))).image
                 try {
                     assertEquals(137, original.width); assertEquals(191, original.height)
                     val pixels = IntArray(original.width * original.height)
@@ -127,7 +128,7 @@ class DocumentPreviewsTest {
             override fun getApplicationContext(): Context = this
             override fun getCacheDir() = root
         }
-        val obsolete = listOf("previews-v1", "previews-v2", "previews-v3", "previews-v4").map { name ->
+        val obsolete = listOf("previews-v1", "previews-v2", "previews-v3", "previews-v4", "previews-v5", "previews-v6", "previews-v7").map { name ->
             File(root, name).apply { mkdirs(); File(this, "${hash(1)}.png").writeText("Previously fitted or themed preview") }
         }
         val ready = LinkedBlockingQueue<Result>()
@@ -138,7 +139,7 @@ class DocumentPreviewsTest {
                 val result = requireNotNull(ready.poll(5, TimeUnit.SECONDS))
                 try {
                     assertTrue(obsolete.none(File::exists))
-                    val raw = requireNotNull(DocumentPreviews.read(File(root, "previews-v5/${hash(1)}.png")))
+                    val raw = requireNotNull(DocumentPreviews.readCached(File(root, "previews-v8/${hash(1)}.png"))).image
                     try {
                         assertEquals(DocumentPreviews.PAPER, raw.getPixel(0, 0))
                         assertNotEquals(raw.getPixel(0, 0), result.image.getPixel(0, 0))
@@ -151,7 +152,10 @@ class DocumentPreviewsTest {
     @Test fun acceptedClearFinishesAfterItsOwnerCloses() {
         val root = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "preview-close-${UUID.randomUUID()}").apply { mkdirs() }
         val folder = File(root, "cache").apply { mkdirs() }
-        val existing = File(folder, "${hash(1)}.png").apply { writeText("old cached preview") }
+        val existing = File(folder, "${hash(1)}.png")
+        Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).let { image ->
+            try { DocumentPreviews.write(folder, existing, image) } finally { image.recycle() }
+        }
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val callbacks = AtomicInteger()
@@ -235,7 +239,7 @@ class DocumentPreviewsTest {
             for (operation in listOf("load", "save", "clear")) {
                 val folder = File(root, operation).apply { check(mkdirs()) }
                 val existing = File(folder, "${hash(1)}.png")
-                existing.outputStream().use { assertTrue(source.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                DocumentPreviews.write(folder, existing, source)
                 val tasks = java.util.ArrayDeque<Runnable>()
                 var attempts = 0
                 val executor = java.util.concurrent.Executor { task ->
@@ -304,12 +308,18 @@ class DocumentPreviewsTest {
         val small = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
         val large = Bitmap.createBitmap(300, 300, Bitmap.Config.ARGB_8888)
         try {
+            val seed = File(folder, "${hash(0)}.png")
+            DocumentPreviews.write(folder, seed, small)
+            val encoded = seed.readBytes()
+            val metadata = DocumentPreviews.regionsFile(seed).readBytes()
+            seed.delete(); DocumentPreviews.regionsFile(seed).delete()
+            val invalid = File(folder, "${hash(71)}.png")
+            DocumentPreviews.write(folder, invalid, large)
             for (index in 1..70) File(folder, "${hash(index)}.png").also { file ->
-                file.outputStream().use { assertTrue(small.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                file.writeBytes(encoded)
+                DocumentPreviews.regionsFile(file).writeBytes(metadata)
                 assertTrue(file.setLastModified(index * 1000L))
             }
-            val invalid = File(folder, "${hash(71)}.png")
-            invalid.outputStream().use { assertTrue(large.compress(Bitmap.CompressFormat.PNG, 100, it)) }
             File(folder, ".pending-interrupted.png").writeText("incomplete")
             DocumentPreviews({ folder }) { key, image, generation -> ready.put(Result(key, image, generation)) }.use { cache ->
                 cache.request(hash(71))
@@ -330,7 +340,9 @@ class DocumentPreviewsTest {
                 assertFalse(invalid.exists())
                 assertFalse(File(folder, ".pending-interrupted.png").exists())
                 val files = folder.listFiles().orEmpty()
-                assertTrue(files.size <= DocumentPreviews.MAX_FILES)
+                val previews = files.count { it.extension == "png" }
+                assertTrue(previews <= DocumentPreviews.MAX_FILES)
+                assertEquals(previews, files.count { it.extension == "regions" })
                 assertTrue(files.sumOf { it.length() } <= DocumentPreviews.MAX_BYTES)
             }
         } finally { small.recycle(); large.recycle(); folder.deleteRecursively() }
@@ -370,7 +382,7 @@ class DocumentPreviewsTest {
                 assertArrayEquals("Cold preview uses the native alpha-bearing source", expectedPixels, pixels(results.single().image))
             }
             val cachedBytes = file.readBytes()
-            val raw = requireNotNull(DocumentPreviews.read(file))
+            val raw = requireNotNull(DocumentPreviews.readCached(file)).image
             try {
                 assertArrayEquals("Disk retains original white ink, alpha and antialiasing", original, pixels(raw))
                 assertEquals(0, Color.alpha(raw.getPixel(0, 0)))
@@ -471,22 +483,120 @@ class DocumentPreviewsTest {
             override fun getApplicationContext(): Context = this
             override fun getCacheDir(): File { reads.incrementAndGet(); return root }
         }
-        val obsolete = listOf("library-previews-v1", "library-previews-v2", "library-previews-v3").map { name ->
+        val obsolete = listOf("library-previews-v1", "library-previews-v2", "library-previews-v3", "library-previews-v4", "library-previews-v5", "library-previews-v6").map { name ->
             File(root, name).apply { mkdirs(); File(this, "${hash(1)}.png").writeText("Previously fitted or source-only preview") }
         }
-        val recent = File(root, "previews-v5").apply { mkdirs() }
+        val recent = File(root, "previews-v8").apply { mkdirs() }
         val retained = File(recent, "${hash(1)}.png").apply { writeText("Other cache owner") }
         try {
-            val directory = DocumentPreviews.cacheDirectory(context, "library-previews-v4", "library-previews-v1", "library-previews-v2", "library-previews-v3")
+            val directory = DocumentPreviews.cacheDirectory(context, "library-previews-v7", "library-previews-v1", "library-previews-v2", "library-previews-v3", "library-previews-v4", "library-previews-v5", "library-previews-v6")
             assertEquals("Constructing a cache does no directory I/O", 0, reads.get())
             assertTrue(obsolete.all(File::isDirectory))
             val current = directory()
-            assertEquals(File(root, "library-previews-v4"), current)
+            assertEquals(File(root, "library-previews-v7"), current)
             assertTrue(obsolete.none(File::exists))
             assertEquals("Other cache owner", retained.readText())
             assertSame(current, directory())
             assertEquals("Resolved cache directory is reused", 1, reads.get())
         } finally { root.deleteRecursively() }
+    }
+
+    @Test fun rasterRegionRolesSurviveColdWarmAndTextReuseWithoutBorrowingCallerLists() {
+        val folder = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "preview-regions-${UUID.randomUUID()}")
+        val tasks = java.util.ArrayDeque<Runnable>()
+        val results = mutableListOf<Result>()
+        val settings = ThemeSettings(ReadingMode.ADAPTIVE)
+        val source = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.WHITE)
+            for (y in 5 until 27) for (x in 5 until 27)
+                setPixel(x, y, Color.rgb((x * 7 + y * 13) and 255, (x * 11 + y * 3) and 255, (x * 5 + y * 17) and 255))
+        }
+        val roles = listOf(null, emptyList(), listOf(RasterRegion(.125f, .125f, .875f, .875f)))
+        try {
+            for ((index, role) in roles.withIndex()) {
+                val expectedSource = requireNotNull(source.copy(Bitmap.Config.ARGB_8888, true))
+                val expected = BitmapTheme.apply(expectedSource, settings, CancellationSignal(), role)
+                if (expected !== expectedSource) expectedSource.recycle()
+                try {
+                    val key = hash(index + 1)
+                    val callerList = role?.toMutableList()
+                    DocumentPreviews({ folder }, java.util.concurrent.Executor(tasks::addLast)) { hash, image, revision ->
+                        results += Result(hash, image, revision)
+                    }.use { cache ->
+                        cache.setAppearance(settings)
+                        cache.savePage(key, source, Color.TRANSPARENT, callerList)
+                        callerList?.clear()
+                        tasks.removeFirst().run()
+                        assertTrue("Cold cache retains the accepted region snapshot", expected.sameAs(results.last().image))
+                    }
+                    val file = File(folder, "$key.png")
+                    val original = file.readBytes()
+                    val metadata = DocumentPreviews.regionsFile(file).readBytes()
+                    val cached = requireNotNull(DocumentPreviews.readCached(file))
+                    try { assertEquals(role, cached.regions); assertTrue(source.sameAs(cached.image)) }
+                    finally { cached.image.recycle() }
+                    DocumentPreviews({ folder }, java.util.concurrent.Executor(tasks::addLast)) { hash, image, revision ->
+                        results += Result(hash, image, revision)
+                    }.use { cache ->
+                        cache.setAppearance(settings)
+                        cache.request(key); tasks.removeFirst().run()
+                        assertTrue("Warm cache keeps unknown/empty/image roles distinct", expected.sameAs(results.last().image))
+                        cache.saveText(key, "Text view must retain the existing page preview")
+                        tasks.removeFirst().run()
+                        assertTrue(expected.sameAs(results.last().image))
+                    }
+                    assertArrayEquals(original, file.readBytes())
+                    assertArrayEquals(metadata, DocumentPreviews.regionsFile(file).readBytes())
+                    if (role?.isNotEmpty() == true) {
+                        assertEquals("The white photo rim remains original", Color.WHITE, expected.getPixel(4, 12))
+                        assertEquals(source.getPixel(16, 16), expected.getPixel(16, 16))
+                        assertNotEquals("Surrounding paper follows the document palette", Color.WHITE, expected.getPixel(0, 0))
+                    }
+                    if (role?.isEmpty() == true) assertFalse("Known image-free content must not inherit the photo heuristic", expected.sameAs(source))
+                    assertFalse(source.isRecycled)
+                    assertEquals(Color.WHITE, source.getPixel(0, 0))
+                } finally { expected.recycle() }
+            }
+        } finally { source.recycle(); results.forEach { it.image.recycle() }; folder.deleteRecursively() }
+    }
+
+    @Test fun invalidOrUnpairedRegionMetadataCannotBecomeAnImageFreeCacheHit() {
+        val folder = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "preview-metadata-${UUID.randomUUID()}").apply { mkdirs() }
+        val source = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        val file = File(folder, "${hash(1)}.png")
+        val region = RasterRegion(0f, 0f, 1f, 1f)
+        try {
+            for (invalid in listOf(List(RasterRegion.LIMIT + 1) { region }, listOf(region.copy(left = Float.NaN)))) {
+                DocumentPreviews.write(folder, file, source, invalid)
+                val loaded = requireNotNull(DocumentPreviews.readCached(file))
+                try { assertNull("Invalid caller hints remain unknown", loaded.regions) }
+                finally { loaded.image.recycle() }
+            }
+            val corruptions: List<(File) -> Unit> = listOf(
+                { it.delete() },
+                { it.writeBytes(it.readBytes().dropLast(1).toByteArray()) },
+                { val bytes = it.readBytes(); java.nio.ByteBuffer.wrap(bytes).putInt(4, RasterRegion.LIMIT + 1); it.writeBytes(bytes) },
+                { val bytes = it.readBytes(); java.nio.ByteBuffer.wrap(bytes).putFloat(40, Float.NaN); it.writeBytes(bytes) },
+                { val bytes = it.readBytes(); bytes[8] = (bytes[8].toInt() xor 1).toByte(); it.writeBytes(bytes) }
+            )
+            for (corrupt in corruptions) {
+                DocumentPreviews.write(folder, file, source, listOf(region))
+                corrupt(DocumentPreviews.regionsFile(file))
+                assertNull(DocumentPreviews.readCached(file))
+                assertFalse(file.exists()); assertFalse(DocumentPreviews.regionsFile(file).exists())
+            }
+            DocumentPreviews.write(folder, file, source, List(RasterRegion.LIMIT) { region })
+            assertTrue(DocumentPreviews.regionsFile(file).length() <= 1064)
+            val accepted = requireNotNull(DocumentPreviews.readCached(file))
+            try { assertEquals(RasterRegion.LIMIT, accepted.regions?.size) }
+            finally { accepted.image.recycle() }
+            val other = File(folder, "${hash(2)}.png")
+            source.eraseColor(Color.BLUE)
+            DocumentPreviews.write(folder, other, source, emptyList())
+            file.writeBytes(other.readBytes()) // A valid PNG paired with metadata from different bytes.
+            assertNull(DocumentPreviews.readCached(file))
+            assertTrue(other.exists())
+        } finally { source.recycle(); folder.deleteRecursively() }
     }
 
 }

@@ -12,7 +12,7 @@ internal object RenderProcess {
         fun available(): Boolean = executable.isFile && executable.canExecute() &&
             launcher.isFile && launcher.canExecute()
     }
-    private val SLOT = Semaphore(1, true)
+    internal val SLOT = Semaphore(1, true)
 
     @Throws(IOException::class)
     fun run(module: Module?, input: ByteArray?, inputFile: File?, kind: Int, page: Int, side: Int, poll: DocRenderCore.Check?): ByteArray {
@@ -26,6 +26,7 @@ internal object RenderProcess {
         try {
             acquireRenderSlot(SLOT) { check(poll, deadline) }
             slot = true
+            WorkbookProcess.pauseActive()
             check(poll, deadline)
             if (module == null || !module.available()) throw IOException("Visual renderer module unavailable")
             dir = prepareRenderScratch(module.cache)
@@ -54,7 +55,7 @@ internal object RenderProcess {
                 check(poll, deadline)
                 completed(stdout)
                 completed(stderr)
-                if (receipt.length() > DocRenderCore.OUTPUT_LIMIT + 8224L) throw IOException("Visual receipt exceeds limit")
+                if (receipt.length() > DocRenderCore.OUTPUT_LIMIT.toLong() + DocRenderCore.RECEIPT_OVERHEAD) throw IOException("Visual receipt exceeds limit")
             }
             check(poll, deadline)
             finished(stdout, poll, deadline)
@@ -63,7 +64,7 @@ internal object RenderProcess {
             if (exit == 125) throw IOException("Native process memory limit unavailable")
             if (exit != 0 && exit != 1) throw IOException("Visual renderer failed safely (exit " + exit + ")")
             val length = receipt.length()
-            if (length < 32 || length > DocRenderCore.OUTPUT_LIMIT + 8224L)
+            if (length < 32 || length > DocRenderCore.OUTPUT_LIMIT.toLong() + DocRenderCore.RECEIPT_OVERHEAD)
                 throw IOException("Visual receipt missing or exceeds limit")
             val wire = ByteArray(length.toInt())
             FileInputStream(receipt).use { stream ->

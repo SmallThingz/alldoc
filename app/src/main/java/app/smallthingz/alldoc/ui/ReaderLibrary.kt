@@ -27,8 +27,10 @@ import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.combine
@@ -37,6 +39,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
@@ -52,6 +55,7 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
     @Volatile private var pageSource: LibraryPaging? = null
     private val filter = MutableStateFlow(LibraryQuery())
     private val settingsLoaded = MutableStateFlow(false)
+    val settingsReady: StateFlow<Boolean> get() = settingsLoaded
     private var queryGeneration = 0L
     private var settingsRevision = 0L
     @Volatile private var persistedHiddenTypes = emptySet<LibraryCategory>()
@@ -73,6 +77,7 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
     private var dirty = true
     @Volatile private var closed = false
     private var scan: Job? = null
+    private var scanUpdates: LibraryScanUpdates? = null
     private var signal: CancellationSignal? = null
     private var scanGeneration = 0L
     private var visible = emptyMap<Long, LibraryDocument>()
@@ -80,7 +85,6 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
     private val covers = LibraryPreviews(application,
         onSourceChanged = { document -> updateCatalog { catalog.invalidate(document) } },
         onSourceMissing = { document -> updateCatalog { catalog.removeLocation(document) } }) { document, image, generation ->
-        var delivered = false
         scope.launch {
             try {
                 if (!canPublish(document, generation)) return@launch
@@ -92,10 +96,9 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
                 if (!canPublish(document, generation)) return@launch
                 if (canonical.id == document.id && canonical.revision == document.revision) {
                     previews = previews + (document.id to image)
-                    delivered = true
                 }
             } catch (_: Exception) { /* Covers must never prevent reading. */ }
-        }.invokeOnCompletion { if (!delivered) image.recycle() }
+        } // The shared preview cache and Compose may both retain this immutable bitmap.
     }
 
     init {
@@ -164,8 +167,16 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
 
     fun setVisible(documents: List<LibraryDocument>) {
         val next = documents.associateBy { it.id }
-        previews = previews.filterKeys { id -> next[id]?.let { it.revision == visible[id]?.revision &&
-            (visible[id]?.hash == null || it.hash == visible[id]?.hash) } == true }
+        // An outgoing pager page still draws its covers after its demand window becomes empty.
+        // Keep that one published window; workers still receive the empty request below.
+        if (next.isNotEmpty()) previews = buildMap {
+            for ((id, document) in next) {
+                val previous = visible[id]
+                val retained = previews[id]?.takeIf { previous != null && previous.revision == document.revision &&
+                    (previous.hash == null || previous.hash == document.hash) && !it.isRecycled }
+                (retained ?: covers.cached(document))?.let { put(id, it) }
+            }
+        }
         visible = next
         covers.setVisible(documents, active && foreground)
     }
@@ -173,8 +184,8 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
     fun setAppearance(value: ThemeSettings) {
         if (appearance == value) return
         appearance = value
-        previews = emptyMap()
         covers.setAppearance(value)
+        previews = buildMap { visible.forEach { (id, document) -> covers.cached(document)?.let { put(id, it) } } }
     }
 
     fun setActive(value: Boolean) {
@@ -216,6 +227,8 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
     private fun stopScan() {
         scanGeneration++
         signal?.cancel()
+        scanUpdates?.finish()
+        scanUpdates = null
         scan?.cancel()
         scanning = false
     }
@@ -225,17 +238,16 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
         val generation = scanGeneration
         val cancellation = CancellationSignal().also { signal = it }
         scanning = true
+        val updates = LibraryScanUpdates(scope) { if (!closed) invalidatePages() }
+        scanUpdates = updates
         scan = scope.launch {
             try {
-                var lastUpdate = 0L
                 var notifiedChanges = 0L
                 val result = scanGate.withLock { withContext(Dispatchers.IO) {
                     LibraryIndex(application, catalog).scan(cancellation) { progress ->
-                        val now = SystemClock.elapsedRealtime()
-                        if (progress.changes > notifiedChanges && now - lastUpdate >= 250) {
-                            lastUpdate = now
+                        if (progress.changes > notifiedChanges) {
                             notifiedChanges = progress.changes
-                            invalidatePages()
+                            updates.changed()
                         }
                     }
                 } }
@@ -243,7 +255,7 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
                     dirty = false
                     if (!result.complete) onError("Some folders couldn’t be scanned. Refresh to retry.")
                 }
-                if (result.changes > notifiedChanges) invalidatePages()
+                if (result.changes > notifiedChanges) updates.changed()
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
                 if (!cancellation.isCanceled && generation == scanGeneration) {
@@ -251,6 +263,8 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
                     onError("Couldn’t finish scanning. Try refreshing the Library.")
                 }
             } finally {
+                updates.finish()
+                if (scanUpdates === updates) scanUpdates = null
                 if (generation == scanGeneration) { scanning = false; signal = null }
             }
         }
@@ -301,5 +315,41 @@ internal class ReaderLibrary(private val application: Application, parent: Corou
         previews = emptyMap()
         owner.cancel()
         CoroutineScope(Dispatchers.IO).launch { owner.join(); runCatching { catalog.close() } }
+    }
+}
+
+
+/** Coalesce committed catalog changes, with one trailing refresh and no idle work. */
+internal class LibraryScanUpdates(private val scope: CoroutineScope,
+    private val elapsed: () -> Long = SystemClock::elapsedRealtime, private val invalidate: () -> Unit) {
+    private var lastUpdate = -250L
+    private var pending: Job? = null
+    private var stopped = false
+
+    @Synchronized fun changed() {
+        // A provider may finish a committed batch after cancellation; its rows still need publishing.
+        if (stopped) { invalidate(); return }
+        val now = elapsed()
+        val remaining = 250 - (now - lastUpdate)
+        if (remaining <= 0) {
+            pending?.cancel(); pending = null
+            lastUpdate = now
+            invalidate()
+        } else if (pending == null) {
+            pending = scope.launch(start = CoroutineStart.LAZY) {
+                delay(remaining)
+                synchronized(this@LibraryScanUpdates) {
+                    if (pending !== coroutineContext[Job]) return@synchronized
+                    pending = null
+                    lastUpdate = elapsed()
+                    invalidate()
+                }
+            }.also { it.start() }
+        }
+    }
+
+    @Synchronized fun finish() {
+        stopped = true
+        pending?.let { it.cancel(); pending = null; invalidate() }
     }
 }

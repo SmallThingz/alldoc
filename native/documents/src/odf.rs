@@ -29,11 +29,59 @@ pub fn parse(bytes: &[u8], cx: &mut Context) -> Result<Document> {
     let mut total_records = 0usize;
     let mut heading = 0;
     let mut notes_depth = 0;
+    let mut footnote_depth = 0;
+    let mut footnote = TextBuffer::default();
+    let mut note_paragraphs = 0;
+    let mut note_text_depth = 0;
     loop {
         match xml.next(cx)? {
             Token::Start(n, a) => {
                 if notes_depth > 0 {
                     notes_depth += 1;
+                    continue;
+                }
+                if footnote_depth > 0 {
+                    if n == "annotation" {
+                        notes_depth = 1;
+                        continue;
+                    }
+                    footnote_depth += 1;
+                    if matches!(n.as_str(), "note-citation" | "p" | "h") {
+                        note_text_depth = footnote_depth;
+                    }
+                    if n == "p" || n == "h" {
+                        if !footnote.is_empty() {
+                            append(
+                                &mut footnote,
+                                if note_paragraphs == 0 { ": " } else { "\n" },
+                                &mut doc.truncated,
+                            );
+                        }
+                        note_paragraphs += 1;
+                    } else if note_text_depth > 0 {
+                        match n.as_str() {
+                            "s" => {
+                                let count = number(&a, "c", 1)?;
+                                if count > 65536 {
+                                    return Err(limit("ODF space repetition exceeds bounds"));
+                                }
+                                append(
+                                    &mut footnote,
+                                    &" ".repeat(count as usize),
+                                    &mut doc.truncated,
+                                );
+                            }
+                            "tab" => append(&mut footnote, "\t", &mut doc.truncated),
+                            "line-break" => append(&mut footnote, "\n", &mut doc.truncated),
+                            _ => {}
+                        }
+                    }
+                    continue;
+                }
+                if body && in_para && n == "note" {
+                    footnote_depth = 1;
+                    footnote.clear();
+                    note_paragraphs = 0;
                     continue;
                 }
                 if body && matches!(n.as_str(), "annotation" | "notes") {
@@ -168,6 +216,22 @@ pub fn parse(bytes: &[u8], cx: &mut Context) -> Result<Document> {
             }
             Token::Text(_) if notes_depth > 0 => {}
             Token::End(_) if notes_depth > 0 => notes_depth -= 1,
+            Token::Text(t) if footnote_depth > 0 => {
+                if note_text_depth > 0 {
+                    append(&mut footnote, &t, &mut doc.truncated);
+                }
+            }
+            Token::End(_) if footnote_depth > 0 => {
+                if note_text_depth == footnote_depth {
+                    note_text_depth = 0;
+                }
+                footnote_depth -= 1;
+                if footnote_depth == 0 {
+                    append(&mut paragraph, " [", &mut doc.truncated);
+                    paragraph.append_buffer(&footnote, &mut doc.truncated);
+                    append(&mut paragraph, "]", &mut doc.truncated);
+                }
+            }
             Token::Text(t) if in_para => append(&mut paragraph, &t, &mut doc.truncated),
             Token::End(n) => {
                 match n.as_str() {
@@ -208,11 +272,11 @@ pub fn parse(bytes: &[u8], cx: &mut Context) -> Result<Document> {
                             'rows: for r in 0..repeat_row {
                                 for (c, n, text) in &cells {
                                     for d in 0..*n {
-                                        cx.tick()?;
-                                        if emitted == 8192 {
+                                        if emitted == 8192 || doc.full() || section.is_none() {
                                             doc.truncated = true;
                                             break 'rows;
                                         }
+                                        cx.tick()?;
                                         doc.push(
                                             section,
                                             "cell",
@@ -245,6 +309,27 @@ pub fn parse(bytes: &[u8], cx: &mut Context) -> Result<Document> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_footnotes_keep_body_and_note_text_without_nested_paragraph_failure() {
+        let xml = br#"<document><body><text><p>Before<note><note-citation>1</note-citation><note-body><p>Footnote <span>detail</span></p><p>Second paragraph</p></note-body></note> after</p><p>Last</p></text></body></document>"#;
+        let doc = parse(xml, &mut Context::new(&mut || false)).unwrap();
+        assert_eq!(
+            doc.sections[0].blocks[0].text,
+            "Before [1: Footnote detail\nSecond paragraph] after"
+        );
+        assert_eq!(doc.sections[0].blocks[1].text, "Last");
+    }
+
+    #[test]
+    fn footnotes_ignore_xml_indentation_and_keep_explicit_spacing() {
+        let xml = br#"<document><body><text><p>Body<note>
+            <note-citation>2</note-citation>
+            <note-body><p>A<s c="2"/><span>B</span><tab/>C<line-break/>D</p></note-body>
+        </note>.</p></text></body></document>"#;
+        let doc = parse(xml, &mut Context::new(&mut || false)).unwrap();
+        assert_eq!(doc.sections[0].blocks[0].text, "Body [2: A  B\tC\nD].");
+    }
 
     #[test]
     fn annotations_and_speaker_notes_do_not_replace_body_paragraphs() {
@@ -336,5 +421,28 @@ mod tests {
             ]
         );
         assert!(!document.truncated);
+    }
+
+    #[test]
+    fn compact_repeated_cells_stop_emitting_at_preview_capacity() {
+        let source = include_bytes!("../fixtures/repeated-cells.ods");
+        let document = crate::preview(source, "repeated-cells.ods", &mut || false).unwrap();
+        assert_eq!(document.format, "ODS");
+        assert!(document.truncated);
+        let blocks = &document.sections[0].blocks;
+        assert_eq!(blocks.len(), 4096);
+        assert_eq!(
+            (blocks[0].row, blocks[0].column, blocks[0].text.as_str()),
+            (0, 0, "Value")
+        );
+        let last = blocks.last().unwrap();
+        assert_eq!(
+            (last.row, last.column, last.text.as_str()),
+            (0, 4095, "Value")
+        );
+        // The remaining XML is still parsed after the synthetic repetitions stop.
+        assert_eq!(document.sections.len(), 2);
+        assert_eq!(document.sections[1].title, "After preview capacity");
+        assert!(document.sections[1].blocks.is_empty());
     }
 }

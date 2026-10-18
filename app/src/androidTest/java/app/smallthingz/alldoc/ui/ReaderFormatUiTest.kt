@@ -51,14 +51,20 @@ class ReaderFormatUiTest {
             ActivityScenario.launch<MainActivity>(Intent(instrumentation.targetContext, MainActivity::class.java)
                 .setAction(Intent.ACTION_MAIN)).use { scenario ->
                 for (file in listOf(pdf) + office + listOf(odt, epub)) {
+                    val worksheet = file.extension == "xlsx"
                     scenario.onActivity { ViewModelProvider(it)[ReaderModel::class.java].open(Uri.fromFile(file)) }
                     await(file.name) {
                         var ready = false
                         scenario.onActivity {
                             val reader = ViewModelProvider(it)[ReaderModel::class.java]
                             assertNull("${file.name}: ${reader.error}", reader.error)
+                            val surfaceReady = if (worksheet) {
+                                assertNull("${file.name}: ${reader.sheetsError}", reader.sheetsError)
+                                reader.sheetMode && reader.workbook != null && reader.sheetGeometry != null &&
+                                    reader.sheetFrame != null && !reader.sheetsLoading
+                            } else reader.bitmap != null && !reader.pageLoading
                             ready = reader.currentTitle == file.name && reader.info != null && !reader.loading &&
-                                reader.bitmap != null && !reader.pageLoading
+                                surfaceReady
                         }
                         ready
                     }
@@ -67,13 +73,14 @@ class ReaderFormatUiTest {
                         assertEquals(file.name, reader.currentTitle)
                         assertFalse(reader.textMode)
                         assertFalse("${file.name}: pages must default to vertical scrolling", reader.horizontalPages)
-                        val bitmap = requireNotNull(reader.bitmap)
+                        val bitmap = if (worksheet) requireNotNull(reader.sheetFrame).bitmap
+                            else requireNotNull(reader.bitmap)
                         val pixels = IntArray(bitmap.width * bitmap.height)
                         bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
                         assertTrue("${file.name}: blank rendered content", pixels.any { it != pixels[0] })
                     }
                     await("${file.name}: visible reading surface") {
-                        visible("Document pages")
+                        visible(if (worksheet) "Worksheet" else "Document pages")
                     }
                     run {
                         assertFalse("Page-by-page arrows must not replace continuous reading", visible("Next page") || visible("Previous page"))

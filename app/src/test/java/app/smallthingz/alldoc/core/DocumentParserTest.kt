@@ -51,21 +51,74 @@ class DocumentParserTest {
     @Test(expected = IOException::class) fun binaryNotReportedAsText() { DocumentParser.decode(byteArrayOf(1, 0, 2), false) }
     @Test fun htmlRemovesActiveContentAndKeepsText() {
         val doc = parse("<html><title>Title</title><script>hidden()</script><body><h1>Visible</h1><p>Text &amp; entities</p></body></html>", "a.html")
-        assertEquals("Title\nVisible Text & entities", doc.toPlainText())
+        assertEquals("Title\nVisible\nText & entities", doc.toPlainText())
         assertFalse(doc.toPlainText().contains("hidden"))
     }
     @Test fun htmlKeepsBlockBoundariesAndInlineWords() {
         for ((markup, expected) in listOf(
-            "<h1>Heading</h1><p>Body</p>" to "Heading Body",
-            "<p>First<br>Second</p>" to "First Second",
-            "<ul><li>One</li><li>Two</li></ul>" to "One Two",
-            "<table><tr><td>Left</td><td>Right</td></tr></table>" to "Left Right",
+            "<h1>Heading</h1><p>Body</p>" to "Heading\nBody",
+            "<p>First<br>Second</p>" to "First\nSecond",
+            "<ul><li>One</li><li>Two</li></ul>" to "• One\n• Two",
+            "<table><tr><td>Left</td><td>Right</td></tr></table>" to "Left\tRight",
             "<p>Read <b>format</b>ted text.</p>" to "Read formatted text.",
             "<pre>first\n  second</pre>" to "first\n  second")) {
             val doc = parse("<html><body>$markup</body></html>", "page.html")
-            assertEquals(markup, expected, doc.sections.single().blocks.single().text)
             assertEquals(markup, expected, doc.toPlainText())
         }
+    }
+    @Test fun htmlPreservesNestedListOrderAndEmptyTableCells() {
+        val doc = parse("<html><body><ol start='7'><li>Parent<ul><li>Child</li></ul></li><li>Next</li></ol><table><tr><td></td><td>Value</td></tr><tr><td>End</td><td>12</td></tr></table></body></html>", "list.html")
+        assertEquals("7. Parent\n• Child\n8. Next\n\tValue\nEnd\t12", doc.toPlainText())
+        val heading = parse("<html><body><h3>Third level</h3><p>Body</p></body></html>", "head.html").sections.single().blocks.first()
+        assertEquals("heading", heading.kind)
+        assertEquals(3, heading.level)
+        assertTrue(parse("<html><body>" + "<p>x</p>".repeat(4097) + "</body></html>", "many.html").truncated)
+    }
+    @Test fun htmlPreservesOrderedListValuesAndReversedCounters() {
+        for ((markup, expected) in listOf(
+            "<ol start='7'><li value='42'>Answer</li><li>Next</li></ol>" to "42. Answer\n43. Next",
+            "<ol reversed><li>A</li><li>B</li></ol>" to "2. A\n1. B",
+            "<ol reversed><li>A<ul><li>X</li><li>Y</li><li>Z</li></ul></li><li>B</li></ol>" to "2. A\n• X\n• Y\n• Z\n1. B",
+            "<ol reversed start='0'><li>A</li><li value='-4'>B</li><li>C</li></ol>" to "0. A\n-4. B\n-5. C",
+            "<ol start='-2'><li>A</li><li>B</li></ol>" to "-2. A\n-1. B",
+            "<ol start='2147483647'><li>A</li><li>B</li></ol>" to "2147483647. A\n2147483648. B",
+            "<ol reversed start='-2147483648'><li>A</li><li>B</li></ol>" to "-2147483648. A\n-2147483649. B",
+            "<ul><li value='42'>A</li><li>B</li></ul>" to "• A\n• B")) {
+            assertEquals(markup, expected, parse(markup, "list.html").toPlainText())
+        }
+    }
+    @Test fun htmlKeepsDefinitionListBoundariesAndInlineWords() {
+        for ((markup, expected) in listOf(
+            "<dl><dt>Term</dt><dd>Definition</dd><dt>Other</dt><dd>Meaning</dd></dl>" to "Term\nDefinition\nOther\nMeaning",
+            "<details open><summary>Summary</summary>Details</details><fieldset><legend>Group</legend>Value</fieldset>" to "Summary\nDetails\nGroup\nValue",
+            "<p>Un<strong>broken</strong> <span>inline</span> text.</p>" to "Unbroken inline text.")) {
+            assertEquals(markup, expected, parse(markup, "blocks.html").toPlainText())
+        }
+    }
+    @Test fun fictionBookKeepsTableTextAndSubtitle() {
+        val doc = parse("<FictionBook><body><section><subtitle>Observations</subtitle><table><tr><th>Location</th><th>Count</th></tr><tr><td>North <emphasis>cove</emphasis></td><td>12</td></tr></table><p>End</p></section></body></FictionBook>", "table.fb2")
+        assertEquals("Observations\nLocation\tCount\nNorth cove\t12\nEnd", doc.toPlainText())
+        assertEquals("heading", doc.sections.single().blocks.first().kind)
+        assertEquals(4, doc.sections.single().blocks.count { it.kind == "cell" })
+        assertEquals(1, doc.sections.single().blocks.last { it.kind == "cell" }.column)
+    }
+    @Test fun htmlKeepsParagraphsAndNestedTablesInsideCellsDistinct() {
+        val doc = parse("<table><tr><td><p>A</p><p>B</p></td><td>C</td></tr><tr><td>Outer<table><tr><td>Inner</td><td>Two</td></tr></table></td><td>Last</td></tr></table>", "tables.html")
+        assertEquals("A\nB\tC\nOuter\nInner\tTwo\tLast", doc.toPlainText())
+    }
+    @Test fun applePreviewPrefersFullDocumentOverSmallThumbnails() {
+        val file = File.createTempFile("alldoc-preview-", ".pages", File("build/tmp/core-tests").also { it.mkdirs() })
+        try {
+            val preference = listOf("QuickLook/Preview.pdf", "preview.jpg", "preview-web.jpg", "QuickLook/Thumbnail.jpg", "preview-micro.jpg")
+            for (first in preference.indices) {
+                java.util.zip.ZipOutputStream(file.outputStream()).use { output ->
+                    for (name in preference.drop(first).reversed()) {
+                        output.putNextEntry(java.util.zip.ZipEntry(name)); output.write(name.toByteArray()); output.closeEntry()
+                    }
+                }
+                assertEquals(preference[first], DocumentParser.embeddedPreview(file)?.name)
+            }
+        } finally { file.delete() }
     }
     @Test fun fictionBookKeepsHeadingsAndParagraphs() {
         val doc = parse("<FictionBook xmlns='http://www.gribuser.ru/xml/fictionbook/2.0'><body><section><title><p>Chapter</p></title><p>Hello <emphasis>world</emphasis></p></section></body></FictionBook>", "book.fb2")

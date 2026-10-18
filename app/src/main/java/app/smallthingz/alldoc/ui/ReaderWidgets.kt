@@ -82,7 +82,7 @@ internal fun ReaderOverlayAction(
         IconButton(onClick = onClick, enabled = enabled, modifier = modifier.size(48.dp)
             .then(if (selected) Modifier.semantics { this.selected = true } else Modifier)) {
             Box(Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(surface)
-                .border(1.dp, colors.outlineVariant, RoundedCornerShape(10.dp)).readerTexture(),
+                .border(1.dp, colors.outlineVariant, RoundedCornerShape(10.dp)),
                 contentAlignment = Alignment.Center) {
                 Icon(icon, label, Modifier.size(24.dp), tint = ink.copy(alpha = if (enabled) 1f else .38f))
             }
@@ -97,7 +97,7 @@ internal fun ReaderHeader(
     onSettings: (() -> Unit)? = null, onInfo: (() -> Unit)? = null,
     onLicenses: (() -> Unit)? = null,
 ) {
-    Row(Modifier.fillMaxWidth().readerBackground().heightIn(min = 56.dp).padding(horizontal = 4.dp),
+    Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).heightIn(min = 56.dp).padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.width(48.dp)) {
             onHome?.let { ReaderAction(Icons.Outlined.Home, "Home", onClick = it) }

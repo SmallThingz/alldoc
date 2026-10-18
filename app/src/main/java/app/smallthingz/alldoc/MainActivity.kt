@@ -3,12 +3,9 @@ package app.smallthingz.alldoc
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
-import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,15 +15,17 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import app.smallthingz.alldoc.ui.ReaderModel
+import app.smallthingz.alldoc.ui.ReaderAccessModel
+import app.smallthingz.alldoc.sources.LibraryAccess
 import app.smallthingz.alldoc.ui.ReaderScreen
 
 class MainActivity : ComponentActivity() {
     private lateinit var reader: ReaderModel
+    private lateinit var access: ReaderAccessModel
     private var externalDocument by mutableStateOf(false)
     private val openDocument = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) { externalDocument = false; reader.open(uri, persistPermission = true) }
@@ -41,12 +40,8 @@ class MainActivity : ComponentActivity() {
     private val libraryFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) reader.addLibraryFolder(uri)
     }
-    private val libraryAccess = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()) reader.refreshLibrary()
-    }
-    private val legacyLibraryAccess = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) reader.refreshLibrary()
-    }
+    private val libraryAccess = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { refreshLibraryAccess(true) }
+    private val legacyLibraryAccess = registerForActivityResult(ActivityResultContracts.RequestPermission()) { refreshLibraryAccess(true) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,6 +49,7 @@ class MainActivity : ComponentActivity() {
         externalDocument = savedInstanceState?.getBoolean("externalDocument")
             ?: (intent.action == Intent.ACTION_VIEW || intent.action == Intent.ACTION_SEND)
         reader = ViewModelProvider(this)[ReaderModel::class.java]
+        access = ViewModelProvider(this)[ReaderAccessModel::class.java]
         setContent {
             ReaderScreen(reader, onOpen = {
                 try { openDocument.launch(app.smallthingz.alldoc.core.DocumentFormats.pickerMimeTypes) }
@@ -74,7 +70,7 @@ class MainActivity : ComponentActivity() {
             }, onChooseStorage = {
                 try { storageFolder.launch(reader.copySettings.treeUri?.let(Uri::parse)) }
                 catch (_: android.content.ActivityNotFoundException) { reader.showError("No folder picker is available.") }
-            }, onLibraryAccess = ::requestLibraryAccess, onAddLibraryFolder = {
+            }, libraryAccess = access, onLibraryAccess = ::requestLibraryAccess, onAddLibraryFolder = {
                 try { libraryFolder.launch(null) }
                 catch (_: ActivityNotFoundException) { reader.showError("No folder picker is available.") }
             }, externalDocument = externalDocument, onInternalOpen = { externalDocument = false },
@@ -127,26 +123,32 @@ class MainActivity : ComponentActivity() {
         reader.setAppVisible(true)
     }
 
+    override fun onResume() {
+        super.onResume()
+        reader.refreshRecentDocuments()
+        refreshLibraryAccess()
+    }
+
     override fun onStop() {
         reader.setAppVisible(false)
         reader.flushDocumentState()
         super.onStop()
     }
 
+    private fun refreshLibraryAccess(returned: Boolean = false) {
+        if (if (returned) access.returned() else access.refresh()) reader.refreshLibrary()
+    }
+
     private fun requestLibraryAccess() {
-        if (Build.VERSION.SDK_INT >= 30) {
-            if (Environment.isExternalStorageManager()) { reader.refreshLibrary(); return }
-            try {
-                libraryAccess.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                    Uri.fromParts("package", packageName, null)))
-            } catch (_: ActivityNotFoundException) {
-                try { libraryAccess.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
-                catch (_: ActivityNotFoundException) { reader.showError("Storage access is unavailable. Choose a folder instead.") }
-                catch (_: SecurityException) { reader.showError("Storage access is unavailable. Choose a folder instead.") }
-            } catch (_: SecurityException) { reader.showError("Storage access is unavailable. Choose a folder instead.") }
-        } else if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
-            reader.refreshLibrary()
-        } else legacyLibraryAccess.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+        refreshLibraryAccess()
+        val legacy = Build.VERSION.SDK_INT < 30
+        val previouslyRequested = access.legacyRequested
+        if (!access.beginRequest(legacy)) return
+        if (!legacy || previouslyRequested && !shouldShowRequestPermissionRationale(Manifest.permission.READ_EXTERNAL_STORAGE)) {
+            if (!LibraryAccess.openSettings(packageName, !legacy) { libraryAccess.launch(it) }) access.launchFailed()
+        } else try { legacyLibraryAccess.launch(Manifest.permission.READ_EXTERNAL_STORAGE) }
+            catch (_: ActivityNotFoundException) { access.launchFailed() }
+            catch (_: SecurityException) { access.launchFailed() }
     }
 
     private fun setFullscreen(enabled: Boolean) {

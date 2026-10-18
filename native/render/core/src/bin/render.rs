@@ -1,6 +1,9 @@
 use std::io::Read;
 fn main() {
     let a: Vec<String> = std::env::args().collect();
+    if a.get(1).is_some_and(|v| v == "--sheets") {
+        std::process::exit(a.get(2).map_or(2, |path| alldoc_render::sheets::serve(std::path::Path::new(path))));
+    }
     if a.len() < 5 {
         std::process::exit(2)
     }

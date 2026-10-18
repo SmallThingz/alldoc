@@ -111,7 +111,10 @@ fn resolve<'a>(rels: &'a BTreeMap<String, String>, id: &str) -> Result<&'a str> 
 
 pub fn word(package: &mut Package, cx: &mut Context) -> Result<Document> {
     let bytes = package.read("word/document.xml", cx)?;
-    let text = xml::source(&bytes)?;
+    word_xml(&bytes, cx)
+}
+fn word_xml(bytes: &[u8], cx: &mut Context) -> Result<Document> {
+    let text = xml::source(bytes)?;
     let mut xml = Xml::new(&text);
     let mut doc = Document::new("DOCX");
     let section = doc.section("Document", "document");
@@ -119,9 +122,28 @@ pub fn word(package: &mut Package, cx: &mut Context) -> Result<Document> {
     let mut cell = TextBuffer::default();
     let (mut capture, mut in_p, mut in_cell, mut root) = (false, false, false, false);
     let (mut row, mut column, mut level) = (-1, -1, 0);
+    let (mut paragraph_depth, mut textbox_depth) = (0, 0);
+    let mut alternatives = Vec::new();
+    let mut skipped = 0;
     loop {
         match xml.next(cx)? {
             Token::Start(n, a) => {
+                if skipped > 0 {
+                    skipped += 1;
+                    continue;
+                }
+                if n == "AlternateContent" {
+                    alternatives.push(false);
+                }
+                if matches!(n.as_str(), "Choice" | "Fallback") {
+                    if let Some(chosen) = alternatives.last_mut() {
+                        if *chosen {
+                            skipped = 1;
+                            continue;
+                        }
+                        *chosen = true;
+                    }
+                }
                 if !root {
                     if n != "document" {
                         return Err(bad("Invalid Word document root"));
@@ -144,15 +166,23 @@ pub fn word(package: &mut Package, cx: &mut Context) -> Result<Document> {
                         column += 1;
                         cell.clear();
                     }
+                    "txbxContent" => textbox_depth += 1,
                     "p" => {
-                        if in_p {
+                        if in_p && textbox_depth == 0 {
                             return Err(bad("Nested Word paragraphs"));
                         }
+                        if in_p {
+                            if !p.is_empty() && !p.ends_with('\n') {
+                                append(&mut p, "\n", &mut doc.truncated);
+                            }
+                        } else {
+                            p.clear();
+                            level = 0;
+                        }
                         in_p = true;
-                        p.clear();
-                        level = 0;
+                        paragraph_depth += 1;
                     }
-                    "pStyle" if in_p => {
+                    "pStyle" if in_p && paragraph_depth == 1 => {
                         if let Some(v) = attr(&a, "val") {
                             let v = v.to_ascii_lowercase();
                             if let Some(v) = v.strip_prefix("heading") {
@@ -166,10 +196,23 @@ pub fn word(package: &mut Package, cx: &mut Context) -> Result<Document> {
                     _ => {}
                 }
             }
+            Token::Text(_) if skipped > 0 => {}
+            Token::End(_) if skipped > 0 => skipped -= 1,
             Token::Text(t) if capture => append(&mut p, &t, &mut doc.truncated),
             Token::End(n) => match n.as_str() {
+                "AlternateContent" => {
+                    alternatives.pop();
+                }
                 "t" => capture = false,
+                "txbxContent" => textbox_depth -= 1,
+                "p" if paragraph_depth > 1 => {
+                    paragraph_depth -= 1;
+                    if !p.ends_with('\n') {
+                        append(&mut p, "\n", &mut doc.truncated);
+                    }
+                }
                 "p" => {
+                    paragraph_depth = 0;
                     in_p = false;
                     if in_cell {
                         if !cell.is_empty() {
@@ -367,7 +410,7 @@ fn worksheet(
     doc: &mut Document,
     section: Option<usize>,
     cx: &mut Context,
-) -> Result<()> {
+) -> Result<bool> {
     let text = xml::source(bytes)?;
     let mut xml = Xml::new(&text);
     let (mut root, mut active, mut capture, mut phonetic) = (false, false, false, false);
@@ -397,6 +440,12 @@ fn worksheet(
                         if active {
                             return Err(bad("Nested cells"));
                         }
+                        if doc.full() || records == 8192 {
+                            cx.check()?;
+                            doc.truncated = true;
+                            doc.warn("Spreadsheet text preview is incomplete; remaining worksheet data was not parsed.");
+                            return Ok(false);
+                        }
                         active = true;
                         value.clear();
                         typ = attr(&a, "t").unwrap_or("n").into();
@@ -409,9 +458,6 @@ fn worksheet(
                             return Err(bad("Cell reference out of range"));
                         }
                         records += 1;
-                        if records > 8192 {
-                            return Err(limit("Worksheet cell record limit exceeded"));
-                        }
                         if !seen.insert((row, col)) {
                             return Err(bad("Duplicate worksheet cell"));
                         }
@@ -461,7 +507,7 @@ fn worksheet(
             _ => {}
         }
     }
-    Ok(())
+    Ok(true)
 }
 pub fn workbook(package: &mut Package, cx: &mut Context) -> Result<Document> {
     let relations = rels(package, "xl/workbook.xml", cx)?;
@@ -498,14 +544,143 @@ pub fn workbook(package: &mut Package, cx: &mut Context) -> Result<Document> {
         }
     }
     let mut doc = Document::new("XLSX");
-    doc.warn("Cells show stored values without spreadsheet number formats, charts or formula calculation.");
+    doc.warn("Text and JSON exports show stored cell values without spreadsheet number formats or charts; formulas are not recalculated.");
     if sheets.len() > 64 {
         doc.truncated = true;
     }
     for (title, path) in sheets.iter().take(64) {
         let section = doc.section(title, "sheet");
         let bytes = package.read(path, cx)?;
-        worksheet(&bytes, &shared, &mut doc, section, cx)?;
+        if !worksheet(&bytes, &shared, &mut doc, section, cx)? {
+            break;
+        }
     }
     Ok(doc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fmt::Write;
+
+    #[test]
+    fn word_text_boxes_preserve_outer_and_inner_text() {
+        let xml = br#"<document><body><p><r><t>Before</t></r><r><pict><shape><textbox><txbxContent><p><r><t>Box first</t></r></p><p><r><t>Box second</t></r></p></txbxContent></textbox></shape></pict></r><r><t>After</t></r></p><p><r><t>Last</t></r></p></body></document>"#;
+        let doc = word_xml(xml, &mut Context::new(&mut || false)).unwrap();
+        assert_eq!(
+            doc.sections[0].blocks[0].text,
+            "Before\nBox first\nBox second\nAfter"
+        );
+        assert_eq!(doc.sections[0].blocks[1].text, "Last");
+        let invalid = b"<document><body><p><p><r><t>Nested</t></r></p></p></body></document>";
+        assert_eq!(
+            word_xml(invalid, &mut Context::new(&mut || false))
+                .unwrap_err()
+                .code,
+            "MALFORMED"
+        );
+    }
+
+    #[test]
+    fn word_alternative_text_boxes_are_read_once() {
+        let xml = br#"<document><body><p><r><t>Before</t></r><AlternateContent><Choice Requires="wps"><txbxContent><p><r><t>Box</t></r></p></txbxContent></Choice><Fallback><txbxContent><p><r><t>Box</t></r></p></txbxContent></Fallback></AlternateContent><r><t>After</t></r></p><AlternateContent><Fallback><p><r><t>Fallback only</t></r></p></Fallback></AlternateContent></body></document>"#;
+        let doc = word_xml(xml, &mut Context::new(&mut || false)).unwrap();
+        assert_eq!(doc.sections[0].blocks[0].text, "Before\nBox\nAfter");
+        assert_eq!(doc.sections[0].blocks[1].text, "Fallback only");
+    }
+
+    #[test]
+    fn worksheet_excerpt_keeps_existing_output_and_record_budgets() {
+        for (cells, filled, complete) in [
+            (4096, true, true),
+            (120012, true, false),
+            (8192, false, true),
+            (8193, false, false),
+        ] {
+            let mut text = String::from("<worksheet><sheetData>");
+            for i in 0..cells {
+                if i % 12 == 0 {
+                    text.push_str("<row>");
+                }
+                write!(
+                    text,
+                    "<c r=\"{}{}\">",
+                    (b'A' + (i % 12) as u8) as char,
+                    i / 12 + 1
+                )
+                .unwrap();
+                if filled {
+                    write!(text, "<v>{i}</v>").unwrap();
+                }
+                text.push_str("</c>");
+                if i % 12 == 11 || i + 1 == cells {
+                    text.push_str("</row>");
+                }
+            }
+            text.push_str("</sheetData></worksheet>");
+            let mut doc = Document::new("XLSX");
+            let section = doc.section("Data", "sheet");
+            let mut cancel = || false;
+            let mut cx = Context::new(&mut cancel);
+            assert_eq!(
+                worksheet(text.as_bytes(), &[], &mut doc, section, &mut cx).unwrap(),
+                complete
+            );
+            assert_eq!(doc.truncated, !complete);
+            assert_eq!(doc.blocks, if filled { cells.min(4096) } else { 0 });
+            assert_eq!(
+                doc.warnings
+                    .iter()
+                    .any(|w| w.contains("remaining worksheet data was not parsed")),
+                !complete
+            );
+            if filled {
+                assert_eq!(doc.sections[0].blocks.first().unwrap().text, "0");
+                assert_eq!(doc.sections[0].blocks.last().unwrap().text, "4095");
+            }
+        }
+    }
+
+    #[test]
+    fn worksheet_excerpt_preserves_processed_validation_and_cancellation() {
+        for text in [
+            "<worksheet><row><c r=\"A1\"><v>1</v></c><c r=\"A1\"/></row></worksheet>",
+            "<worksheet><row><c r=\"A1\"><v>1</c></row></worksheet>",
+            "<worksheet><row><c r=\"A1\"><c r=\"A2\"/></c></row></worksheet>",
+        ] {
+            let mut doc = Document::new("XLSX");
+            let section = doc.section("Data", "sheet");
+            let mut cancel = || false;
+            assert_eq!(
+                worksheet(
+                    text.as_bytes(),
+                    &[],
+                    &mut doc,
+                    section,
+                    &mut Context::new(&mut cancel)
+                )
+                .unwrap_err()
+                .code,
+                "MALFORMED"
+            );
+        }
+        let mut doc = Document::new("XLSX");
+        let section = doc.section("Data", "sheet");
+        for _ in 0..4096 {
+            doc.push(section, "cell", "1", 0, 0, 0);
+        }
+        let mut cancel = || true;
+        assert_eq!(
+            worksheet(
+                b"<worksheet><row><c r=\"A1\"/></row></worksheet>",
+                &[],
+                &mut doc,
+                section,
+                &mut Context::new(&mut cancel)
+            )
+            .unwrap_err()
+            .code,
+            "CANCELLED"
+        );
+    }
 }

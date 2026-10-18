@@ -7,6 +7,12 @@ publish = false
 [lib]
 crate-type = ["rlib"]
 [dependencies]
+gridcraft-core = { path = "../vendor/gridcraft/crates/core" }
+serde_json = "1"
+wordcraft-doc = { path = "../vendor/wordcraft/crates/doc" }
+deckcraft-model = { path = "../vendor/deckcraft/crates/model" }
+deckcraft-geom = { path = "../vendor/deckcraft/crates/geom" }
+gridcraft-model = { path = "../vendor/gridcraft/crates/model" }
 wordcraft-docx = { path = "../vendor/wordcraft/crates/docx" }
 wordcraft-render = { path = "../vendor/wordcraft/crates/render" }
 wordcraft-layout = { path = "../vendor/wordcraft/crates/layout" }

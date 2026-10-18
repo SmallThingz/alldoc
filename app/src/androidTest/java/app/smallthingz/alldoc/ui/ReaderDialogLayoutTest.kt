@@ -21,20 +21,35 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsNode
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.filters.SdkSuppress
 import androidx.test.platform.app.InstrumentationRegistry
 import app.smallthingz.alldoc.ReaderTestActivity
+import app.smallthingz.alldoc.state.AppTheme
+import app.smallthingz.alldoc.state.CopySettings
+import app.smallthingz.alldoc.state.LibraryCategory
 import app.smallthingz.alldoc.theme.ImageTreatment
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -177,6 +192,191 @@ class ReaderDialogLayoutTest {
             }
             select(1); select(2); select(0)
         }
+    }
+
+    @Test fun narrowSettingsKeepFourThemeAndLibraryTargetsInOneRow() {
+        val theme = AtomicReference(AppTheme.SYSTEM)
+        val hidden = AtomicReference(emptySet<LibraryCategory>())
+        val target = AtomicReference(0f)
+        launchReaderTestActivity().use { scenario ->
+            scenario.onActivity { activity -> activity.setContent {
+                val density = LocalDensity.current
+                SideEffect { target.set(48f * density.density) }
+                CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+                    ReaderTheme {
+                        var selected by remember { mutableStateOf(AppTheme.SYSTEM) }
+                        var excluded by remember { mutableStateOf(emptySet<LibraryCategory>()) }
+                        Box(Modifier.width(240.dp).height(360.dp).clipToBounds()) {
+                            ReaderSettingsScreen(CopySettings(), "Documents", 0, 0, false, null,
+                                {}, {}, {}, {}, ThemeSettings(), {}, {}, appTheme = selected,
+                                onAppThemeChange = { selected = it; theme.set(it) }, hiddenLibraryTypes = excluded,
+                                onHiddenLibraryTypesChange = { excluded = it; hidden.set(it) })
+                        }
+                    }
+                }
+            } }
+            fun row(labels: List<String>) {
+                val deadline = SystemClock.uptimeMillis() + 8_000
+                while (SystemClock.uptimeMillis() < deadline) {
+                    var ready = false
+                    scenario.onActivity { activity ->
+                        val roots = activity.testSemantics()
+                        val bounds = labels.mapNotNull { label -> find(roots) {
+                            label in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty()
+                        }?.boundsInRoot }
+                        ready = bounds.size == labels.size && bounds.all { it.width >= target.get() - 1 && it.height >= target.get() - 1 }
+                        if (ready) assertTrue("Choices must remain one compact row: $bounds",
+                            bounds.maxOf { it.center.y } - bounds.minOf { it.center.y } <= 1f)
+                        else find(roots) { it.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange) != null }
+                            ?.config?.getOrNull(SemanticsActions.ScrollBy)?.action?.invoke(0f, target.get() * 2)
+                    }
+                    if (ready) return
+                    SystemClock.sleep(50)
+                }
+                throw AssertionError("Settings row clipped or inaccessible: $labels")
+            }
+            fun choose(label: String) = scenario.onActivity { activity ->
+                val choice = requireNotNull(find(activity.testSemantics()) {
+                    label in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty()
+                })
+                assertTrue(requireNotNull(choice.config.getOrNull(SemanticsActions.OnClick)?.action).invoke())
+            }
+            row(listOf("System", "Light", "Dark", "AMOLED").map { "App theme: $it" })
+            choose("App theme: AMOLED")
+            instrumentation.waitForIdleSync()
+            assertEquals(AppTheme.AMOLED, theme.get())
+            awaitSemantics("Theme selection is not exposed") {
+                var selected = false
+                scenario.onActivity { activity -> selected = find(activity.testSemantics()) {
+                    "App theme: AMOLED" in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty()
+                }?.config?.getOrNull(SemanticsProperties.Selected) == true }
+                selected
+            }
+            row(LibraryCategory.available.map { "Library: ${it.label}" })
+            choose("Library: Presentations")
+            instrumentation.waitForIdleSync()
+            assertEquals(setOf(LibraryCategory.PRESENTATIONS), hidden.get())
+            awaitSemantics("Excluded document type is not exposed") {
+                var excluded = false
+                scenario.onActivity { activity -> excluded = find(activity.testSemantics()) {
+                    "Library: Presentations" in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty()
+                }?.config?.getOrNull(SemanticsProperties.ToggleableState) == ToggleableState.Off }
+                excluded
+            }
+        }
+    }
+
+    @Test @SdkSuppress(minSdkVersion = 29)
+    fun storageSliderPreservesFileCountAndExposesMegabytesWithoutTextFields() {
+        val initial = CopySettings(enabled = false, maxCount = 37, treeUri = "content://storage/tree/docs")
+        val changed = AtomicReference(initial)
+        val writes = AtomicInteger()
+        launchReaderTestActivity().use { scenario ->
+            scenario.onActivity { activity -> activity.setContent {
+                ReaderTheme {
+                    var value by remember { mutableStateOf(initial) }
+                    CopyLimitsDialog(value, { value = it; changed.set(it); writes.incrementAndGet() }, {})
+                }
+            } }
+            val deadline = SystemClock.uptimeMillis() + 8_000
+            var set = false
+            while (!set && SystemClock.uptimeMillis() < deadline) {
+                scenario.onActivity { activity ->
+                    val node = find(activity.testSemantics(includeDialogs = true)) {
+                        "Storage limit" in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty() &&
+                            it.config.getOrNull(SemanticsProperties.ProgressBarRangeInfo) != null
+                    }
+                    if (node != null) {
+                        val range = requireNotNull(node.config.getOrNull(SemanticsProperties.ProgressBarRangeInfo))
+                        assertEquals(1f, range.range.start, 0f)
+                        assertEquals(8192f, range.range.endInclusive, 0f)
+                        set = node.config.getOrNull(SemanticsActions.SetProgress)?.action?.invoke(512f) == true
+                    }
+                }
+                if (!set) SystemClock.sleep(50)
+            }
+            assertTrue("Storage slider must support an accessible numeric value", set)
+            instrumentation.waitForIdleSync()
+            assertEquals(1, writes.get())
+            assertEquals(initial.copy(maxBytes = 512L * 1024 * 1024), changed.get())
+            awaitSemantics("Slider does not expose 512 MB") {
+                var updated = false
+                scenario.onActivity { activity ->
+                    val roots = activity.testSemantics(includeDialogs = true)
+                    updated = find(roots) {
+                        "Storage limit" in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty() &&
+                            it.config.getOrNull(SemanticsProperties.ProgressBarRangeInfo) != null
+                    }?.config?.getOrNull(SemanticsProperties.StateDescription) == "512 MB"
+                    assertFalse("Storage limits must not open the keyboard", find(roots) {
+                        it.config.getOrNull(SemanticsActions.SetText) != null || it.config.getOrNull(SemanticsProperties.EditableText) != null
+                    } != null)
+                }
+                updated
+            }
+        }
+    }
+
+
+    @Test fun openTopPanelUpdatesSystemBarContrastWithAppTheme() {
+        val theme = mutableStateOf(AppTheme.LIGHT)
+        val observedTheme = AtomicReference<AppTheme>()
+        val panelWindow = AtomicReference<android.view.Window>()
+        launchReaderTestActivity().use { scenario ->
+            scenario.onActivity { activity -> activity.setContent {
+                ReaderTheme(theme.value) {
+                    ReaderTopPanel("Theme", onDismiss = {}) {
+                        val view = LocalView.current
+                        val currentTheme = LocalAppTheme.current
+                        SideEffect {
+                            panelWindow.set(generateSequence(view.parent) { it.parent }
+                                .filterIsInstance<DialogWindowProvider>().firstOrNull()?.window)
+                            observedTheme.set(currentTheme)
+                        }
+                        Text("Open panel")
+                    }
+                }
+            } }
+            fun awaitChrome(mode: AppTheme) = awaitSemantics("Open panel kept stale system-bar contrast for $mode") {
+                var matched = false
+                scenario.onActivity { activity ->
+                    activity.verifyTestDisplay()
+                    val window = panelWindow.get()
+                    if (window != null && window.decorView.isAttachedToWindow && window.decorView.hasWindowFocus()) {
+                        assertEquals(activity.window.decorView.display?.displayId, window.decorView.display?.displayId)
+                        val controller = WindowCompat.getInsetsController(window, window.decorView)
+                        val light = mode == AppTheme.LIGHT
+                        matched = observedTheme.get() == mode && controller.isAppearanceLightStatusBars == light &&
+                            controller.isAppearanceLightNavigationBars == light
+                    }
+                }
+                matched
+            }
+            awaitChrome(AppTheme.LIGHT)
+            // Drain the initial attach/focus callback before simulating delayed preference hydration.
+            instrumentation.waitForIdleSync()
+            val original = requireNotNull(panelWindow.get())
+            for (mode in listOf(AppTheme.DARK, AppTheme.AMOLED, AppTheme.LIGHT)) {
+                scenario.onActivity { activity -> activity.verifyTestDisplay(); theme.value = mode }
+                awaitChrome(mode)
+                assertSame("Theme changes must update the existing panel window", original, panelWindow.get())
+            }
+        }
+    }
+
+    private fun awaitSemantics(message: String, ready: () -> Boolean) {
+        val end = SystemClock.uptimeMillis() + 5_000
+        while (!ready()) {
+            check(SystemClock.uptimeMillis() < end) { message }
+            SystemClock.sleep(16)
+        }
+    }
+
+    private fun find(nodes: List<SemanticsNode>, predicate: (SemanticsNode) -> Boolean): SemanticsNode? {
+        for (node in nodes) {
+            if (predicate(node)) return node
+            find(node.children, predicate)?.let { return it }
+        }
+        return null
     }
 
     @Suppress("DEPRECATION")

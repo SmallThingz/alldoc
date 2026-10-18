@@ -226,8 +226,8 @@
     ]
   },
   "inputs": {
-    "native/render/core/Cargo.toml": "01fe6eb741a36772783200c8864db54050cd13aaf6175a2aa44b4b1fe4c3b3f3",
-    "native/render/core/Cargo.lock": "09138db63a3a2caeb251f6613a7e51942aded517c1804c0e9a3a1d3790859f59",
+    "native/render/core/Cargo.toml": "21f4f2538abb17a1999fe7dcf76543a3206dbf97d368de6080545cf8e43d7fcd",
+    "native/render/core/Cargo.lock": "691ba061162e98249d7bfa0b3580e9df04f8e287abec97421feceb05fd773427",
     "native/render/projection.json": "04c759cd815a8e7667a2c6bbd9d1f3df779629889af95a5d8796e36fb4671550"
   },
   "historicalProvenance": {
@@ -2283,7 +2283,7 @@
       "name": "alldoc_render",
       "version": "0.1.0",
       "manifest": "native/render/core/Cargo.toml",
-      "sha256": "01fe6eb741a36772783200c8864db54050cd13aaf6175a2aa44b4b1fe4c3b3f3"
+      "sha256": "21f4f2538abb17a1999fe7dcf76543a3206dbf97d368de6080545cf8e43d7fcd"
     },
     {
       "name": "deckcraft-color",

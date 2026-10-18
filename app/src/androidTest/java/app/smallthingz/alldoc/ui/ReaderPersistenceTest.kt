@@ -188,15 +188,93 @@ class ReaderPersistenceTest {
         }
     }
 
+    @Test fun deletedWarmDocumentStopsFeaturingButKeepsItsSessionAndRecoversAtANewAlias() = Fixture().use { fixture ->
+        val original = File(fixture.context.root, "warm.pdf").also { writeReaderPdf(it, pages = 3) }
+        val bytes = original.readBytes()
+        fixture.store.saveCopySettings(CopySettings(enabled = false))
+        fixture.launch(width = 320)
+        fixture.act { it.open(Uri.fromFile(original)) }
+        fixture.await { it.info != null && it.bitmap != null && !it.loading &&
+            it.recentDocuments.any { saved -> saved.hash == it.documentHash } }
+        var hash = ""
+        var identity = 0L
+        val pose = ViewportState(2f, .2f, .3f)
+        fixture.act {
+            hash = requireNotNull(it.documentHash); identity = it.documentId
+            assertTrue(it.currentDocumentAvailable)
+            it.updateViewport(pose); it.flushDocumentState()
+            it.setAppVisible(false)
+        }
+        fixture.stateBarrier()
+        assertEquals(0, fixture.sources.status(fixture.store.copySettings()).count)
+        assertTrue(original.delete())
+        fixture.act { it.setAppVisible(true); it.showReader(false) }
+        fixture.await { !it.currentDocumentAvailable && it.recentDocuments.none { saved -> saved.hash == hash } }
+        fixture.act {
+            assertEquals(identity, it.documentId); assertEquals(hash, it.documentHash)
+            assertNotNull("Hiding a missing Home tile must not close the live reader", it.info)
+            assertEquals(pose, it.viewport)
+        }
+        assertNotNull(fixture.store.get(hash))
+        val alias = File(fixture.context.root, "recovered.pdf").apply { writeBytes(bytes) }
+        fixture.act {
+            it.refreshRecentDocuments()
+            it.open(Uri.fromFile(alias))
+        }
+        fixture.await { it.currentTitle == alias.name && it.documentHash == hash && !it.loading && it.currentDocumentAvailable }
+        fixture.stateBarrier()
+        fixture.act { it.refreshRecentDocuments() }
+        fixture.await { it.currentDocumentAvailable && it.recentDocuments.any { saved -> saved.hash == hash } }
+        fixture.act {
+            assertTrue(it.documentId > identity); assertEquals(Uri.fromFile(alias), it.source)
+            assertEquals(pose, it.viewport)
+        }
+    }
+
+    @Test fun deletedRecentLocationsDisappearOnResumeWithoutLosingStateOrAlternateSources() = Fixture().use { fixture ->
+        val original = File(fixture.context.cacheDir, "original.pdf").apply { writeText("Original") }
+        val alias = File(fixture.context.cacheDir, "alias.pdf").apply { writeText("Alias") }
+        val hash = "9".repeat(64)
+        val missingHash = "8".repeat(64)
+        val state = app.smallthingz.alldoc.state.DocumentState(page = 7, viewport = ViewportState(2f, .3f, .4f))
+        fixture.store.open(hash, DocumentMetadata(original.name, "application/pdf", original.length(),
+            Uri.fromFile(original).toString()), state)
+        fixture.store.open(missingHash, DocumentMetadata(original.name, "application/pdf", original.length(),
+            Uri.fromFile(original).toString()), state)
+        fixture.launch(width = 0)
+        fixture.await { it.recentDocuments.size == 2 }
+        LibraryCatalog(fixture.context).use { catalog ->
+            val location = catalog.discover(app.smallthingz.alldoc.state.LibraryFile(Uri.fromFile(alias).toString(),
+                alias.name, "application/pdf", alias.length(), 0))!!
+            catalog.resolve(location, hash)
+        }
+        fixture.act { it.setAppVisible(false) }
+        assertTrue(original.delete())
+        fixture.act { it.setAppVisible(true) }
+        fixture.await { it.recentDocuments.map { saved -> saved.hash } == listOf(hash) }
+        fixture.act { it.setAppVisible(false) }
+        assertTrue(alias.delete())
+        fixture.act { it.setAppVisible(true) }
+        fixture.await { it.recentDocuments.none { saved -> saved.hash == hash } }
+        assertEquals(state, fixture.store.get(hash)!!.state)
+        assertEquals(2L, fixture.store.count())
+        // Reappearance and URI aliases restore visibility without rewriting the hash-bound state.
+        alias.writeText("Alias")
+        fixture.act { it.refreshRecentDocuments() }
+        fixture.await { it.recentDocuments.any { saved -> saved.hash == hash } }
+        assertEquals(state, fixture.store.get(hash)!!.state)
+    }
+
     @Test fun recentPreviewsStayBoundedAndIgnoreUnrelatedPublications() = Fixture().use { fixture ->
         val hashes = (1..30).map { it.toString(16).padStart(64, '0') }
         val allowed = hashes.takeLast(6).toSet()
-        val folder = File(fixture.context.cacheDir, "previews-v5").apply { check(mkdirs()) }
+        val folder = File(fixture.context.cacheDir, "previews-v8").apply { check(mkdirs()) }
         val source = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
+        val available = File(fixture.context.cacheDir, "preview-history.pdf").apply { writeText("Stored preview fixture") }
         try {
             hashes.forEachIndexed { index, hash ->
                 source.eraseColor(Color.rgb(index * 7 % 256, index * 11 % 256, index * 17 % 256))
-                File(folder, "$hash.png").outputStream().use { assertTrue(source.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                DocumentPreviews.write(folder, File(folder, "$hash.png"), source)
                 val metadata = when (index) {
                     0 -> DocumentMetadata("Recent.PDF", null, 1)
                     1 -> DocumentMetadata("No extension", " \tAPPLICATION/PDF ; charset=utf-8", 1)
@@ -205,7 +283,7 @@ class ReaderPersistenceTest {
                     4 -> DocumentMetadata("Historical.PDF", "text/plain", 1)
                     else -> DocumentMetadata("Recent-$index.pdf", "application/pdf", 1)
                 }
-                fixture.store.open(hash, metadata)
+                fixture.store.open(hash, metadata.copy(sourceUri = Uri.fromFile(available).toString()))
             }
         } finally { source.recycle() }
         // More than one candidate batch: removed images with misleading document names.

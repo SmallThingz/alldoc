@@ -43,7 +43,7 @@ internal class DocumentPrintAdapter(
     override fun onLayout(oldAttributes: PrintAttributes?, newAttributes: PrintAttributes,
         cancellationSignal: CancellationSignal, callback: LayoutResultCallback, extras: Bundle?) {
         submit(cancellationSignal, { callback.onLayoutCancelled() }, { callback.onLayoutFailed("Couldn’t prepare printing.") }) {
-            val count = session.pageCount(cancellationSignal)
+            val count = session.printInfo(cancellationSignal).pageCount
             require(count in 1..100_000) { "Invalid print page count" }
             val next = Layout(newAttributes, count)
             next.paper()
@@ -68,6 +68,7 @@ internal class DocumentPrintAdapter(
                 writePdf(buffered, value.paper(), selected, value.attributes.colorMode == PrintAttributes.COLOR_MODE_MONOCHROME, cancellationSignal)
             }
             cancellationSignal.throwIfCanceled()
+            destination.checkError()
             ({ callback.onWriteFinished(pageRanges(selected)) })
         }
     }

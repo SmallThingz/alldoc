@@ -175,12 +175,20 @@ def verify(receipt):
 def decode(path):
     from PIL import Image
     data = path.read_bytes()
-    if len(data) < 32 or len(data) > 16 * 1024 * 1024 + 8224 or data[:4] != b'ZFR1':
+    if len(data) < 32 or len(data) > 16 * 1024 * 1024 + 9252 or data[:4] not in (b'ZFR1', b'ZFR2'):
         raise RuntimeError('Invalid renderer receipt')
     kind, width, height, page, pages, note, size = struct.unpack_from('<7I', data, 4)
-    if kind != 1 or not (1 <= width <= 1400 and 1 <= height <= 1400 and 0 <= page < pages <= 128) or 32 + note + size != len(data):
-        raise RuntimeError('Renderer rejected workload or returned invalid metadata: ' + data[32:32 + min(note, 512)].decode(errors='replace'))
-    with Image.open(io.BytesIO(data[32 + note:])) as image:
+    offset = 32
+    if data[:4] == b'ZFR2':
+        if len(data) < 36:
+            raise RuntimeError('Truncated renderer receipt')
+        count, = struct.unpack_from('<I', data, 32)
+        if count != 0xffffffff and count > 64:
+            raise RuntimeError('Invalid raster-region count')
+        offset = 36 + (0 if count == 0xffffffff else count * 16)
+    if kind != 1 or not (1 <= width <= 2800 and 1 <= height <= 2800 and width * height <= 8_000_000 and 0 <= page < pages <= 1024) or offset + note + size != len(data):
+        raise RuntimeError('Renderer rejected workload or returned invalid metadata: ' + data[offset:offset + min(note, 512)].decode(errors='replace'))
+    with Image.open(io.BytesIO(data[offset + note:])) as image:
         if image.size != (width, height):
             raise RuntimeError('PNG dimensions differ from receipt')
         pixels = hashlib.sha256(image.convert('RGBA').tobytes()).hexdigest()

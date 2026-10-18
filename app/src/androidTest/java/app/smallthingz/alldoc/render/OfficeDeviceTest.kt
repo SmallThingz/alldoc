@@ -36,14 +36,15 @@ class OfficeDeviceTest {
             try {
                 val fd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
                 DocumentEngine.open(context, fd, name, mime, CancellationSignal()).use { session ->
-                    assertEquals(name, "VISUAL_BEST_EFFORT", session.info.fidelity)
-                    assertTrue(name, session.info.pageCount >= if (name.endsWith("xlsx")) 1 else 2)
-                    assertTrue(name, session.info.textAvailable)
+                    val info = session.printInfo(CancellationSignal())
+                    assertEquals(name, "VISUAL_BEST_EFFORT", info.fidelity)
+                    assertTrue(name, info.pageCount >= if (name.endsWith("xlsx")) 1 else 2)
+                    assertTrue(name, info.textAvailable)
                     assertTrue(name, session.text(CancellationSignal()).contains(text))
                     val json = JSONObject(session.json(CancellationSignal()))
                     assertTrue(name, json.getJSONArray("sections").length() > 0)
                     assertTrue(name, json.toString().contains(text))
-                    for ((page, width) in listOf(0 to 320, (session.info.pageCount - 1) to 64)) {
+                    for ((page, width) in listOf(0 to 320, (info.pageCount - 1) to 64)) {
                         val bitmap = session.renderPage(page, width, original, CancellationSignal())
                         try {
                             assertTrue(name, bitmap.width in 1..width)
@@ -53,7 +54,7 @@ class OfficeDeviceTest {
                             assertTrue("$name blank preview", pixels.any { Color.alpha(it) > 0 && Color.red(it) < 240 })
                         } finally { bitmap.recycle() }
                     }
-                    try { session.renderPage(session.info.pageCount, 320, original, CancellationSignal()); fail("Accepted an out-of-range page") }
+                    try { session.renderPage(info.pageCount, 320, original, CancellationSignal()); fail("Accepted an out-of-range page") }
                     catch (_: IllegalArgumentException) { }
                     try { session.renderPage(0, 320, original, CancellationSignal().apply { cancel() }); fail("Rendered after cancellation") }
                     catch (_: OperationCanceledException) { }

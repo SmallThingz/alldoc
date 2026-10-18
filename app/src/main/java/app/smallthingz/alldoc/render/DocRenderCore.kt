@@ -1,5 +1,6 @@
 package app.smallthingz.alldoc.render
 
+import app.smallthingz.alldoc.theme.RasterRegion
 import java.io.File
 import java.io.IOException
 import java.io.InterruptedIOException
@@ -12,6 +13,10 @@ import java.util.Locale
 object DocRenderCore {
     const val INPUT_LIMIT = 16 * 1024 * 1024
     const val OUTPUT_LIMIT = 16 * 1024 * 1024
+    const val PAGE_LIMIT = 1024
+    const val SIDE_LIMIT = 2800
+    const val PIXEL_LIMIT = 8_000_000
+    const val RECEIPT_OVERHEAD = 8192 + 36 + 64 * 16
     fun interface Check { fun cancelled(): Boolean }
     class ViewState(
         @JvmField val page: Int, @JvmField val generation: Long,
@@ -22,7 +27,8 @@ object DocRenderCore {
     class RenderedPage internal constructor(
         @JvmField val format: Int, @JvmField val width: Int, @JvmField val height: Int,
         @JvmField val page: Int, @JvmField val pageCount: Int,
-        @JvmField val note: String, private val bytes: ByteArray, @JvmField val state: ViewState
+        @JvmField val note: String, private val bytes: ByteArray, @JvmField val state: ViewState,
+        @JvmField val rasterRegions: List<RasterRegion>? = null
     ) {
         @JvmField val fidelity = "VISUAL_BEST_EFFORT"
         fun copyBytes(): ByteArray = bytes.clone()
@@ -41,6 +47,8 @@ object DocRenderCore {
         val directory = cache.prepare(context.cacheDir, android.os.Process.myPid()) { File("/proc/$it").exists() }
         configure(File(native, "liballrender.so"), File(native, "liballrun.so"), directory)
     }
+    internal fun workbook(snapshot: File): WorkbookProcess =
+        WorkbookProcess(module ?: throw IOException("Worksheet renderer unavailable"), snapshot)
     @JvmStatic fun isAvailable(): Boolean = module?.available() == true
     private fun extension(name: String?): String {
         if (name == null) return ""
@@ -60,7 +68,7 @@ object DocRenderCore {
         if (ownedSnapshot == null || ownedSnapshot.isEmpty() || ownedSnapshot.size > INPUT_LIMIT)
             throw IOException("Visual input supports 1 byte through 16 MiB")
         requireNotNull(state) { "state" }
-        if (maxSide < 128 || maxSide > 1400) throw IOException("Visual output side supports 128 through 1400")
+        if (maxSide < 128 || maxSide > SIDE_LIMIT) throw IOException("Visual output side supports 128 through 2800")
         val kind = kind(name)
         if (kind == 0) throw IOException("No visual renderer for this format")
         val poll = Check { Thread.currentThread().isInterrupted || check?.cancelled() == true }
@@ -78,7 +86,7 @@ object DocRenderCore {
     fun renderFile(snapshot: File, name: String, state: ViewState, maxSide: Int, check: Check?): RenderedPage {
         if (!snapshot.isFile || snapshot.length() !in 1..INPUT_LIMIT.toLong())
             throw IOException("Visual input supports 1 byte through 16 MiB")
-        if (maxSide !in 128..1400) throw IOException("Visual output side supports 128 through 1400")
+        if (maxSide !in 128..SIDE_LIMIT) throw IOException("Visual output side supports 128 through 2800")
         val kind = kind(name)
         if (kind == 0) throw IOException("No visual renderer for this format")
         val poll = Check { Thread.currentThread().isInterrupted || check?.cancelled() == true }
@@ -92,11 +100,13 @@ object DocRenderCore {
 
     @JvmStatic @Throws(IOException::class)
     fun decode(wire: ByteArray?, state: ViewState): RenderedPage {
-        if (wire == null || wire.size < 32 || wire.size > OUTPUT_LIMIT + 8192 + 32)
+        if (wire == null || wire.size < 32 || wire.size > OUTPUT_LIMIT + RECEIPT_OVERHEAD)
             throw IOException("Invalid visual renderer receipt")
         if (wire[0] != 'Z'.code.toByte() || wire[1] != 'F'.code.toByte() ||
-            wire[2] != 'R'.code.toByte() || wire[3] != '1'.code.toByte())
+            wire[2] != 'R'.code.toByte() || wire[3] !in byteArrayOf('1'.code.toByte(), '2'.code.toByte()))
             throw IOException("Unsupported visual receipt version")
+        val version2 = wire[3] == '2'.code.toByte()
+        if (version2 && wire.size < 36) throw IOException("Invalid visual renderer receipt")
         val b = ByteBuffer.wrap(wire).order(ByteOrder.LITTLE_ENDIAN)
         b.position(4)
         val format = b.int
@@ -106,9 +116,21 @@ object DocRenderCore {
         val pages = b.int
         val noteLen = b.int
         val dataLen = b.int
+        val count = if (version2) b.int else -1
+        if (count !in -1..64) throw IOException("Invalid visual raster-region count")
+        val regionBytes = count.coerceAtLeast(0) * 16
         if (noteLen < 0 || noteLen > 8192 || dataLen < 0 || dataLen > OUTPUT_LIMIT ||
-            noteLen.toLong() + dataLen != b.remaining().toLong())
+            noteLen.toLong() + dataLen + regionBytes != b.remaining().toLong())
             throw IOException("Invalid visual receipt lengths")
+        var validRegions = count >= 0
+        val regions = ArrayList<RasterRegion>(count.coerceAtLeast(0))
+        repeat(count.coerceAtLeast(0)) {
+            val l = b.float; val t = b.float; val r = b.float; val bottom = b.float
+            if (!l.isFinite() || !t.isFinite() || !r.isFinite() || !bottom.isFinite() ||
+                l < 0f || t < 0f || r > 1f || bottom > 1f || r <= l || bottom <= t) validRegions = false
+            else regions.add(RasterRegion(l, t, r, bottom))
+        }
+        val rasterRegions = if (validRegions) java.util.Collections.unmodifiableList(regions) else null
         val note = ByteArray(noteLen)
         b.get(note)
         val message = String(note, StandardCharsets.UTF_8)
@@ -116,8 +138,8 @@ object DocRenderCore {
             if (message == "CANCELLED") throw InterruptedIOException("Visual preview cancelled")
             throw IOException(message)
         }
-        if ((format != 1 && format != 2) || w < 1 || h < 1 || w > 1400 || h > 1400 ||
-            w.toLong() * h > 2_000_000 || pages < 1 || pages > 128 || page < 0 ||
+        if ((format != 1 && format != 2) || w < 1 || h < 1 || w > SIDE_LIMIT || h > SIDE_LIMIT ||
+            w.toLong() * h > PIXEL_LIMIT || pages < 1 || pages > PAGE_LIMIT || page < 0 ||
             page >= pages || page != state.page || dataLen < 8) throw IOException("Invalid visual page metadata")
         val data = ByteArray(dataLen)
         b.get(data)
@@ -131,6 +153,6 @@ object DocRenderCore {
         } else if (data[0] != '%'.code.toByte() || data[1] != 'P'.code.toByte() ||
             data[2] != 'D'.code.toByte() || data[3] != 'F'.code.toByte() || data[4] != '-'.code.toByte())
             throw IOException("Visual PDF data is invalid")
-        return RenderedPage(format, w, h, page, pages, message, data, state)
+        return RenderedPage(format, w, h, page, pages, message, data, state, rasterRegions)
     }
 }

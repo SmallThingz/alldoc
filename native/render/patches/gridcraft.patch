@@ -30,7 +30,7 @@
  const PX_TO_PT: f32 = 0.75;
  /// Most pages one export produces.
 -pub const MAX_PAGES: usize = 2000;
-+pub const MAX_PAGES: usize = 128;
++pub const MAX_PAGES: usize = 1025; // One overflow page lets the adapter reject incomplete layouts.
  /// Cells in a page block above which only stored cells are visited (not every grid position).
  const DENSE_BLOCK: u64 = 60_000;
  
@@ -88,7 +88,38 @@
                          cut.push(ch);
                      } else {
                          rest.push(ch);
-@@ -887,7 +887,7 @@
+@@ -675,6 +675,7 @@
+     ys: Vec<f32>,
+     k: f32,
+     scale: f32,
++    axes: Option<(&'a LineIndex, &'a LineIndex)>,
+ }
+ 
+ impl Block<'_> {
+@@ -683,14 +684,20 @@
+             return self.xs.get((col - self.cols.0) as usize).copied().unwrap_or(0.0);
+         }
+         let x0 = self.xs.first().copied().unwrap_or(0.0);
+-        x0 + ((self.sh.col_left(col) - self.sh.col_left(self.cols.0)) as f32) * self.k
++        x0 + ((self.col_left(col) - self.col_left(self.cols.0)) as f32) * self.k
+     }
+     fn y(&self, row: u32) -> f32 {
+         if row >= self.rows.0 && row <= self.rows.1 + 1 {
+             return self.ys.get((row - self.rows.0) as usize).copied().unwrap_or(0.0);
+         }
+         let y0 = self.ys.first().copied().unwrap_or(0.0);
+-        y0 + ((self.sh.row_top(row) - self.sh.row_top(self.rows.0)) as f32) * self.k
++        y0 + ((self.row_top(row) - self.row_top(self.rows.0)) as f32) * self.k
++    }
++    fn row_top(&self, row: u32) -> f64 { self.axes.map_or_else(|| self.sh.row_top(row), |(rows, _)| rows.start(row)) }
++    fn col_left(&self, col: u32) -> f64 { self.axes.map_or_else(|| self.sh.col_left(col), |(_, cols)| cols.start(col)) }
++    fn anchor(&self, a: &Anchor) -> (f64, f64, f64, f64) {
++        (self.col_left(a.cell.col) + a.dx as f64, self.row_top(a.cell.row) + a.dy as f64,
++            a.width.max(0.0) as f64, a.height.max(0.0) as f64)
+     }
+     fn rect(&self, r: RangeRef) -> (f32, f32, f32, f32) {
+         let (x0, y0) = (self.x(r.start.col), self.y(r.start.row));
+@@ -887,7 +894,7 @@
      } else if code == "General"
          && let Value::Number(n) = v
      {
@@ -97,7 +128,7 @@
          let max_chars = (avail / digit).floor().max(1.0) as usize;
          gridcraft_numfmt::format_general_fit(n, max_chars.min(11)).unwrap_or_else(|| "#".repeat(max_chars.min(255)))
      } else {
-@@ -899,15 +899,15 @@
+@@ -899,15 +906,15 @@
      if text.is_empty() {
          return;
      }
@@ -117,7 +148,7 @@
      }
      let h_align = match st.align.h {
          HAlign::General => {
-@@ -923,7 +923,7 @@
+@@ -923,7 +930,7 @@
          HAlign::Justify | HAlign::Fill => HAlign::Left,
          other => other,
      };
@@ -126,7 +157,7 @@
      let line_h = size * 1.2;
      let n = lines.len().max(1) as f32;
      let first_baseline = match st.align.v {
-@@ -984,7 +984,7 @@
+@@ -984,7 +991,7 @@
          let mut yy = y + pad + size * 0.8;
          for ch in chars {
              let s = ch.to_string();
@@ -135,7 +166,7 @@
              pg.text(x + (w - cw) / 2.0, yy, size, font, color, &s);
              yy += line_h;
              if yy > y + h + line_h {
-@@ -995,7 +995,7 @@
+@@ -995,7 +1002,7 @@
          return;
      }
      for (i, line) in lines.iter().enumerate() {
@@ -144,7 +175,69 @@
          let lx = match h_align {
              HAlign::Right => x + w - pad - lw - indent,
              HAlign::Center => x + (w - lw) / 2.0,
-@@ -1110,10 +1110,10 @@
+@@ -1020,11 +1027,6 @@
+     pg.restore();
+ }
+ 
+-/// Sheet pixel rectangle of an anchor.
+-fn anchor_rect(sh: &Sheet, a: &Anchor) -> (f64, f64, f64, f64) {
+-    (sh.col_left(a.cell.col) + a.dx as f64, sh.row_top(a.cell.row) + a.dy as f64, a.width.max(0.0) as f64, a.height.max(0.0) as f64)
+-}
+-
+ /// Decodes an embedded picture to RGBA, downscaled to at most `max_w`×`max_h` pixels.
+ fn decode_image(data: &[u8], max_w: u32, max_h: u32) -> Option<(Vec<u8>, u32, u32)> {
+     let (w, h) = crate::io::image_size(data)?;
+@@ -1039,13 +1041,14 @@
+ }
+ 
+ /// Draws charts, pictures, shapes and sparklines overlapping the body block of a page.
+-fn draw_objects(pg: &mut Page, wb: &Workbook, si: usize, sh: &Sheet, b: &Block) {
++fn draw_objects(pg: &mut Page, wb: &Workbook, si: usize, sh: &Sheet, b: &Block, viewport: Option<(f64, f64, f64, f64)>) {
+     let block = b.range();
+-    let (sx0, sy0) = (sh.col_left(block.start.col), sh.row_top(block.start.row));
+-    let (sx1, sy1) = (sh.col_left(block.end.col.saturating_add(1)), sh.row_top(block.end.row.saturating_add(1)));
++    let (sx0, sy0) = (b.col_left(block.start.col), b.row_top(block.start.row));
++    let (sx1, sy1) = (b.col_left(block.end.col.saturating_add(1)), b.row_top(block.end.row.saturating_add(1)));
+     let (bx, by) = (b.xs.first().copied().unwrap_or(0.0), b.ys.first().copied().unwrap_or(0.0));
+     let (bw, bh) = (b.xs.last().copied().unwrap_or(bx) - bx, b.ys.last().copied().unwrap_or(by) - by);
+-    let visible = |r: (f64, f64, f64, f64)| r.2 > 0.0 && r.3 > 0.0 && r.0 < sx1 && r.0 + r.2 > sx0 && r.1 < sy1 && r.1 + r.3 > sy0;
++    let (vx0, vy0, vx1, vy1) = viewport.unwrap_or((sx0, sy0, sx1, sy1));
++    let visible = |r: (f64, f64, f64, f64)| r.2 > 0.0 && r.3 > 0.0 && r.0 < vx1 && r.0 + r.2 > vx0 && r.1 < vy1 && r.1 + r.3 > vy0;
+     let place = |r: (f64, f64, f64, f64)| (bx + ((r.0 - sx0) as f32) * b.k, by + ((r.1 - sy0) as f32) * b.k, r.2 as f32 * b.k, r.3 as f32 * b.k);
+     pg.save();
+     pg.clip_rect(bx, by, bw, bh);
+@@ -1053,10 +1056,8 @@
+         if !block.contains(sp.cell) {
+             continue;
+         }
+-        let vals: Vec<Option<f64>> = match gridcraft_calc::evaluate(wb, si, sp.cell, &sp.source) {
+-            Value::Array(a) => a.iter().take(10_000).map(Value::as_f64).collect(),
+-            v => vec![v.as_f64()],
+-        };
++        let vals: Vec<Option<f64>> = gridcraft_chart::cached_values(wb, si, &sp.source)
++            .iter().take(10_000).map(Value::as_f64).collect();
+         let color = rgb_of(sp.color, wb).unwrap_or([0x15, 0x60, 0x82]);
+         let (x, y, w, h) = b.rect(RangeRef::cell(sp.cell));
+         let (wpx, hpx) = (w / b.k, h / b.k);
+@@ -1064,7 +1065,7 @@
+         draw_prims(pg, &prims, Xf { ox: x, oy: y, k: b.k });
+     }
+     for im in &sh.images {
+-        let r = anchor_rect(sh, &im.anchor);
++        let r = b.anchor(&im.anchor);
+         if !visible(r) {
+             continue;
+         }
+@@ -1076,7 +1077,7 @@
+         }
+     }
+     for shp in &sh.shapes {
+-        let r = anchor_rect(sh, &shp.anchor);
++        let r = b.anchor(&shp.anchor);
+         if !visible(r) {
+             continue;
+         }
+@@ -1110,10 +1111,10 @@
          }
          if !shp.text.is_empty() {
              let size = 11.0 * b.scale;
@@ -157,7 +250,14 @@
                  let lx = if shp.kind == ShapeKind::TextBox { x + 2.0 * b.k } else { x + (w - lw) / 2.0 };
                  pg.text(lx, yy, size, Font::Helvetica, [0, 0, 0], l);
                  yy += size * 1.2;
-@@ -1127,7 +1127,7 @@
+@@ -1121,13 +1122,13 @@
+         }
+     }
+     for ch in &sh.charts {
+-        let r = anchor_rect(sh, &ch.anchor);
++        let r = b.anchor(&ch.anchor);
+         if !visible(r) {
+             continue;
          }
          let (x, y, _, _) = place(r);
          let data = gridcraft_chart::resolve(wb, si, ch);
@@ -166,7 +266,7 @@
          draw_prims(pg, &prims, Xf { ox: x, oy: y, k: b.k });
      }
      pg.restore();
-@@ -1148,7 +1148,7 @@
+@@ -1148,7 +1149,7 @@
              pg.fill_rect(x0, y, x1 - x0, size.1, fill);
              pg.rect_stroke(x0, y, x1 - x0, size.1, lw, line);
              let t = gridcraft_core::col_to_letters(col);
@@ -175,7 +275,7 @@
              pg.text(x0 + (x1 - x0 - tw) / 2.0, y + size.1 / 2.0 + fsize * 0.35, fsize, Font::Helvetica, [0x40, 0x40, 0x40], &t);
          }
      }
-@@ -1162,7 +1162,7 @@
+@@ -1162,7 +1163,7 @@
              pg.fill_rect(x, y0, size.0, y1 - y0, fill);
              pg.rect_stroke(x, y0, size.0, y1 - y0, lw, line);
              let t = (row + 1).to_string();
@@ -184,7 +284,7 @@
              pg.text(x + (size.0 - tw) / 2.0, y0 + (y1 - y0) / 2.0 + fsize * 0.35, fsize, Font::Helvetica, [0x40, 0x40, 0x40], &t);
          }
      }
-@@ -1186,7 +1186,7 @@
+@@ -1186,7 +1187,7 @@
              let lines: Vec<&str> = sec.text.split('\n').take(20).collect();
              let n = lines.len() as f32;
              for (j, line) in lines.iter().enumerate() {
@@ -193,7 +293,16 @@
                  let x = match i {
                      0 => l,
                      1 => (pw - lw) / 2.0,
-@@ -1238,13 +1238,42 @@
+@@ -1216,7 +1217,7 @@
+         acc += sh.row_height(r) * k;
+         ys.push(acc);
+     }
+-    Block { wb, si, sh, rows, cols, xs, ys, k, scale: lay.scale }
++    Block { wb, si, sh, rows, cols, xs, ys, k, scale: lay.scale, axes: None }
+ }
+ 
+ /// Segments of a page along one axis: repeated titles (before the band) then the band.
+@@ -1238,13 +1239,87 @@
  /// Renders laid-out sheets to a PDF.
  pub fn render_pdf(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str) -> (Vec<u8>, usize) {
      let mut doc = PdfDoc::new();
@@ -221,6 +330,51 @@
 +    doc.finish_raster()
 +}
 +
++/// Nonpaginated worksheet viewport in sheet pixels at 96dpi. Reuses the print renderer's
++/// cells, merges, wrapping, charts and images, without print areas/margins/title repetition.
++#[cfg(feature = "raster")]
++pub fn render_sheet_region(wb: &Workbook, sheet: usize, rows: &LineIndex, cols: &LineIndex,
++    cf: &mut Option<crate::cf::CfCache>, x: f64, y: f64, width: u32, height: u32, scale: f64,
++    max_rows: u32, max_cols: u32) -> std::result::Result<gridcraft_pdf::RasterImage, String> {
++    if ![x, y, scale].iter().all(|v| v.is_finite()) || x < 0.0 || y < 0.0 || !(0.0625..=32.0).contains(&scale)
++        || max_rows == 0 || max_cols == 0 {
++        return Err("Invalid worksheet viewport".into());
++    }
++    let sh = wb.sheet(sheet).ok_or("Worksheet unavailable")?;
++    let r0 = rows.at(y).min(max_rows - 1);
++    let r1 = rows.at(y + height as f64 / scale).min(max_rows - 1);
++    let c0 = cols.at(x).min(max_cols - 1);
++    let c1 = cols.at(x + width as f64 / scale).min(max_cols - 1);
++    // Nearest nonempty neighbours can overflow into the viewport from either side.
++    // Sparse row lookup avoids walking blank cells; objects still use actual viewport bounds.
++    let mut first_col = c0;
++    let mut last_col = c1;
++    for row in r0..=r1 {
++        if c0 > 0 {
++            if let Some((col, _)) = sh.cells.row(row, 0, c0 - 1).filter(|(_, c)| !c.value.is_empty()).last() {
++                first_col = first_col.min(col);
++            }
++        }
++        if c1 + 1 < max_cols {
++            if let Some((col, _)) = sh.cells.row(row, c1 + 1, max_cols - 1).find(|(_, c)| !c.value.is_empty()) {
++                last_col = last_col.max(col);
++            }
++        }
++    }
++    let xs = (first_col..=last_col + 1).map(|c| ((cols.start(c) - x) * scale) as f32).collect();
++    let ys = (r0..=r1 + 1).map(|r| ((rows.start(r) - y) * scale) as f32).collect();
++    let block = Block { wb, si: sheet, sh, rows: (r0, r1), cols: (first_col, last_col), xs, ys,
++        k: scale as f32, scale: (scale / PX_TO_PT as f64) as f32, axes: Some((rows, cols)) };
++    let mut doc = PdfDoc::new_raster(width, height, 1.0)?;
++    let pg = doc.add_page(width as f32, height as f32);
++    pg.save();
++    pg.clip_rect(0.0, 0.0, width as f32, height as f32);
++    draw_block(pg, &block, sh.show_gridlines, cf);
++    draw_objects(pg, wb, sheet, sh, &block, Some((x, y, x + width as f64 / scale, y + height as f64 / scale)));
++    pg.restore();
++    doc.finish_raster()
++}
++
 +fn draw_document(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str, doc: &mut PdfDoc,
 +    selected_print_context: Option<(usize, usize)>) {
      doc.info.title = if wb.props.title.is_empty() { file.to_string() } else { wb.props.title.clone() };
@@ -238,7 +392,16 @@
      for lay in layouts {
          let Some(sh) = wb.sheet(lay.sheet) else { continue };
          let mut cf = if sh.cond_formats.is_empty() { None } else { Some(crate::cf::CfCache::new()) };
-@@ -1297,8 +1326,6 @@
+@@ -1278,7 +1353,7 @@
+                 y += seg_size(sh, *rs, true) * k;
+             }
+             if let Some(b) = &body {
+-                draw_objects(pg, wb, lay.sheet, sh, b);
++                draw_objects(pg, wb, lay.sheet, sh, b, None);
+             }
+             if lay.settings.headings {
+                 let fill = [0xF2, 0xF2, 0xF2];
+@@ -1297,8 +1372,6 @@
              draw_header_footer(pg, lay, &cx);
          }
      }
@@ -247,7 +410,7 @@
  }
  
  // ---------------------------------------------------------------- commands
-@@ -1756,10 +1783,65 @@
+@@ -1756,10 +1829,65 @@
          let b = bands(0, 2, |r| if r == 1 { 100.0 } else { 10.0 }, |_| 35.0, &[], 100);
          assert_eq!(b, vec![(0, 0), (1, 1), (2, 2)]);
          assert_eq!(bands(0, 1_000_000, |_| 10.0, |_| 5.0, &[], 3).len(), 3);
@@ -611,8 +774,8 @@
 +}
 +impl RasterPage {
 +    pub(super) fn new(width: u32, height: u32, scale: f64) -> Result<Self, String> {
-+        if width == 0 || height == 0 || width > 1400 || height > 1400 || u64::from(width) * u64::from(height) > 2_000_000
-+            || !scale.is_finite() || scale <= 0.0 || scale > 2.0 {
++        if width == 0 || height == 0 || width > 2800 || height > 2800 || u64::from(width) * u64::from(height) > 8_000_000
++            || !scale.is_finite() || scale <= 0.0 || scale > 4.0 {
 +            return Err("Worksheet raster dimensions exceed the visual reader limit".into());
 +        }
 +        let mut ctx = RenderContext::new_with(width as u16, height as u16,
@@ -752,7 +915,7 @@
 +}
 --- a/gridcraft/crates/pdf/src/tests.rs
 +++ b/gridcraft/crates/pdf/src/tests.rs
-@@ -157,3 +157,68 @@
+@@ -157,3 +157,69 @@
      let pdf = d.finish();
      check_xref(&pdf);
  }
@@ -809,7 +972,8 @@
 +#[cfg(feature = "raster")]
 +#[test]
 +fn raster_rejects_oversized_output_and_drawing_instead_of_partial_success() -> Result<(), String> {
-+    assert!(PdfDoc::new_raster(1401, 64, 1.0).is_err());
++    assert!(PdfDoc::new_raster(2800, 64, 1.0).is_ok());
++    assert!(PdfDoc::new_raster(2801, 64, 1.0).is_err());
 +    assert!(PdfDoc::new_raster(64, 64, f64::NAN).is_err());
 +    let mut doc = PdfDoc::new_raster(64, 64, 1.0)?;
 +    let pg = doc.add_page(64.0, 64.0);
@@ -820,4 +984,526 @@
 +    multi.add_page(64.0, 64.0); multi.add_page(64.0, 64.0);
 +    assert_eq!(multi.finish_raster().err().as_deref(), Some("Worksheet raster requires one rendered print page"));
 +    Ok(())
++}
+--- a/gridcraft/crates/chart/src/lib.rs
++++ b/gridcraft/crates/chart/src/lib.rs
+@@ -25,7 +25,7 @@
+ pub use axis::{Scale, format_number, nice_scale};
+ pub use raster::rasterize;
+ pub use render::{Swatch, legend_entries, render};
+-pub use resolve::{default_palette, resolve, series_color};
++pub use resolve::{cached_scalar, cached_values, default_palette, resolve, series_color};
+ pub use sparkline::render_sparkline;
+ 
+ /// Straight (non-premultiplied) RGBA colour.
+--- a/gridcraft/crates/chart/src/resolve.rs
++++ b/gridcraft/crates/chart/src/resolve.rs
+@@ -1,6 +1,5 @@
+ //! Pulls chart data (names, categories, values, formats, colours) out of a workbook.
+ 
+-use gridcraft_calc::evaluate;
+ use gridcraft_core::{CellRef, RangeRef, Value, number_to_text};
+ use gridcraft_model::{Chart, ChartKind, Theme, Workbook, style::apply_tint};
+ use gridcraft_numfmt::{NumberFormat, format_value};
+@@ -46,16 +45,41 @@
+     Some((sh, r))
+ }
+ 
+-/// Evaluates a series formula to a flat list of values (row-major), capped.
++/// Read cached cells or literals only. Reader builds never calculate formulas.
++/// Named references are followed at most eight times; function expressions stay unavailable.
++pub fn cached_values(wb: &Workbook, sheet: usize, formula: &str) -> Vec<Value> {
++    cached_values_limit(wb, sheet, formula, MAX_POINTS)
++}
++
++pub fn cached_scalar(wb: &Workbook, sheet: usize, formula: &str) -> Option<Value> {
++    let mut values = cached_values_limit(wb, sheet, formula, 2).into_iter();
++    let value = values.next()?;
++    values.next().is_none().then_some(value)
++}
++
++fn cached_values_limit(wb: &Workbook, sheet: usize, formula: &str, limit: usize) -> Vec<Value> {
++    let mut reference = formula.trim().trim_start_matches('=').trim();
++    for _ in 0..8 {
++        if let Some((si, range)) = parse_ref(wb, sheet, reference) {
++            let Some(source) = wb.sheet(si) else { return vec![]; };
++            return range.iter().take(limit).map(|cell| source.value(cell)).collect();
++        }
++        if let Ok(value) = reference.parse::<f64>() {
++            return if value.is_finite() { vec![Value::Number(value)] } else { vec![] };
++        }
++        if reference.eq_ignore_ascii_case("TRUE") { return vec![Value::Bool(true)]; }
++        if reference.eq_ignore_ascii_case("FALSE") { return vec![Value::Bool(false)]; }
++        if let Some(text) = reference.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
++            return vec![Value::Text(text.replace("\"\"", "\"").into())];
++        }
++        let Some(name) = wb.name(reference, sheet) else { return vec![]; };
++        reference = name.formula.trim().trim_start_matches('=').trim();
++    }
++    vec![]
++}
++
+ fn eval_list(wb: &Workbook, sheet: usize, formula: &str) -> Vec<Value> {
+-    let f = formula.trim();
+-    if f.is_empty() {
+-        return vec![];
+-    }
+-    match evaluate(wb, sheet, CellRef::default(), f) {
+-        Value::Array(a) => a.iter().take(MAX_POINTS).cloned().collect(),
+-        v => vec![v],
+-    }
++    cached_values(wb, sheet, formula)
+ }
+ 
+ fn to_num(v: &Value) -> Option<f64> {
+@@ -67,6 +91,33 @@
+ 
+ fn nums(wb: &Workbook, sheet: usize, formula: &str) -> Vec<Option<f64>> {
+     eval_list(wb, sheet, formula).iter().map(to_num).collect()
++}
++
++// Preserve point indices while consulting source visibility. Separate ranges may have
++// different hidden rows; compacting each range independently would pair unrelated values.
++fn hide_points(wb: &Workbook, sheet: usize, formula: &str, visible: &mut [bool]) {
++    let mut reference = formula.trim().trim_start_matches('=').trim();
++    for _ in 0..8 {
++        if let Some((si, range)) = parse_ref(wb, sheet, reference) {
++            if let Some(source) = wb.sheet(si) {
++                for (keep, cell) in visible.iter_mut().zip(range.iter()) {
++                    *keep &= !source.is_row_hidden(cell.row) && !source.is_col_hidden(cell.col);
++                }
++            }
++            return;
++        }
++        let Some(name) = wb.name(reference, sheet) else { return; };
++        reference = name.formula.trim().trim_start_matches('=').trim();
++    }
++}
++
++fn retain_points<T>(values: &mut Vec<T>, visible: &[bool]) {
++    let mut index = 0;
++    values.retain(|_| {
++        let keep = visible.get(index).copied().unwrap_or(true);
++        index += 1;
++        keep
++    });
+ }
+ 
+ /// Number format code of the first cell of a reference ("General" when not a reference).
+@@ -146,13 +197,29 @@
+     let numeric_x = matches!(chart.kind, ChartKind::Scatter | ChartKind::ScatterLines | ChartKind::Bubble);
+     let mut series = Vec::new();
+     let mut categories: Option<Vec<String>> = None;
++    let mut shown = Vec::<bool>::new();
+     for (i, s) in chart.series.iter().take(MAX_SERIES).enumerate() {
+-        let values = nums(wb, sheet, &s.values);
++        let mut values = nums(wb, sheet, &s.values);
++        let kind = effective_kind(chart.kind, s.kind, i);
++        let numeric_x = numeric_x || matches!(kind, ChartKind::Scatter | ChartKind::ScatterLines | ChartKind::Bubble);
++        if !chart.show_hidden_data {
++            let mut visible = vec![true; values.len()];
++            hide_points(wb, sheet, &s.values, &mut visible);
++            if numeric_x && let Some(f) = &s.categories {
++                hide_points(wb, sheet, f, &mut visible);
++            }
++            if let Some(f) = &s.bubble_sizes { hide_points(wb, sheet, f, &mut visible); }
++            if !visible.is_empty() && !visible.iter().any(|v| *v) { continue; }
++            shown.resize(shown.len().max(values.len()), false);
++            for (index, (value, visible)) in values.iter_mut().zip(visible).enumerate() {
++                shown[index] |= visible;
++                if !visible { *value = None; }
++            }
++        }
+         let name = s.name.as_deref().map(|n| series_name(wb, sheet, n)).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("Series{}", i + 1));
+         let color =
+             s.color.as_ref().and_then(|c| c.resolve(&wb.theme)).map(|[r, g, b]| [r, g, b, 0xFF]).unwrap_or_else(|| series_color(&wb.theme, i));
+-        let kind = effective_kind(chart.kind, s.kind, i);
+-        let x = match (&s.categories, numeric_x || matches!(kind, ChartKind::Scatter | ChartKind::ScatterLines | ChartKind::Bubble)) {
++        let x = match (&s.categories, numeric_x) {
+             (Some(f), true) => Some(nums(wb, sheet, f)),
+             _ => None,
+         };
+@@ -168,6 +235,33 @@
+         series.push(SeriesData { name, values, x, sizes, color, kind, secondary: s.secondary, number_format: ref_format(wb, sheet, &s.values) });
+     }
+     let n = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
+-    let categories = categories.unwrap_or_else(|| (1..=n).map(|i| i.to_string()).collect());
++    let mut categories = categories.unwrap_or_else(|| (1..=n).map(|i| i.to_string()).collect());
++    if !chart.show_hidden_data {
++        retain_points(&mut categories, &shown);
++        for data in &mut series {
++            retain_points(&mut data.values, &shown);
++            if let Some(x) = &mut data.x { retain_points(x, &shown); }
++            if let Some(sizes) = &mut data.sizes { retain_points(sizes, &shown); }
++        }
++    }
+     ChartData { categories, series }
+ }
++
++
++#[cfg(test)]
++mod reader_value_tests {
++    use super::*;
++    use gridcraft_model::{Cell, Formula};
++
++    #[test]
++    fn references_read_cached_formula_values_without_recalculating() {
++        let mut workbook = Workbook::new();
++        let mut cell = Cell::formula(Formula::new("1+1"));
++        cell.value = Value::Number(19.0);
++        workbook.sheet_mut(0).unwrap().cells.set(CellRef::new(0, 0), cell);
++        assert_eq!(cached_values(&workbook, 0, "Sheet1!$A$1"), vec![Value::Number(19.0)]);
++        assert!(cached_values(&workbook, 0, "SUM(A1:A3)").is_empty());
++        assert!(cached_scalar(&workbook, 0, "A1:A1048576").is_none());
++        assert_eq!(cached_scalar(&workbook, 0, "=3.5"), Some(Value::Number(3.5)));
++    }
++}
+--- a/gridcraft/crates/engine/src/cf.rs
++++ b/gridcraft/crates/engine/src/cf.rs
+@@ -1,7 +1,7 @@
+ //! Conditional formatting evaluation: what extra style, data bar, colour scale or icon a cell
+ //! gets.
+ 
+-use std::collections::HashMap;
++use std::collections::{HashMap, HashSet};
+ 
+ use gridcraft_core::{CellRef, RangeRef, Value, compare};
+ use gridcraft_model::*;
+@@ -26,7 +26,7 @@
+     stats: HashMap<usize, RuleStats>,
+ }
+ 
+-#[derive(Default, Clone)]
++#[derive(Default)]
+ struct RuleStats {
+     sorted: Vec<f64>,
+     avg: f64,
+@@ -34,21 +34,35 @@
+     counts: HashMap<String, usize>,
+ }
+ 
+-fn numbers_in(sh: &Sheet, ranges: &[RangeRef]) -> (Vec<f64>, HashMap<String, usize>) {
++fn numbers_in(sh: &Sheet, ranges: &[RangeRef], duplicates: bool) -> (Vec<f64>, HashMap<String, usize>) {
+     let mut nums = Vec::new();
+     let mut counts = HashMap::new();
+-    for r in ranges {
+-        let r = match sh.used_range().and_then(|u| r.intersection(&u)) {
++    // sqref denotes a union: overlapping ranges must not count a cell twice. The
++    // usual single/disjoint range case needs no visited-cell allocation.
++    const PAIR_LIMIT: usize = 64;
++    let many = ranges.len() > PAIR_LIMIT;
++    let overlap = many || ranges.iter().enumerate().any(|(i, range)| ranges[..i].iter().any(|other| range.intersects(other)));
++    let mut seen = overlap.then(HashSet::new);
++    let mut exact_ranges = many.then(HashSet::new);
++    let Some(used) = sh.used_range() else { return (nums, counts); };
++    for (index, r) in ranges.iter().enumerate() {
++        let key = (r.start.row, r.start.col, r.end.row, r.end.col);
++        if exact_ranges.as_mut().is_some_and(|seen| !seen.insert(key)) { continue; }
++        if ranges[..index].iter().take(PAIR_LIMIT).any(|previous| previous.contains(r.start) && previous.contains(r.end)) { continue; }
++        let r = match r.intersection(&used) {
+             Some(x) => x,
+             None => continue,
+         };
+-        for c in r.iter().take(2_000_000) {
++        // Imported workbooks are sparse: empty grid positions contribute no statistics.
++        let cells = sh.cells.iter_range(r).map(|(c, _)| c).chain(
++            sh.spill.range(r.start..=r.end).map(|(c, _)| *c).filter(|c| r.contains(*c) && sh.cell(*c).is_none()));
++        for c in cells.take(2_000_000) {
++            if seen.as_mut().is_some_and(|seen| !seen.insert(c)) { continue; }
+             let v = sh.value(c);
+-            if let Value::Number(n) = v {
++            if duplicates {
++                if !v.is_empty() { *counts.entry(v.display().to_lowercase()).or_insert(0) += 1; }
++            } else if let Value::Number(n) = v {
+                 nums.push(n);
+-            }
+-            if !v.is_empty() {
+-                *counts.entry(v.display().to_lowercase()).or_insert(0) += 1;
+             }
+         }
+     }
+@@ -77,8 +91,12 @@
+         CfValueKind::Number(n) => *n,
+         CfValueKind::Percent(p) => min + (max - min) * p / 100.0,
+         CfValueKind::Percentile(p) => percentile(&st.sorted, *p),
+-        CfValueKind::Formula(f) => gridcraft_calc::evaluate(wb, sheet, at, f).to_number().unwrap_or(0.0),
+-    }
++        CfValueKind::Formula(f) => saved_scalar(wb, sheet, f).and_then(|v| v.to_number().ok()).unwrap_or(f64::NAN),
++    }
++}
++
++fn saved_scalar(wb: &Workbook, sheet: usize, value: &str) -> Option<Value> {
++    gridcraft_chart::cached_scalar(wb, sheet, value)
+ }
+ 
+ fn lerp(a: [u8; 3], b: [u8; 3], t: f64) -> [u8; 3] {
+@@ -114,25 +132,29 @@
+         let v = sh.value(c);
+         for (idx, cf) in rules {
+             let first = cf.ranges.first().map(|r| r.start).unwrap_or(c);
+-            let st = self
++            let empty = RuleStats::default();
++            let aggregate = matches!(cf.rule, CfRule::Duplicate { .. } | CfRule::Unique { .. } |
++                CfRule::Top10 { .. } | CfRule::AboveAverage { .. } | CfRule::ColorScale { .. } |
++                CfRule::DataBar { .. } | CfRule::IconSet { .. });
++            let st: &RuleStats = if aggregate { self
+                 .stats
+                 .entry(idx)
+                 .or_insert_with(|| {
+-                    let (sorted, counts) = numbers_in(sh, &cf.ranges);
++                    let duplicates = matches!(cf.rule, CfRule::Duplicate { .. } | CfRule::Unique { .. });
++                    let (sorted, counts) = numbers_in(sh, &cf.ranges, duplicates);
+                     let n = sorted.len().max(1) as f64;
+                     let avg = sorted.iter().sum::<f64>() / n;
+                     let std = (sorted.iter().map(|x| (x - avg).powi(2)).sum::<f64>() / n).sqrt();
+                     RuleStats { sorted, avg, std, counts }
+-                })
+-                .clone();
++                }) } else { &empty };
+             let text = v.display();
+             let matched_style: Option<&Style> = match &cf.rule {
+                 CfRule::CellIs { op, a, b, style } => {
+-                    let eval = |f: &str| gridcraft_calc::evaluate(wb, sheet, c, &relative(f, first, c));
+-                    let av = eval(a);
++                    let eval = |f: &str| saved_scalar(wb, sheet, &relative(f, first, c));
++                    let Some(av) = eval(a) else { continue; };
+                     let ok = match op {
+                         CfOperator::Between | CfOperator::NotBetween => {
+-                            let bv = b.as_deref().map(eval).unwrap_or_default();
++                            let Some(bv) = b.as_deref().and_then(eval) else { continue; };
+                             let (lo, hi) = if compare(&av, &bv) == std::cmp::Ordering::Greater { (bv, av) } else { (av, bv) };
+                             let inside = compare(&v, &lo) != std::cmp::Ordering::Less && compare(&v, &hi) != std::cmp::Ordering::Greater;
+                             if *op == CfOperator::Between { inside } else { !inside }
+@@ -146,9 +168,8 @@
+                     };
+                     (ok && !v.is_empty()).then_some(style.as_ref())
+                 }
+-                CfRule::Expression { formula, style } => {
+-                    gridcraft_calc::evaluate(wb, sheet, c, &relative(formula, first, c)).to_bool().unwrap_or(false).then_some(style.as_ref())
+-                }
++                // Expression-only formatting has no saved result in XLSX. Do not execute it.
++                CfRule::Expression { .. } => None,
+                 CfRule::ContainsText { text: t, style } => text.to_lowercase().contains(&t.to_lowercase()).then_some(style.as_ref()),
+                 CfRule::NotContainsText { text: t, style } => (!text.to_lowercase().contains(&t.to_lowercase())).then_some(style.as_ref()),
+                 CfRule::BeginsWith { text: t, style } => text.to_lowercase().starts_with(&t.to_lowercase()).then_some(style.as_ref()),
+@@ -222,6 +243,7 @@
+                             .iter()
+                             .map(|(k, col)| (threshold(wb, sheet, c, &st, k), col.resolve(&wb.theme).unwrap_or([255, 255, 255])))
+                             .collect();
++                        if pts.iter().any(|(value, _)| !value.is_finite()) { continue; }
+                         let rgb = match pts.as_slice() {
+                             [(a, ca), (b, cb)] => lerp(*ca, *cb, if b > a { (n - a) / (b - a) } else { 0.0 }),
+                             [(a, ca), (m, cm), (b, cb)] => {
+@@ -244,6 +266,7 @@
+                     if let Some(n) = v.as_f64() {
+                         let lo = threshold(wb, sheet, c, &st, min);
+                         let hi = threshold(wb, sheet, c, &st, max);
++                        if !lo.is_finite() || !hi.is_finite() { continue; }
+                         let lo = if lo > 0.0 { 0.0 } else { lo };
+                         let frac = if hi > lo { ((n - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 1.0 };
+                         if out.bar.is_none() {
+@@ -266,6 +289,7 @@
+                         } else {
+                             (1..k).map(|i| percentile(&st.sorted, i as f64 * 100.0 / k as f64)).collect()
+                         };
++                        if cuts.iter().any(|value| !value.is_finite()) { continue; }
+                         let mut idx = cuts.iter().filter(|cut| n >= **cut).count();
+                         if *reverse {
+                             idx = k - 1 - idx.min(k - 1);
+@@ -306,3 +330,49 @@
+         Err(_) => f.to_string(),
+     }
+ }
++
++
++#[cfg(test)]
++mod reader_cache_tests {
++    use super::*;
++
++    #[test]
++    fn sparse_rule_statistics_keep_far_cells_and_are_reused() {
++        let mut workbook = Workbook::new();
++        let sheet = workbook.sheet_mut(0).unwrap();
++        sheet.set_value(CellRef::new(0, 0), Value::Number(1.0));
++        sheet.set_value(CellRef::new(12_000, 500), Value::Number(9.0));
++        sheet.cond_formats.push(CondFormat {
++            ranges: vec![RangeRef::new(CellRef::new(0, 0), CellRef::new(16_383, 511))],
++            rule: CfRule::ColorScale { stops: vec![(CfValueKind::Min, Color::Rgb(0xff0000)),
++                (CfValueKind::Max, Color::Rgb(0x0000ff))] }, priority: 0, stop_if_true: false,
++        });
++        let mut cache = CfCache::new();
++        assert_eq!(cache.look(&workbook, 0, CellRef::new(12_000, 500)).unwrap().scale_fill, Some([0, 0, 255]));
++        let pointer = cache.stats[&0].sorted.as_ptr();
++        for _ in 0..16 {
++            assert_eq!(cache.look(&workbook, 0, CellRef::new(0, 0)).unwrap().scale_fill, Some([255, 0, 0]));
++            assert_eq!(cache.stats.len(), 1);
++            assert!(cache.stats[&0].counts.is_empty());
++            assert_eq!(cache.stats[&0].sorted.as_ptr(), pointer);
++            assert_eq!(cache.stats[&0].sorted, vec![1.0, 9.0]);
++        }
++    }
++
++    #[test]
++    fn scalar_rules_use_saved_values_and_skip_expressions() {
++        let mut workbook = Workbook::new();
++        let sheet = workbook.sheet_mut(0).unwrap();
++        sheet.set_value(CellRef::new(0, 0), Value::Number(5.0));
++        let mut style = Style::default(); style.font.bold = true;
++        sheet.cond_formats.push(CondFormat { ranges: vec![RangeRef::cell(CellRef::new(0, 0))],
++            rule: CfRule::CellIs { op: CfOperator::Greater, a: "3".into(), b: None, style: Box::new(style) },
++            priority: 0, stop_if_true: false });
++        let mut cache = CfCache::new();
++        assert!(cache.look(&workbook, 0, CellRef::new(0, 0)).unwrap().style.unwrap().font.bold);
++        assert!(cache.stats.is_empty());
++        workbook.sheet_mut(0).unwrap().cond_formats[0].rule = CfRule::Expression {
++            formula: "1=1".into(), style: Box::new(Style::default()) };
++        assert!(cache.look(&workbook, 0, CellRef::new(0, 0)).is_none());
++    }
++}
+--- a/gridcraft/crates/model/src/features.rs
++++ b/gridcraft/crates/model/src/features.rs
+@@ -370,6 +370,9 @@
+     /// Source range when created from a selection (for Switch Row/Column).
+     pub source: Option<String>,
+     pub by_rows: bool,
++    /// Include hidden source rows/columns (`plotVisOnly=false` in OOXML).
++    #[serde(default)]
++    pub show_hidden_data: bool,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+--- a/gridcraft/crates/engine/src/cmd/insert.rs
++++ b/gridcraft/crates/engine/src/cmd/insert.rs
+@@ -577,6 +577,7 @@
+         y_title: None,
+         source: Some(format!("{}!{}", gridcraft_formula::quote_sheet(&sh.name), r.a1())),
+         by_rows,
++        show_hidden_data: false,
+     };
+     edit(s, |cx| {
+         cx.sheet_mut(sheet)?.charts.push(chart);
+--- a/gridcraft/crates/xlsx/src/tests/roundtrip.rs
++++ b/gridcraft/crates/xlsx/src/tests/roundtrip.rs
+@@ -296,6 +296,7 @@
+         y_title: Some("Amount".into()),
+         source: None,
+         by_rows: false,
++        show_hidden_data: false,
+     };
+     for kind in [
+         ChartKind::ColumnClustered,
+--- a/gridcraft/crates/xlsx/src/chart.rs
++++ b/gridcraft/crates/xlsx/src/chart.rs
+@@ -183,6 +183,7 @@
+         y_title: y_ax.and_then(|a| a.child("title")).and_then(rich_title),
+         source: None,
+         by_rows: false,
++        show_hidden_data: chart.child("plotVisOnly").is_some_and(|v| !v.flag("val", true)),
+     })
+ }
+ 
+@@ -581,6 +582,26 @@
+     if let Some(p) = pos {
+         let _ = write!(s, "<c:legend><c:legendPos val=\"{p}\"/><c:overlay val=\"0\"/></c:legend>");
+     }
+-    s.push_str("<c:plotVisOnly val=\"1\"/><c:dispBlanksAs val=\"gap\"/></c:chart></c:chartSpace>");
++    let _ = write!(s, "<c:plotVisOnly val=\"{}\"/><c:dispBlanksAs val=\"gap\"/></c:chart></c:chartSpace>", u8::from(!ch.show_hidden_data));
+     s
+ }
++
++#[cfg(test)]
++#[allow(clippy::unwrap_used)]
++mod visibility_tests {
++    use super::*;
++
++    #[test]
++    fn visible_only_flag_defaults_and_roundtrips() {
++        for (flag, hidden) in [("", false), ("<plotVisOnly/>", false),
++            ("<plotVisOnly val=\"1\"/>", false), ("<plotVisOnly val=\"true\"/>", false),
++            ("<plotVisOnly val=\"0\"/>", true), ("<plotVisOnly val=\"false\"/>", true)] {
++            let xml = format!("<chartSpace><chart><plotArea><barChart/></plotArea>{flag}</chart></chartSpace>");
++            let chart = read_chart(&crate::xml::parse(xml.as_bytes()).unwrap()).unwrap();
++            assert_eq!(chart.show_hidden_data, hidden, "{flag}");
++            let output = write_chart(&Workbook::new(), 0, &chart);
++            let again = read_chart(&crate::xml::parse(output.as_bytes()).unwrap()).unwrap();
++            assert_eq!(again.show_hidden_data, hidden, "{flag}");
++        }
++    }
++}
+--- a/gridcraft/crates/chart/src/tests.rs
++++ b/gridcraft/crates/chart/src/tests.rs
+@@ -48,6 +48,7 @@
+         y_title: Some("Revenue".into()),
+         source: None,
+         by_rows: false,
++        show_hidden_data: false,
+     }
+ }
+ 
+@@ -567,3 +568,66 @@
+     let bins = prims.iter().filter(|p| matches!(p, Prim::Rect { fill: Some([10, 20, 30, 255]), .. })).count();
+     assert_eq!(bins, 10);
+ }
++
++#[test]
++fn hidden_chart_sources_keep_categories_gaps_and_palette_aligned() {
++    use gridcraft_model::{DefinedName, LineInfo};
++    let mut wb = Workbook::new();
++    let sh = wb.sheet_mut(0).unwrap();
++    for row in 0..4 {
++        sh.set_value(CellRef::new(row, 0), Value::from(format!("Label{row}")));
++        for col in 1..4 { sh.set_value(CellRef::new(row, col), Value::Number((col * 10 + row) as f64)); }
++    }
++    sh.set_value(CellRef::new(3, 1), Value::Empty);
++    sh.rows.insert(1, LineInfo { hidden: true, ..Default::default() });
++    sh.cols.insert(2, LineInfo { hidden: true, ..Default::default() });
++    wb.names.push(DefinedName { name: "SavedValues".into(), scope: None,
++        formula: "Sheet1!$B$1:$B$4".into(), comment: String::new(), hidden: false });
++    let mut c = chart(ChartKind::ColumnClustered);
++    c.series = ["SavedValues", "Sheet1!C1:C4", "Sheet1!D1:D4"].into_iter().map(|values| Series {
++        name: None, categories: Some("Sheet1!A1:A4".into()), values: values.into(),
++        bubble_sizes: None, color: None, secondary: false, kind: None,
++    }).collect();
++    let data = resolve(&wb, 0, &c);
++    assert_eq!(data.categories, ["Label0", "Label2", "Label3"]);
++    assert_eq!(data.series.len(), 2);
++    assert_eq!(data.series[0].values, [Some(10.0), Some(12.0), None]);
++    assert_eq!(data.series[1].values, [Some(30.0), Some(32.0), Some(33.0)]);
++    assert_eq!(data.series[1].name, "Series3");
++    assert_eq!(data.series[1].color, series_color(&wb.theme, 2));
++    c.show_hidden_data = true;
++    let all = resolve(&wb, 0, &c);
++    assert_eq!(all.series.len(), 3);
++    assert_eq!(all.categories, ["Label0", "Label1", "Label2", "Label3"]);
++    assert_eq!(all.series[1].values, [Some(20.0), Some(21.0), Some(22.0), Some(23.0)]);
++}
++
++#[test]
++fn hidden_points_do_not_shift_other_series_or_numeric_coordinates() {
++    use gridcraft_model::{LineInfo, Sheet};
++    let mut wb = Workbook::new();
++    wb.sheets.push(Arc::new(Sheet::new("Other")));
++    for index in 0..2 {
++        let sh = wb.sheet_mut(index).unwrap();
++        for row in 0..3 {
++            sh.set_value(CellRef::new(row, 0), Value::Number((row + 1) as f64));
++            sh.set_value(CellRef::new(row, 1), Value::Number((row + 10) as f64));
++        }
++        sh.rows.insert(index as u32, LineInfo { hidden: true, ..Default::default() });
++    }
++    let mut c = chart(ChartKind::Bubble);
++    c.series = ["Sheet1", "Other"].into_iter().map(|name| Series {
++        name: None, categories: Some(format!("{name}!A1:A3")), values: format!("{name}!B1:B3"),
++        bubble_sizes: Some(format!("{name}!A1:A3")), color: None, secondary: false, kind: None,
++    }).collect();
++    let data = resolve(&wb, 0, &c);
++    assert_eq!(data.series[0].values, [None, Some(11.0), Some(12.0)]);
++    assert_eq!(data.series[1].values, [Some(10.0), None, Some(12.0)]);
++    assert_eq!(data.series[0].x, Some(vec![Some(1.0), Some(2.0), Some(3.0)]));
++    // With one series, a hidden point is removed from values, X and sizes together.
++    c.series.truncate(1);
++    let one = resolve(&wb, 0, &c);
++    assert_eq!(one.series[0].values, [Some(11.0), Some(12.0)]);
++    assert_eq!(one.series[0].x, Some(vec![Some(2.0), Some(3.0)]));
++    assert_eq!(one.series[0].sizes, Some(vec![Some(2.0), Some(3.0)]));
 +}

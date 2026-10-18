@@ -7,4 +7,6 @@ interface IAllDocService {
     int version();
     IAllDocSession open(in ParcelFileDescriptor input, String name, String mime, String password,
                         IAllDocCallback callback);
+    IAllDocSession openForPreview(in ParcelFileDescriptor input, String name, String mime, String password,
+                                  IAllDocCallback callback);
 }

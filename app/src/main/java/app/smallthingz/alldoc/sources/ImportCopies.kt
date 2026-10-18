@@ -581,6 +581,11 @@ internal class ImportCopies(private val context: Context) {
                             if (wanted == null || sameLocation(found, wanted)) return@use found
                         }
                     }
+                    signal.throwIfCanceled()
+                    val extras = it.extras
+                    if (extras.getBoolean(DocumentsContract.EXTRA_LOADING, false) ||
+                        !extras.getString(DocumentsContract.EXTRA_ERROR).isNullOrEmpty())
+                        throw IOException("Saved-copy folder listing is incomplete.")
                     null
                 }
             }

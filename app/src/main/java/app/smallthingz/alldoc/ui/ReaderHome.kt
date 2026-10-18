@@ -1,6 +1,23 @@
 package app.smallthingz.alldoc.ui
 
 import android.graphics.Bitmap
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.MutatePriority
+import androidx.compose.foundation.gestures.stopScroll
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,10 +35,13 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CollectionsBookmark
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -38,21 +58,25 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.itemKey
+import app.smallthingz.alldoc.BuildConfig
 import app.smallthingz.alldoc.core.takeScalarSafe
 import app.smallthingz.alldoc.state.LibraryCategory
 import app.smallthingz.alldoc.state.LibraryDocument
 import app.smallthingz.alldoc.state.StoredDocument
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,24 +91,48 @@ internal fun ReaderHome(
     onLibrarySelected: (Boolean) -> Unit = {}, onLibrarySettings: () -> Unit = {},
     onLibraryFilter: (String, LibraryCategory?) -> Unit = { _, _ -> },
     onRefresh: () -> Unit = {}, libraryScanning: Boolean = false, onTabSelected: () -> Unit = {},
-    onExamples: () -> Unit = {}, coverPaper: Color = Color.White,
+    onExamples: () -> Unit = {}, coverPaper: Color = Color.White, currentAvailable: Boolean = true,
+    onRecentVisible: (List<StoredDocument>) -> Unit = {},
 ) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
+    val pager = rememberPagerState { 2 }
+    val pullRefresh = rememberPullToRefreshState()
+    val tab = pager.currentPage
+    val scope = rememberCoroutineScope()
+    val dragged by pager.interactionSource.collectIsDraggedAsState()
+    val tabSelected by rememberUpdatedState(onTabSelected)
     var query by rememberSaveable { mutableStateOf("") }
     var categoryName by rememberSaveable { mutableStateOf<String?>(null) }
     val category = categoryName?.let { name -> LibraryCategory.available.firstOrNull { it.name == name } }
     var filterOpen by remember { mutableStateOf(false) }
+    val inputActive = active && !filterOpen
     var compactSearch by rememberSaveable { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val recentScroll = rememberLazyListState()
     val libraryScroll = rememberLazyGridState()
+    val recentActive = inputActive && tab == 0
+    val libraryActive = inputActive && tab == 1
+    LaunchedEffect(pager, inputActive) {
+        if (!inputActive) {
+            val destination = pager.targetPage
+            pager.stopScroll(MutatePriority.PreventUserInput)
+            // A retained tab must not return at a fractional page after cancellation.
+            pager.scrollToPage(destination)
+        }
+    }
+    LaunchedEffect(recentScroll, recentActive) {
+        if (!recentActive) recentScroll.stopScroll(MutatePriority.PreventUserInput)
+    }
+    LaunchedEffect(libraryScroll, libraryActive) {
+        if (!libraryActive) libraryScroll.stopScroll(MutatePriority.PreventUserInput)
+    }
     val visibleLibrary by rememberUpdatedState(onLibraryVisible)
     val selectedLibrary by rememberUpdatedState(onLibrarySelected)
+    val visibleRecent by rememberUpdatedState(onRecentVisible)
     val filterLibrary by rememberUpdatedState(onLibraryFilter)
     val controlsState = rememberTopAppBarState()
     val controls = TopAppBarDefaults.enterAlwaysScrollBehavior(state = controlsState, canScroll = {
-        active && (controlsState.heightOffset < 0f || if (tab == 0)
+        inputActive && (controlsState.heightOffset < 0f || if (tab == 0)
             recentScroll.canScrollForward || recentScroll.canScrollBackward
         else libraryScroll.canScrollForward || libraryScroll.canScrollBackward)
     })
@@ -93,8 +141,11 @@ internal fun ReaderHome(
         categoryName = type?.name
         libraryScroll.requestScrollToItem(0)
     }
+    LaunchedEffect(dragged) {
+        if (dragged && active) { focus.clearFocus(); keyboard?.hide(); tabSelected() }
+    }
     LaunchedEffect(active, tab) {
-        if (!active) filterOpen = false
+        filterOpen = false
         selectedLibrary(active && tab == 1)
     }
     LaunchedEffect(active, tab, query, category) {
@@ -124,138 +175,218 @@ internal fun ReaderHome(
             }
         }.collect { visibleLibrary(it) }
     }
-    DisposableEffect(Unit) { onDispose { selectedLibrary(false); visibleLibrary(emptyList()) } }
-    val current = currentTitle != null
+    DisposableEffect(Unit) { onDispose { selectedLibrary(false); visibleLibrary(emptyList()); visibleRecent(emptyList()) } }
+    val current = currentTitle != null && currentAvailable
     val first = remember(recent, currentHash, current) {
         if (current) recent.firstOrNull { it.hash == currentHash } else recent.firstOrNull()
     }
-    val firstTitle = currentTitle ?: first?.title
+    val firstTitle = if (current) currentTitle else first?.title
     val firstHash = if (current) currentHash else first?.hash
     val remaining = remember(recent, firstHash) { recent.asSequence().filterNot { it.hash == firstHash }.take(5).toList() }
+    LaunchedEffect(active, tab, first, remaining) {
+        visibleRecent(if (active && tab == 0) listOfNotNull(first) + remaining else emptyList())
+    }
     val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
     BoxWithConstraints(modifier, contentAlignment = Alignment.TopCenter) {
         val compact = maxHeight < 240.dp * fontScale || maxWidth < 280.dp * fontScale
-        Column(Modifier.widthIn(max = 1080.dp).fillMaxSize().nestedScroll(controls.nestedScrollConnection)) {
-            Box(Modifier.clipToBounds().layout { measurable, constraints ->
-                val placeable = measurable.measure(constraints)
-                val offset = controls.state.heightOffset.roundToInt()
-                layout(placeable.width, (placeable.height + offset).coerceAtLeast(0)) { placeable.placeRelative(0, offset) }
-            }) {
-                Column(Modifier.onSizeChanged {
-                    controls.state.heightOffsetLimit = -it.height.toFloat()
-                    controls.state.heightOffset = controls.state.heightOffset.coerceIn(-it.height.toFloat(), 0f)
-                }) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        SecondaryTabRow(selectedTabIndex = tab, modifier = Modifier.weight(1f), containerColor = Color.Transparent) {
-                            Tab(selected = tab == 0, onClick = { focus.clearFocus(); onTabSelected(); tab = 0 }, text = { Text("Recents", maxLines = 1, overflow = TextOverflow.Ellipsis) })
-                            Tab(selected = tab == 1, onClick = { focus.clearFocus(); onTabSelected(); tab = 1 }, text = { Text("Library", maxLines = 1, overflow = TextOverflow.Ellipsis) })
+        Column(Modifier.widthIn(max = 1080.dp).fillMaxSize()) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                HorizontalPager(state = pager, beyondViewportPageCount = 1, userScrollEnabled = inputActive,
+                    modifier = Modifier.fillMaxSize().clipToBounds().semantics { contentDescription = "Document tabs" }) { page ->
+                    Column(Modifier.fillMaxSize().readerInput(tab == page || pager.isScrollInProgress)
+                        .nestedScroll(controls.nestedScrollConnection)) {
+                        if (page == 1) Box(Modifier.clipToBounds().layout { measurable, constraints ->
+                            val placeable = measurable.measure(constraints)
+                            val offset = controls.state.heightOffset.roundToInt()
+                            layout(placeable.width, (placeable.height + offset).coerceAtLeast(0)) { placeable.placeRelative(0, offset) }
+                        }) {
+                            Column(Modifier.onSizeChanged {
+                                controls.state.heightOffsetLimit = -it.height.toFloat()
+                                controls.state.heightOffset = controls.state.heightOffset.coerceIn(-it.height.toFloat(), 0f)
+                            }) {
+                                if (compact) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    ReaderAction(if (compactSearch) Icons.Outlined.Close else Icons.Outlined.Search,
+                                        if (compactSearch) "Close library search" else "Find documents", onClick = {
+                                            compactSearch = !compactSearch
+                                            if (!compactSearch) { focus.clearFocus(); keyboard?.hide() }
+                                        })
+                                }
+                                AnimatedVisibility(visible = !compact || compactSearch,
+                                    modifier = Modifier.readerInput(!compact || compactSearch),
+                                    enter = expandVertically(tween(180)) + fadeIn(tween(120)),
+                                    exit = shrinkVertically(tween(180)) + fadeOut(tween(120))) {
+                                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(query, onValueChange = { filter(it) }, singleLine = true,
+                                            modifier = Modifier.weight(1f).onFocusChanged { if (it.isFocused) compactSearch = true },
+                                            placeholder = { Text("Find documents") },
+                                            leadingIcon = { Icon(Icons.Outlined.Search, null) },
+                                            trailingIcon = if (query.isEmpty()) null else { {
+                                                ReaderAction(Icons.Outlined.Close, "Clear search", onClick = { filter("") })
+                                            } })
+                                        Box {
+                                            ReaderTooltip("Document type") {
+                                                IconToggleButton(checked = category != null, onCheckedChange = { filterOpen = true },
+                                                    modifier = Modifier.semantics { contentDescription = "Document type"; stateDescription = category?.label ?: "All types" }) {
+                                                    Icon(Icons.Outlined.FilterList, null)
+                                                }
+                                            }
+                                            if (active && tab == 1) DropdownMenu(filterOpen, onDismissRequest = { filterOpen = false }) {
+                                                DropdownMenuItem(text = { Text("All types") }, onClick = { filter(type = null); filterOpen = false })
+                                                LibraryCategory.available.forEach { type ->
+                                                    DropdownMenuItem(text = { Text(type.label) }, onClick = { filter(type = type); filterOpen = false })
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Box(Modifier.fillMaxWidth().height(3.dp)) {
+                                    if (active && tab == 1) {
+                                        if (libraryScanning) LinearProgressIndicator(Modifier.fillMaxSize()
+                                            .semantics { contentDescription = "Updating library" })
+                                        else if (pullRefresh.distanceFraction > 0f) LinearProgressIndicator(
+                                            progress = { pullRefresh.distanceFraction.coerceIn(0f, 1f) },
+                                            modifier = Modifier.fillMaxSize().semantics { contentDescription = "Pull to refresh" },
+                                            drawStopIndicator = {})
+                                    }
+                                }
+                            }
                         }
-                        if (tab == 1 && compact) ReaderAction(if (compactSearch) Icons.Outlined.Close else Icons.Outlined.Search,
-                            if (compactSearch) "Close library search" else "Find documents", onClick = {
-                                compactSearch = !compactSearch
-                                if (!compactSearch) { focus.clearFocus() }
-                            })
-                        ReaderAction(Icons.Outlined.CollectionsBookmark, "Examples", onClick = onExamples)
-                        ReaderAction(Icons.Outlined.FolderOpen, "Open", onClick = onOpen)
+                        val padding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 88.dp)
+                        if (page == 0) {
+                            LazyColumn(state = recentScroll, userScrollEnabled = recentActive, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = padding,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                if (firstTitle != null) item(key = firstHash ?: "current") {
+                                    LaunchedEffect(firstHash, active, tab) { if (active && tab == 0) firstHash?.let(onPreviewRequest) }
+                                    DocumentRow(firstTitle, documentSummary(first?.metadata?.sizeBytes),
+                                        firstHash?.let(previews::get), featured = current,
+                                        page = currentPage, pageCount = currentPageCount, coverPaper = coverPaper, modifier = Modifier.animateItem()) {
+                                        if (current) onResume() else firstHash?.let(onRecent)
+                                    }
+                                }
+                                items(remaining, key = { it.hash }) { item ->
+                                    LaunchedEffect(item.hash, active, tab) { if (active && tab == 0) onPreviewRequest(item.hash) }
+                                    DocumentRow(item.title, documentSummary(item.metadata.sizeBytes), previews[item.hash],
+                                        coverPaper = coverPaper, modifier = Modifier.animateItem()) { onRecent(item.hash) }
+                                }
+                                if (BuildConfig.DEBUG) item(key = "debug-examples") {
+                                    Row(Modifier.fillMaxWidth().animateItem()) {
+                                        ReaderAction(Icons.Outlined.CollectionsBookmark, "Examples", onClick = onExamples)
+                                    }
+                                }
+                            }
+                        } else PullToRefreshBox(state = pullRefresh, indicator = {},
+                            isRefreshing = active && tab == 1 && libraryScanning, onRefresh = {
+                            if (libraryActive) { library?.refresh(); onRefresh() }
+                        }, modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            val refresh = library?.loadState?.refresh
+                            LazyVerticalGrid(columns = GridCells.Fixed(3), state = libraryScroll, userScrollEnabled = libraryActive,
+                                modifier = Modifier.fillMaxSize(), contentPadding = padding,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                if (library != null && library.itemCount > 0) {
+                                    items(library.itemCount, key = library.itemKey { it.key },
+                                        span = { index -> if (library.peek(index) is LibraryEntry.Header) GridItemSpan(maxLineSpan) else GridItemSpan(1) },
+                                        contentType = { index -> if (library.peek(index) is LibraryEntry.Header) "heading" else "cover" }) { index ->
+                                        when (val entry = if (active && tab == 1) library[index] else library.peek(index)) {
+                                            is LibraryEntry.Header -> Text(entry.category.label, Modifier.fillMaxWidth().semantics { heading() },
+                                                style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            else -> {
+                                                val item = (entry as? LibraryEntry.Document)?.value
+                                                val featured = currentHash != null && item?.hash == currentHash && current
+                                                LibraryCover(item?.title, item?.id?.let(libraryPreviews::get), featured, coverPaper,
+                                                    modifier = Modifier.animateItem(), onClick = { item?.let(onLibrary) })
+                                            }
+                                        }
+                                    }
+                                } else item(span = { GridItemSpan(maxLineSpan) }) {
+                                    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        when {
+                                            refresh is LoadState.Loading || libraryScanning -> if (active && tab == 1 && !libraryScanning)
+                                                CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+                                            refresh is LoadState.Error -> Text("Library unavailable", style = MaterialTheme.typography.bodyMedium)
+                                            query.isNotBlank() || category != null -> Text("No matches", style = MaterialTheme.typography.bodyMedium)
+                                            else -> TextButton(onClick = onLibrarySettings) { Text("Library settings") }
+                                        }
+                                    }
+                                }
+                                if (library?.loadState?.append is LoadState.Loading && active && tab == 1) item(span = { GridItemSpan(maxLineSpan) }) {
+                                    Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                    }
+                                }
+                                if (refresh is LoadState.Error || library?.loadState?.append is LoadState.Error) item(span = { GridItemSpan(maxLineSpan) }) {
+                                    TextButton(onClick = { library.retry() }) { Text("Retry") }
+                                }
+                            }
+                            if (library?.loadState?.prepend is LoadState.Error) FilledTonalButton(
+                                onClick = { library.retry() }, modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
+                                    .semantics { contentDescription = "Retry earlier documents" }) { Text("Retry") }
+                        }
                     }
-                    if (tab == 1 && (!compact || compactSearch)) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(query, onValueChange = { filter(it) }, singleLine = true,
-                            modifier = Modifier.weight(1f).onFocusChanged { if (it.isFocused) compactSearch = true },
-                            placeholder = { Text("Find documents") },
-                            leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                            trailingIcon = if (query.isEmpty()) null else { {
-                                ReaderAction(Icons.Outlined.Close, "Clear search", onClick = { filter("") })
-                            } })
-                        Box {
-                            ReaderTooltip("Document type") {
-                                IconToggleButton(checked = category != null, onCheckedChange = { filterOpen = true },
-                                    modifier = Modifier.semantics { contentDescription = "Document type"; stateDescription = category?.label ?: "All types" }) {
-                                    Icon(Icons.Outlined.FilterList, null)
-                                }
-                            }
-                            if (active) DropdownMenu(filterOpen, onDismissRequest = { filterOpen = false }) {
-                                DropdownMenuItem(text = { Text("All types") }, onClick = { filter(type = null); filterOpen = false })
-                                LibraryCategory.available.forEach { type ->
-                                    DropdownMenuItem(text = { Text(type.label) }, onClick = { filter(type = type); filterOpen = false })
-                                }
-                            }
+                }
+                val actionsVisible = tab == 0 || !compact || !compactSearch
+                androidx.compose.animation.AnimatedVisibility(actionsVisible, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).readerInput(actionsVisible),
+                    enter = fadeIn(tween(150)) + scaleIn(tween(180)), exit = fadeOut(tween(120)) + scaleOut(tween(180))) {
+                    ReaderTooltip("Open") {
+                        FloatingActionButton(onClick = onOpen, modifier = Modifier.semantics { contentDescription = "Open" }) {
+                            Icon(Icons.Outlined.Add, null)
                         }
                     }
                 }
             }
-            val padding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 16.dp)
-            if (tab == 0) {
-                LazyColumn(state = recentScroll, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = padding,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (firstTitle != null) item(key = "current") {
-                        LaunchedEffect(firstHash, active) { if (active) firstHash?.let(onPreviewRequest) }
-                        DocumentRow(firstTitle, documentSummary(first?.metadata?.sizeBytes),
-                            firstHash?.let(previews::get), featured = current,
-                            page = currentPage, pageCount = currentPageCount, coverPaper = coverPaper) {
-                            if (current) onResume() else firstHash?.let(onRecent)
-                        }
-                    }
-                    items(remaining, key = { it.hash }) { item ->
-                        LaunchedEffect(item.hash, active) { if (active) onPreviewRequest(item.hash) }
-                        DocumentRow(item.title, documentSummary(item.metadata.sizeBytes), previews[item.hash],
-                            coverPaper = coverPaper) { onRecent(item.hash) }
-                    }
+            HomeNavigation(tab) { destination ->
+                if (inputActive) {
+                    focus.clearFocus(); keyboard?.hide(); tabSelected()
+                    scope.launch { pager.animateScrollToPage(destination) }
                 }
-            } else PullToRefreshBox(isRefreshing = active && libraryScanning, onRefresh = {
-                library?.refresh(); onRefresh()
-            }, modifier = Modifier.weight(1f).fillMaxWidth()) {
-                val refresh = library?.loadState?.refresh
-                LazyVerticalGrid(columns = GridCells.Fixed(3), state = libraryScroll,
-                    modifier = Modifier.fillMaxSize(), contentPadding = padding,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    if (library != null && library.itemCount > 0) {
-                        items(library.itemCount, key = library.itemKey { it.key },
-                            span = { index -> if (library.peek(index) is LibraryEntry.Header) GridItemSpan(maxLineSpan) else GridItemSpan(1) },
-                            contentType = { index -> if (library.peek(index) is LibraryEntry.Header) "heading" else "cover" }) { index ->
-                            when (val entry = if (active) library[index] else library.peek(index)) {
-                                is LibraryEntry.Header -> Text(entry.category.label, Modifier.fillMaxWidth().semantics { heading() },
-                                    style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                else -> {
-                                    val item = (entry as? LibraryEntry.Document)?.value
-                                    val featured = currentHash != null && item?.hash == currentHash && current
-                                    LibraryCover(item?.title, item?.id?.let(libraryPreviews::get), featured, coverPaper,
-                                        onClick = { item?.let(onLibrary) })
-                                }
-                            }
-                        }
-                    } else item(span = { GridItemSpan(maxLineSpan) }) {
-                        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            when {
-                                refresh is LoadState.Loading || libraryScanning -> if (!libraryScanning)
-                                    CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
-                                refresh is LoadState.Error -> Text("Library unavailable", style = MaterialTheme.typography.bodyMedium)
-                                query.isNotBlank() || category != null -> Text("No matches", style = MaterialTheme.typography.bodyMedium)
-                                else -> TextButton(onClick = onLibrarySettings) { Text("Library settings") }
-                            }
-                        }
-                    }
-                    if (library?.loadState?.append is LoadState.Loading && active) item(span = { GridItemSpan(maxLineSpan) }) {
-                        Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                        }
-                    }
-                    if (refresh is LoadState.Error || library?.loadState?.append is LoadState.Error) item(span = { GridItemSpan(maxLineSpan) }) {
-                        TextButton(onClick = { library.retry() }) { Text("Retry") }
-                    }
-                }
-                if (library?.loadState?.prepend is LoadState.Error) FilledTonalButton(
-                    onClick = { library.retry() }, modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
-                        .semantics { contentDescription = "Retry earlier documents" }) { Text("Retry") }
             }
         }
     }
 }
 
 @Composable
-private fun LibraryCover(title: String?, bitmap: Bitmap?, current: Boolean, paper: Color, onClick: () -> Unit) {
+private fun HomeNavigation(selected: Int, onSelect: (Int) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val tabs = remember { listOf("Recents" to Icons.Outlined.History, "Library" to Icons.Outlined.FolderOpen) }
+    val style = MaterialTheme.typography.labelMedium
+    val text = rememberTextMeasurer(cacheSize = 2)
+    val density = LocalDensity.current
+    Surface(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(20.dp), color = colors.surfaceContainerLow,
+        border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = .4f))) {
+        Row(Modifier.padding(4.dp).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            tabs.forEachIndexed { index, (label, icon) ->
+                val chosen = selected == index
+                val fill by animateColorAsState(if (chosen) colors.secondaryContainer else Color.Transparent,
+                    tween(180), label = "Home tab")
+                BoxWithConstraints(Modifier.weight(1f)) {
+                    val showLabel = text.measure(label, style = style, maxLines = 1, softWrap = false).size.width <=
+                        with(density) { (maxWidth - 46.dp).roundToPx() }
+                    ReaderTooltip(label, Modifier.fillMaxWidth()) {
+                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(16.dp))
+                            .background(fill).selectable(chosen, role = Role.Tab, onClick = { onSelect(index) })
+                            .semantics { if (!showLabel) contentDescription = label }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                            Icon(icon, null, Modifier.size(20.dp), tint = if (chosen) colors.onSecondaryContainer else colors.onSurfaceVariant)
+                            if (showLabel) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(label, style = style,
+                                    color = if (chosen) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                                    maxLines = 1, softWrap = false)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryCover(title: String?, bitmap: Bitmap?, current: Boolean, paper: Color, modifier: Modifier, onClick: () -> Unit) {
     Surface(onClick = onClick, enabled = title != null, color = Color.Transparent,
-        shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth().semantics {
+        shape = RoundedCornerShape(6.dp), modifier = modifier.fillMaxWidth().semantics {
             if (current) stateDescription = "Continue reading"
         }) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -281,12 +412,12 @@ private fun documentSummary(bytes: Long?) = bytes?.takeIf { it > 0 }?.let(::read
 
 @Composable
 internal fun DocumentRow(title: String, subtitle: String, bitmap: Bitmap?, featured: Boolean = false,
-    page: Int? = null, pageCount: Int? = null, coverPaper: Color = Color.White, onClick: () -> Unit,
+    page: Int? = null, pageCount: Int? = null, coverPaper: Color = Color.White, modifier: Modifier = Modifier, onClick: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val progress = if (featured && page != null && pageCount != null && pageCount > 1 && page in 0 until pageCount)
         (page + 1).toFloat() / pageCount else null
-    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().semantics {
+    Surface(onClick = onClick, modifier = modifier.fillMaxWidth().semantics {
         if (featured) stateDescription = "Continue reading"
     }, shape = RoundedCornerShape(8.dp),
         color = Color.Transparent) {

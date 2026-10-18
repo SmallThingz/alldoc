@@ -1,4 +1,6 @@
 //! AllDoc bounded visual readers. Third-party format/render code is pinned under ../vendor.
+mod image_regions;
+pub mod sheets;
 use quick_xml::events::Event;
 use std::io::{Cursor, Read};
 use std::sync::Mutex;
@@ -6,7 +8,9 @@ use std::time::{Duration, Instant};
 static RENDER_LOCK: Mutex<()> = Mutex::new(());
 pub const INPUT_LIMIT: usize = 16 * 1024 * 1024;
 pub const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
-pub const MAX_PAGES: usize = 128;
+pub const MAX_PAGES: usize = 1024;
+pub const MAX_SIDE: u32 = 2800;
+pub const OUTPUT_PIXELS: u64 = 8_000_000;
 
 #[derive(Debug)]
 pub struct Page {
@@ -17,6 +21,7 @@ pub struct Page {
     pub pages: u32,
     pub note: String,
     pub data: Vec<u8>,
+    pub raster_regions: image_regions::ImageRegions,
 }
 fn fail(s: impl ToString) -> String {
     s.to_string()
@@ -31,13 +36,30 @@ fn fit(w: f64, h: f64, side: u32) -> Result<(f64, u32, u32), String> {
     if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 || w > 20000.0 || h > 20000.0 {
         return Err("Unsupported document page dimensions".into());
     }
-    let k = (side as f64 / w.max(h)).min(2.0);
+    let k = (side as f64 / w.max(h)).min(if side <= 1400 { 2.0 } else { 4.0 });
     let ow = ((w * k).ceil().max(1.0) as u32).min(side);
     let oh = ((h * k).ceil().max(1.0) as u32).min(side);
-    if u64::from(ow) * u64::from(oh) > 2_000_000 {
+    if u64::from(ow) * u64::from(oh) > OUTPUT_PIXELS {
         return Err("Visual output pixel limit".into());
     }
     Ok((k, ow, oh))
+}
+// Ceil-sized output can extend fractionally beyond the slide's background path.
+// Only an actually opaque resolved solid paper is extended to that final edge.
+fn clear_opaque_slide_paper(pres: &deckcraft_model::Presentation, index: usize, opts: &mut deckcraft_render::RenderOpts<'_>) {
+    let Some(slide) = pres.slides.get(index) else { return; };
+    let Some(ctx) = deckcraft_model::resolve::Ctx::for_slide(pres, slide) else { return; };
+    let (fill, ph) = deckcraft_model::resolve::background(&ctx, Some(slide));
+    if let deckcraft_model::style::Fill::Solid { color } = fill {
+        let color = ctx.color(&color, ph);
+        if color.a == 255 { opts.clear = Some(color); }
+    }
+}
+fn worksheet_extent(row: u32, col: u32) -> Result<(), String> {
+    if !(1..=16_384).contains(&row) || !(1..=512).contains(&col) {
+        return Err("Worksheet extent exceeds visual reader budget".into());
+    }
+    Ok(())
 }
 fn image_size(data: &[u8]) -> Result<(u32, u32), String> {
     image::ImageReader::new(Cursor::new(data))
@@ -101,6 +123,7 @@ fn package(
     let mut elements = 0usize;
     let mut text = 0usize;
     let mut external = 0usize;
+    let (mut worksheet_cells, mut worksheet_elements, mut worksheet_text) = (0usize, 0usize, 0usize);
     for i in 0..zip.len() {
         check()?;
         let mut f = zip.by_index(i).map_err(fail)?;
@@ -142,7 +165,7 @@ fn package(
             }
             continue;
         }
-        if is_xml && size > 2 * 1024 * 1024 {
+        if is_xml && kind != 3 && size > 2 * 1024 * 1024 {
             return Err("XML part exceeds visual reader budget".into());
         }
         let mut data = Vec::with_capacity(size as usize);
@@ -177,14 +200,44 @@ fn package(
         let mut parser = quick_xml::Reader::from_reader(Cursor::new(&data));
         let mut scratch = Vec::new();
         let mut depth = 0usize;
+        let (mut sheet_row, mut sheet_col) = (0u32, 0u32);
+        let mut worksheet = false;
         loop {
             check()?;
             let event = parser.read_event_into(&mut scratch).map_err(fail)?;
             let starting = matches!(&event, Event::Start(_));
             match event {
                 Event::Start(e) | Event::Empty(e) => {
-                    elements += 1;
-                    if elements > 64_000 {
+                    if depth == 0 {
+                        worksheet = kind == 3 && e.local_name().as_ref() == b"worksheet";
+                        if !worksheet && size > 2 * 1024 * 1024 {
+                            return Err("XML part exceeds visual reader budget".into());
+                        }
+                    }
+                    // GridCraft streams rows independently of the enclosing root name.
+                    let row_element = kind == 3 && e.local_name().as_ref() == b"row";
+                    let cell = kind == 3 && e.local_name().as_ref() == b"c";
+                    if row_element {
+                        sheet_row = sheet_row.saturating_add(1);
+                        sheet_col = 0;
+                    }
+                    if cell {
+                        sheet_col = sheet_col.saturating_add(1);
+                        worksheet_cells += 1;
+                        if worksheet_cells > 131_072 {
+                            return Err("Workbook cell count exceeds visual reader budget".into());
+                        }
+                    }
+                    let mut cell_row = sheet_row;
+                    let (count, limit) = if worksheet {
+                        (&mut worksheet_elements, 524_288)
+                    } else {
+                        // A layered 96-slide deck uses about 138k elements across slides, notes
+                        // and layouts. Keep a finite package-wide budget for the eager importer.
+                        (&mut elements, if kind == 2 { 262_144 } else { 64_000 })
+                    };
+                    *count += 1;
+                    if *count > limit {
                         return Err("Document structure exceeds visual reader budget".into());
                     }
                     for a in e.attributes().with_checks(true) {
@@ -195,23 +248,34 @@ fn package(
                         if a.key.as_ref() == b"TargetMode" && a.value.as_ref() == b"External" {
                             external += 1;
                         }
-                        if kind == 3 && e.local_name().as_ref() == b"c" && a.key.as_ref() == b"r" {
+                        if row_element && a.key.as_ref() == b"r" {
+                            sheet_row = std::str::from_utf8(&a.value)
+                                .map_err(fail)?
+                                .parse::<u32>()
+                                .map_err(fail)?;
+                        }
+                        if cell && a.key.as_ref() == b"r" {
                             let v = std::str::from_utf8(&a.value).map_err(fail)?;
-                            let col = v.bytes().take_while(|c| c.is_ascii_alphabetic()).fold(
+                            sheet_col = v.bytes().take_while(|c| c.is_ascii_alphabetic()).fold(
                                 0u32,
                                 |n, c| {
                                     n.saturating_mul(26)
                                         .saturating_add((c.to_ascii_uppercase() - b'A' + 1) as u32)
                                 },
                             );
-                            let row = v
+                            cell_row = v
                                 .trim_start_matches(|c: char| c.is_ascii_alphabetic())
                                 .parse::<u32>()
                                 .map_err(fail)?;
-                            if col == 0 || col > 512 || row == 0 || row > 8192 {
-                                return Err("Worksheet extent exceeds visual reader budget".into());
-                            }
                         }
+                    }
+                    // Formatting-only rows may span Excel's full grid. Actual cells retain
+                    // the smaller visual-reader extent, checked independently below.
+                    if row_element && !(1..=gridcraft_core::MAX_ROWS).contains(&sheet_row) {
+                        return Err("Invalid worksheet row metadata".into());
+                    }
+                    if cell {
+                        worksheet_extent(cell_row, sheet_col)?;
                     }
                     if starting {
                         depth += 1;
@@ -221,14 +285,24 @@ fn package(
                     }
                 }
                 Event::Text(e) => {
-                    text = text.checked_add(e.len()).ok_or("Text length overflow")?;
-                    if text > 512 * 1024 {
+                    let (count, limit) = if worksheet {
+                        (&mut worksheet_text, 2 * 1024 * 1024)
+                    } else {
+                        (&mut text, 512 * 1024)
+                    };
+                    *count = count.checked_add(e.len()).ok_or("Text length overflow")?;
+                    if *count > limit {
                         return Err("Document text exceeds visual reader budget".into());
                     }
                 }
                 Event::CData(e) => {
-                    text = text.checked_add(e.len()).ok_or("Text length overflow")?;
-                    if text > 512 * 1024 {
+                    let (count, limit) = if worksheet {
+                        (&mut worksheet_text, 2 * 1024 * 1024)
+                    } else {
+                        (&mut text, 512 * 1024)
+                    };
+                    *count = count.checked_add(e.len()).ok_or("Text length overflow")?;
+                    if *count > limit {
                         return Err("Document text exceeds visual reader budget".into());
                     }
                 }
@@ -236,7 +310,12 @@ fn package(
                 Event::DocType(_) => {
                     return Err("XML declarations with document types are unsupported".into());
                 }
-                Event::Eof => break,
+                Event::Eof => {
+                    if !worksheet && size > 2 * 1024 * 1024 {
+                        return Err("XML part exceeds visual reader budget".into());
+                    }
+                    break;
+                }
                 _ => {}
             }
             scratch.clear();
@@ -272,8 +351,8 @@ pub fn render(
     if bytes.is_empty() || bytes.len() > INPUT_LIMIT {
         return Err("Visual reader input limit is 16 MiB".into());
     }
-    if !(128..=1400).contains(&side) {
-        return Err("Output side must be 128 through 1400".into());
+    if !(128..=MAX_SIDE).contains(&side) {
+        return Err("Output side must be 128 through 2800".into());
     }
     let _guard = loop {
         check()?;
@@ -320,6 +399,7 @@ pub fn render(
             if w > side || h > side {
                 return Err("DOCX output dimensions exceed the preview size".into());
             }
+            let raster_regions = image_regions::word(&doc, p, scale, w, h, &mut check)?;
             let output = wordcraft_render::render_page(
                 &doc,
                 p,
@@ -343,6 +423,7 @@ pub fn render(
                     "Visual layout; font substitution or unsupported features may affect appearance"
                         .into(),
                 data: output.to_png(),
+                raster_regions,
             }
         }
         2 => {
@@ -356,12 +437,14 @@ pub fn render(
             }
             let index = page as usize;
             let (k, w, h) = fit(pres.slide_size.width, pres.slide_size.height, side)?;
-            let opts = deckcraft_render::RenderOpts {
+            let mut opts = deckcraft_render::RenderOpts {
                 scale: k,
                 size: Some((w, h)),
                 threads: 0,
                 ..Default::default()
             };
+            clear_opaque_slide_paper(&pres, index, &mut opts);
+            let raster_regions = image_regions::slide(&pres, index, k, w, h, &mut check)?;
             let output = deckcraft_render::render_slide(&pres, index, &opts);
             check()?;
             if output.width != w
@@ -378,6 +461,7 @@ pub fn render(
                 pages: pres.slides.len() as u32,
                 note: "Visual slide; font substitution; playback/animation not rendered".into(),
                 data: output.to_png(),
+                raster_regions,
             }
         }
         3 => {
@@ -412,6 +496,7 @@ pub fn render(
             }
             let chosen = chosen.ok_or("Worksheet print page unavailable")?;
             let (scale, w, h) = fit(chosen.page_w as f64, chosen.page_h as f64, side)?;
+            let raster_regions = image_regions::sheet(&wb, &chosen, scale, w, h, &mut check)?;
             let output = gridcraft_engine::cmd::print::render_raster(
                 &wb,
                 &[chosen],
@@ -433,7 +518,7 @@ pub fn render(
                 pixels: output.pixels,
             }
             .to_png();
-            Page{format:1,width:w,height:h,page:index as u32,pages:total as u32,note:"GridCraft worksheet print geometry; cached values; Unicode font fallback; system-font coverage varies".into(),data}
+            Page{format:1,width:w,height:h,page:index as u32,pages:total as u32,note:"GridCraft worksheet print geometry; cached values; Unicode font fallback; system-font coverage varies".into(),data,raster_regions}
         }
         _ => {
             return Err("No visual renderer for this document format".into());
@@ -450,7 +535,7 @@ pub fn render(
     Ok(result)
 }
 pub fn wire(result: Result<Page, String>) -> Vec<u8> {
-    let mut out = b"ZFR1".to_vec();
+    let mut out = b"ZFR2".to_vec();
     match result {
         Ok(p) => {
             for n in [
@@ -464,6 +549,10 @@ pub fn wire(result: Result<Page, String>) -> Vec<u8> {
             ] {
                 out.extend_from_slice(&n.to_le_bytes())
             }
+            out.extend_from_slice(&p.raster_regions.as_ref().map_or(u32::MAX, |r| r.len() as u32).to_le_bytes());
+            if let Some(regions) = p.raster_regions {
+                for region in regions { for value in region { out.extend_from_slice(&value.to_le_bytes()); } }
+            }
             out.extend_from_slice(p.note.as_bytes());
             out.extend_from_slice(&p.data);
         }
@@ -472,6 +561,7 @@ pub fn wire(result: Result<Page, String>) -> Vec<u8> {
             for n in [0, 0, 0, 0, 0, e.len() as u32, 0] {
                 out.extend_from_slice(&n.to_le_bytes())
             }
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
             out.extend_from_slice(e.as_bytes());
         }
     }

@@ -9,6 +9,8 @@ import android.os.CancellationSignal
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.smallthingz.alldoc.core.MarkdownDocument
@@ -18,6 +20,13 @@ import app.smallthingz.alldoc.engine.DocumentNotes
 import app.smallthingz.alldoc.engine.DocumentOutlineEntry
 import app.smallthingz.alldoc.engine.themed
 import app.smallthingz.alldoc.engine.DocumentInfo
+import app.smallthingz.alldoc.engine.rasterRegionsFor
+import app.smallthingz.alldoc.engine.SheetFrame
+import app.smallthingz.alldoc.engine.SheetGeometry
+import app.smallthingz.alldoc.engine.SheetViewport
+import app.smallthingz.alldoc.engine.WorkbookInfo
+import app.smallthingz.alldoc.state.SheetPosition
+import kotlinx.coroutines.CompletableDeferred
 import app.smallthingz.alldoc.engine.DocumentSession
 import app.smallthingz.alldoc.ipc.DescriptorOutput
 import app.smallthingz.alldoc.pdf.PdfPasswordException
@@ -29,6 +38,7 @@ import app.smallthingz.alldoc.state.LibraryDocument
 import app.smallthingz.alldoc.sources.ExampleDocument
 import app.smallthingz.alldoc.sources.ExampleDocuments
 import app.smallthingz.alldoc.sources.DocumentSources
+import app.smallthingz.alldoc.sources.RecentDocuments
 import app.smallthingz.alldoc.sources.PreparedDocument
 import app.smallthingz.alldoc.sources.SavedFormat
 import app.smallthingz.alldoc.state.CopySettings
@@ -46,9 +56,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
@@ -108,6 +120,19 @@ class ReaderModel internal constructor(application: Application, private val sup
         private set
     var textMode by mutableStateOf(false)
         private set
+    var workbook by mutableStateOf<WorkbookInfo?>(null)
+        private set
+    var sheetGeometry by mutableStateOf<SheetGeometry?>(null)
+        private set
+    var sheetFrame by mutableStateOf<SheetFrame?>(null)
+        private set
+    var sheetPosition by mutableStateOf(SheetPosition())
+        private set
+    var sheetsLoading by mutableStateOf(false)
+        private set
+    var sheetsError by mutableStateOf<String?>(null)
+        private set
+    val sheetMode get() = info?.supportsSheets == true && !horizontalPages && !textMode
     private var preferredTextMode = false
     var textPosition by mutableStateOf(TextPosition())
         private set
@@ -120,6 +145,7 @@ class ReaderModel internal constructor(application: Application, private val sup
     val libraryPreviews get() = library.previews
     val libraryScanning get() = library.scanning
     val libraryHiddenTypes get() = library.hiddenTypes
+    val librarySettingsLoaded get() = library.settingsReady
     fun setLibraryFilter(query: String, category: LibraryCategory?) = library.setFilter(query, category)
     fun setLibraryHiddenTypes(value: Set<LibraryCategory>) = library.updateHiddenTypes(value)
     fun setLibraryActive(active: Boolean) = library.setActive(active)
@@ -127,17 +153,21 @@ class ReaderModel internal constructor(application: Application, private val sup
     fun setAppVisible(visible: Boolean) {
         library.setForeground(visible)
         foreground = visible
+        previews.setVisible(if (visible) recentPreviewDocuments else emptyList())
         if (visible) {
+            refreshRecentDocuments()
             startPageRender()
             if (textMode || info?.continuous == true) loadText()
             if (bitmap != null || text != null) discoverMetadata()
         } else {
+            stopRecentCheck()
             rendering.cancel(); attemptedPages.clear(); pageLoading = false
             stopTextExtraction()
             pauseMetadata()
+            pauseSheets()
         }
     }
-    fun refreshLibrary() = library.refresh()
+    fun refreshLibrary() { library.refresh(); refreshRecentDocuments() }
     fun addLibraryFolder(uri: Uri) = library.addFolder(uri)
 
     fun openLibraryDocument(document: LibraryDocument) {
@@ -166,15 +196,57 @@ class ReaderModel internal constructor(application: Application, private val sup
         }.also { it.setAppearance(effectivePreviewSettings) }
     }
     private fun isHomeDocument(hash: String) = hash == documentHash || recentDocuments.take(6).any { it.hash == hash }
+    private var recentCandidates = emptyList<StoredDocument>()
+    private var missingRecentHashes by mutableStateOf<Set<String>>(emptySet())
+    val currentDocumentAvailable get() = !stateAvailable || documentHash !in missingRecentHashes
+    private var recentCheck: Job? = null
+    private var recentSignal: CancellationSignal? = null
+    private val recentGate = Mutex()
     private fun updateRecent(value: List<StoredDocument>) {
-        recentDocuments = value.filter { DocumentProbe.supportedHistory(it.title, it.metadata.mimeType) }
-        recentPreviews = recentPreviews.filterKeys(::isHomeDocument)
+        recentCandidates = value.filter { DocumentProbe.supportedHistory(it.title, it.metadata.mimeType) }
+        stopRecentCheck()
+        refreshRecentDocuments()
+    }
+    internal fun refreshRecentDocuments() {
+        if (!foreground || recentCheck?.isActive == true) return
+        val candidates = recentCandidates
+        val signal = CancellationSignal().also { recentSignal = it }
+        recentCheck = viewModelScope.launch {
+            val timeout = launch(Dispatchers.Default) { delay(2_000); signal.cancel() }
+            val visible = try {
+                withContext(Dispatchers.IO) { recentGate.withLock {
+                    RecentDocuments.visible(getApplication(), candidates, signal, sources::importUri)
+                } }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { candidates }
+            finally { timeout.cancel() }
+            val hashes = visible.mapTo(HashSet()) { it.hash }
+            missingRecentHashes = candidates.mapTo(HashSet()) { it.hash }.apply { removeAll(hashes) }
+            recentDocuments = recentCandidates.filter { it.hash in hashes }
+            recentPreviews = recentPreviews.filterKeys(::isHomeDocument)
+        }
+    }
+    private fun stopRecentCheck() {
+        recentSignal?.cancel()
+        recentCheck?.cancel()
+        recentSignal = null
+        recentCheck = null
+    }
+    private var recentPreviewDocuments = emptyList<StoredDocument>()
+    fun setRecentPreviewsVisible(documents: List<StoredDocument>) {
+        recentPreviewDocuments = documents.take(6)
+        previews.setVisible(if (foreground) recentPreviewDocuments else emptyList())
     }
     fun requestRecentPreview(hash: String) {
         try {
-            if (hash !in recentPreviews && isHomeDocument(hash)) previews.request(hash)
+            if (hash !in recentPreviews && isHomeDocument(hash)) {
+                val warm = previews.cached(hash)
+                if (warm != null) recentPreviews = recentPreviews + (hash to warm) else previews.request(hash)
+            }
         } catch (_: OutOfMemoryError) { /* An optional thumbnail must not interrupt Home. */ }
     }
+    var compoundSettingsReady by mutableStateOf(false)
+        private set
     var copySettings by mutableStateOf(CopySettings())
         private set
     var copyUsageBytes by mutableStateOf(0L)
@@ -239,11 +311,14 @@ class ReaderModel internal constructor(application: Application, private val sup
     var documentId by mutableStateOf(0L)
         private set
     private var renderWidth = 0
+    private var zoomAnimationStart: ViewportState? = null
     private var foreground = true
     private var visiblePages = 0..0
     private var renderGeneration = 0L
     private var textGeneration = 0L
     private val renderLock = Mutex()
+    private data class RenderWork(val page: Int, val signal: CancellationSignal, val preview: Boolean = false)
+    private var renderWork: RenderWork? = null
     private val attemptedPages = HashSet<Int>()
     var failedPages by mutableStateOf<Set<Int>>(emptySet())
         private set
@@ -252,6 +327,20 @@ class ReaderModel internal constructor(application: Application, private val sup
     private val rendering = Task { pageLoading = false }
     private val extracting = Task { textLoading = false }
     private val saving = Task { exporting = false }
+    private val sheetRendering = Task { sheetsLoading = false; sheetsError = "Not enough memory." }
+    private val printLayout = Task { sheetsLoading = false }
+    private data class SheetWork(val viewport: SheetViewport, val appearance: ThemeSettings)
+    private var sheetRequest: SheetViewport? = null
+    private var sheetVisibleSize = IntSize.Zero
+    private var sheetDensity = 0f
+    private var pendingSheet: SheetWork? = null
+    private var renderedSheet: SheetWork? = null
+    private var sheetGeneration = 0L
+    private var sheetResident = false
+    private var sheetCovering = false
+    private var sheetCoverDelay = 250L
+    private var sheetPause: CompletableDeferred<Unit>? = null
+    private var preparingPrint = false
     private val outlining = Task { contentsLoading = false }
     private val annotating = Task { notesLoading = false; notes = DocumentNotes(warnings = listOf("Notes could not be loaded.")) }
     private var pendingExport by mutableStateOf<Export?>(null)
@@ -277,6 +366,8 @@ class ReaderModel internal constructor(application: Application, private val sup
                     refreshStorageUsage()
                 }
             }.onFailure { failure -> stateFailure(failure) }
+            // Main receives this after the hydrated values above, including valid fallbacks on failure.
+            viewModelScope.launch { compoundSettingsReady = true }
         }
     }
 
@@ -362,11 +453,16 @@ class ReaderModel internal constructor(application: Application, private val sup
                 if (hash != null && version == documentId && navigation == navigationRevision && info == null && !loading) {
                     reopenDocument(hash)
                 }
-            } finally { restoringLastDocument = false }
+            } finally {
+                if (version == documentId && navigation == navigationRevision) restoringLastDocument = false
+            }
         }
     }
 
-    fun cancelAutomaticResume() { navigationRevision++ }
+    fun cancelAutomaticResume() {
+        navigationRevision++
+        restoringLastDocument = false
+    }
 
     fun retryWithPassword(password: String, identity: Long = documentId, expectedMessage: String? = error) {
         if (identity != documentId || loading || info != null || expectedMessage == null || error != expectedMessage) return
@@ -396,9 +492,10 @@ class ReaderModel internal constructor(application: Application, private val sup
         flushDocumentState()
         openingCancelled = false
         documentId++
+        zoomAnimationStart = null
         val version = documentId
         passwordRetry = retry
-        navigationRevision++
+        cancelAutomaticResume()
         readerVisible = true
         saveResume(null)
         cancelWork()
@@ -410,6 +507,16 @@ class ReaderModel internal constructor(application: Application, private val sup
         stateAvailable = false
         lastQueuedState = null
         info = null
+        workbook = null
+        sheetGeometry = null
+        sheetFrame = null
+        sheetPosition = SheetPosition()
+        sheetVisibleSize = IntSize.Zero
+        sheetDensity = 0f
+        sheetRequest = null
+        pendingSheet = null
+        renderedSheet = null
+        sheetsError = null
         outline = emptyList()
         contentsError = null
         contentsLoaded = false
@@ -425,6 +532,7 @@ class ReaderModel internal constructor(application: Application, private val sup
         horizontalPages = false
         pagePositionRevision++
         previewSaved = false
+        sheetCoverDelay = 250L
         text = null
         markdown = null
         page = 0
@@ -445,7 +553,7 @@ class ReaderModel internal constructor(application: Application, private val sup
                 signal.throwIfCanceled()
                 val prepared = requireNotNull(opened)
                 val documentInfo = withContext(Dispatchers.IO) {
-                    prepared.session.info.copy(pageCount = prepared.session.pageCount(signal))
+                    prepared.session.info.let { if (it.supportsSheets) it else it.copy(pageCount = prepared.session.pageCount(signal)) }
                 }
                 signal.throwIfCanceled()
                 withContext(Dispatchers.IO) { runCatching { library.record(prepared) } }
@@ -456,17 +564,20 @@ class ReaderModel internal constructor(application: Application, private val sup
                     opened = null // The model now owns the session, including publication failures.
                     passwordRetry = null
                     info = documentInfo
+                    sheetResident = documentInfo.supportsSheets // The lazy Office constructor already imported its workbook.
                     source = uri ?: prepared.sourceUri ?: prepared.importUri
                     documentHash = prepared.hash
                     currentTitle = restored.title
                     sizeBytes = prepared.sizeBytes
                     if (restored.available) updateRecent(restored.recent)
+                    missingRecentHashes = missingRecentHashes - prepared.hash
                     val saved = restored.state
-                    page = saved.page.coerceIn(0, (documentInfo.pageCount - 1).coerceAtLeast(0))
+                    page = if (documentInfo.supportsSheets && documentInfo.pageCount == 0) saved.page else saved.page.coerceIn(0, (documentInfo.pageCount - 1).coerceAtLeast(0))
                     anchorPage = page
                     viewport = saved.viewport
+                    sheetPosition = saved.sheetPosition
                     pageFraction = saved.pageFraction
-                    horizontalPages = saved.horizontalPages && !documentInfo.continuous
+                    horizontalPages = saved.horizontalPages && !documentInfo.continuous && documentInfo.pageCount > 0
                     pagePositionRevision++
                     visiblePages = page..page
                     textPosition = saved.textPosition
@@ -482,7 +593,10 @@ class ReaderModel internal constructor(application: Application, private val sup
                     notice = listOfNotNull(optionsWarning, prepared.retentionWarning, restored.warning)
                         .distinct().takeIf { it.isNotEmpty() }?.joinToString(" ")
                     if (readerVisible) saveResume(prepared.hash.takeIf { restored.available })
-                    if (textMode || info?.continuous == true) loadText() else render()
+                    if (!foreground || !readerVisible || textMode) pauseSheets()
+                    if (saved.horizontalPages && documentInfo.supportsSheets && documentInfo.pageCount == 0 && !textMode)
+                        choosePageView(true) // Resolve genuine print pages only when restoring Present.
+                    else if (textMode || info?.continuous == true) loadText() else render()
                     refreshStorageUsage()
                 }
             } catch (failure: Exception) {
@@ -518,7 +632,7 @@ class ReaderModel internal constructor(application: Application, private val sup
 
     fun showReader(visible: Boolean, identity: Long = documentId): Boolean {
         if (identity != documentId || visible && info == null && !loading) return false
-        if (!visible) passwordRetry = null
+        if (!visible) { passwordRetry = null; refreshRecentDocuments() }
         navigationRevision++
         if (readerVisible == visible) {
             if (!visible) saveResume(null)
@@ -534,6 +648,7 @@ class ReaderModel internal constructor(application: Application, private val sup
             rendering.cancel(); attemptedPages.clear(); pageLoading = false
             stopTextExtraction()
             pauseMetadata()
+            pauseSheets()
         }
         flushDocumentState()
         saveResume(if (visible && stateAvailable) documentHash else null)
@@ -541,7 +656,24 @@ class ReaderModel internal constructor(application: Application, private val sup
     }
 
     fun updateViewport(value: ViewportState, identity: Long = documentId) {
-        if (identity == documentId && info != null) viewport = value.normalized()
+        if (identity != documentId || info == null) return
+        val previousScale = renderScale(viewport)
+        val previousRotation = viewport.rotation % 2
+        viewport = value.normalized()
+        if ((renderScale(viewport) != previousScale || viewport.rotation % 2 != previousRotation) &&
+            !textMode && info?.continuous != true && zoomAnimationStart == null) refinePages()
+    }
+    fun setZoomAnimation(active: Boolean, identity: Long = documentId) {
+        if (identity != documentId || info == null) return
+        if (active) {
+            if (zoomAnimationStart == null) zoomAnimationStart = viewport
+        } else {
+            val start = zoomAnimationStart ?: return
+            zoomAnimationStart = null
+            if (renderScale(start) != renderScale(viewport) || start.rotation % 2 != viewport.rotation % 2)
+                refinePages()
+            else startPageRender()
+        }
     }
     fun updateTextPosition(value: TextPosition, identity: Long = documentId) {
         if (identity == documentId && info != null) textPosition = value.normalized()
@@ -550,6 +682,9 @@ class ReaderModel internal constructor(application: Application, private val sup
         if (identity != documentId) return
         val next = value && info?.let { it.textAvailable || it.reflowable } == true
         if (textMode == next) return
+        if (preparingPrint) pauseSheets()
+        printLayout.cancel()
+        preparingPrint = false
         textMode = next
         render()
         if (next || info?.continuous == true) { bitmap = null; loadText() } else stopTextExtraction()
@@ -562,10 +697,11 @@ class ReaderModel internal constructor(application: Application, private val sup
         if (!stateAvailable) return
         val snapshot = DocumentState(anchorPage, viewport, textPosition,
             if (preferredTextMode) DocumentViewMode.TEXT else DocumentViewMode.PAGES,
-            settings, hideMargins, pageFraction, horizontalPages, notesVisible).normalized()
+            settings, hideMargins, pageFraction, horizontalPages, notesVisible, sheetPosition).normalized()
         val queued = hash to snapshot
         if (lastQueuedState == queued) return
         lastQueuedState = queued
+        recentCandidates = recentCandidates.map { if (it.hash == hash) it.copy(state = snapshot) else it }
         recentDocuments = recentDocuments.map { if (it.hash == hash) it.copy(state = snapshot) else it }
         enqueueStateWrite("document:$hash") {
             try {
@@ -603,6 +739,8 @@ class ReaderModel internal constructor(application: Application, private val sup
                     getApplication<Application>().contentResolver.takePersistableUriPermission(uri,
                         android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                 }
+                // A restored picker result can precede startup preference hydration.
+                snapshotFlow { compoundSettingsReady }.first { it }
                 if (locationRevision == revision) updateCopySettings(copySettings.copy(treeUri = uri.toString()))
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
@@ -784,8 +922,7 @@ class ReaderModel internal constructor(application: Application, private val sup
 
     fun setHorizontalPages(value: Boolean, identity: Long = documentId) {
         if (identity != documentId || horizontalPages == value) return
-        horizontalPages = value
-        flushDocumentState()
+        choosePageView(value, identity)
     }
 
     fun chooseTextView(identity: Long = documentId) {
@@ -797,9 +934,52 @@ class ReaderModel internal constructor(application: Application, private val sup
 
     fun choosePageView(horizontal: Boolean, identity: Long = documentId) {
         if (identity != documentId || info == null || loading) return
+        if (horizontal && info?.supportsSheets == true && info?.pageCount == 0) {
+            if (!foreground || !readerVisible) { horizontalPages = true; return }
+            if (preparingPrint) return
+            horizontalPages = false // Keep the grid usable if explicit print layout fails.
+            pauseSheets()
+            val owner = current?.borrow() ?: return
+            val version = documentId
+            val generation = sheetGeneration
+            preparingPrint = true
+            sheetsLoading = true
+            printLayout.start { signal ->
+                try {
+                    sheetPause?.await()
+                    val value = withContext(Dispatchers.IO) { owner.session.printInfo(signal) }
+                    signal.throwIfCanceled()
+                    check(value.pageCount > 0) { "Print layout unavailable" }
+                    if (version == documentId && generation == sheetGeneration && foreground && readerVisible) {
+                        info = value.copy(warnings = (value.warnings + workbook?.warnings.orEmpty()).distinct())
+                        page = page.coerceIn(0, value.pageCount - 1)
+                        anchorPage = anchorPage.coerceIn(0, value.pageCount - 1)
+                        visiblePages = page..page
+                        preparingPrint = false
+                        choosePageView(true, version)
+                    }
+                } catch (failure: Exception) {
+                    if (!cancelled(failure, signal) && version == documentId && generation == sheetGeneration) notice = message(failure)
+                } finally {
+                    owner.release()
+                    if (version == documentId && generation == sheetGeneration) {
+                        preparingPrint = false
+                        sheetsLoading = false
+                        startPageRender()
+                    }
+                }
+            }
+            return
+        }
+        // Normal and Present use the same raster pixels; changing their layout must not blank them.
+        val retainPages = !textMode && info?.let { !it.continuous && !it.supportsSheets && it.pageCount > 0 } == true
+        if (preparingPrint) pauseSheets()
+        printLayout.cancel()
+        preparingPrint = false
         preferredTextMode = false
         horizontalPages = horizontal
-        if (textMode) { textMode = false; stopTextExtraction(); render() }
+        if (textMode) { textMode = false; stopTextExtraction() }
+        if (retainPages) refinePages() else render()
         flushDocumentState()
     }
 
@@ -900,7 +1080,11 @@ class ReaderModel internal constructor(application: Application, private val sup
     internal fun createPrintAdapter(identity: Long = documentId): DocumentPrintAdapter? {
         if (identity != documentId || loading) return null
         val owner = current?.borrow() ?: return null
-        return DocumentPrintAdapter(owner.session, currentTitle.ifBlank { "Document" }, owner::release)
+        pauseSheets()
+        return DocumentPrintAdapter(owner.session, currentTitle.ifBlank { "Document" }) {
+            owner.release()
+            startPageRender()
+        }
     }
 
     fun setRenderWidth(width: Int) {
@@ -908,7 +1092,11 @@ class ReaderModel internal constructor(application: Application, private val sup
         val next = width.coerceIn(720, 1600)
         if (next == renderWidth) return
         renderWidth = next
-        // A size change can reuse sharper pages while any necessary upgrade is rendered.
+        refinePages()
+    }
+
+    private fun refinePages() {
+        // Size and zoom changes keep the published page while background detail is replaced.
         renderGeneration++
         rendering.cancel()
         attemptedPages.clear()
@@ -1007,50 +1195,97 @@ class ReaderModel internal constructor(application: Application, private val sup
 
     private fun pageOrder(): List<Int> {
         val count = info?.pageCount ?: return emptyList()
-        return (listOf(page) + visiblePages + listOf(visiblePages.last + 1, visiblePages.first - 1))
+        val adjacent = if (viewport.zoom <= 1f) listOf(visiblePages.last + 1, visiblePages.first - 1) else emptyList()
+        return (listOf(page) + visiblePages + adjacent)
             .asSequence().filter { it in 0 until count }.distinct().take(256).toList()
     }
 
     private fun pageBudget(count: Int) = 48L * 1024 * 1024 / count.coerceAtLeast(1)
-    private fun renderWidth(aspect: Float, budget: Long) = minOf(renderWidth,
-        kotlin.math.sqrt(budget / 4.0 / aspect.coerceAtLeast(.001f)).toInt().coerceAtLeast(1))
+    // Half-step tiers avoid restarting native work for every pinch delta. Zooming out reuses detail.
+    private fun renderScale(pose: ViewportState) = kotlin.math.ceil(pose.zoom.coerceAtLeast(1f) * 2f) / 2f
+    private fun renderWidth(aspect: Float, budget: Long, baseWidth: Int = renderWidth,
+        pose: ViewportState = viewport, crop: RectF? = null) =
+        pageRenderWidth(baseWidth, renderScale(pose), aspect, pose.rotation % 2 != 0, budget,
+            crop?.width() ?: 1f, crop?.height() ?: 1f)
 
     private fun needsPage(index: Int, budget: Long): Boolean {
         if (index in failedPages) return false
         val image = pageImages[index] ?: return true
         val bytes = image.bitmap.allocationByteCount
         return bytes > budget || bytes < budget * .7 &&
-            image.renderWidth < renderWidth(image.bitmap.height.toFloat() / image.bitmap.width, budget) * .8
+            image.renderWidth < renderWidth(image.bitmap.height.toFloat() / image.bitmap.width, budget, crop = image.crop) * .8
     }
 
     private fun syncPage() {
         bitmap = pageImages[page]?.bitmap
-        pageLoading = foreground && readerVisible && !textMode && info?.continuous != true && renderWidth > 0 && info != null && bitmap == null && page !in failedPages
+        pageLoading = foreground && readerVisible && !sheetMode && !textMode && info?.continuous != true && renderWidth > 0 && info != null && bitmap == null && page !in failedPages
     }
 
     private fun startPageRender() {
+        if (info?.supportsSheets == true && info?.pageCount == 0 && horizontalPages && !textMode) {
+            if (foreground && readerVisible) choosePageView(true)
+            return
+        }
+        if (sheetMode) { pageLoading = false; startSheetRender(); return }
+        if (sheetResident || sheetRendering.running) pauseSheets()
         val order = pageOrder()
         if (pageImages.keys.any { it !in order }) pageImages = pageImages.filterKeys { it in order }
         syncPage()
-        if (rendering.running || !foreground || !readerVisible || textMode || info?.continuous == true || renderWidth == 0) return
         val budget = pageBudget(order.size)
-        if (order.none { needsPage(it, budget) && it !in attemptedPages }) { syncPage(); return }
+        val pendingPage = order.firstOrNull { needsPage(it, budget) && it !in attemptedPages }
+        renderWork?.let { work ->
+            if (work.page !in order || pendingPage != null &&
+                (pendingPage == page || pendingPage in visiblePages) &&
+                (work.preview || work.page != page && work.page !in visiblePages)) {
+                rendering.cancel()
+                attemptedPages.remove(work.page)
+            }
+        }
+        if (rendering.running || zoomAnimationStart != null || exporting || !foreground || !readerVisible || textMode || info?.continuous == true || renderWidth == 0) return
+        if (pendingPage == null && (previewSaved || documentHash == null || pageImages[page] == null)) return
         val owner = current?.borrow() ?: return
         val version = documentId
         val generation = renderGeneration
         val appearance = effectiveSettings
         val cropMargins = hideMargins
-        val width = renderWidth
+        val baseWidth = renderWidth
+        val pose = viewport
         syncPage()
         rendering.start { signal ->
             try {
-                while (version == documentId && generation == renderGeneration && foreground && readerVisible && !textMode) {
+                while (version == documentId && generation == renderGeneration && foreground && readerVisible && !textMode && !exporting && zoomAnimationStart == null) {
                     val wanted = pageOrder()
                     val budget = pageBudget(wanted.size)
-                    val index = wanted.firstOrNull { needsPage(it, budget) && it !in attemptedPages } ?: break
+                    val next = wanted.firstOrNull { needsPage(it, budget) && it !in attemptedPages }
+                    // Finish visible pages first; save their cover before adjacent prefetch can evict them.
+                    val previewHash = documentHash.takeIf { !previewSaved && pageImages[page] != null &&
+                        (next == null || next != page && next !in visiblePages) }
+                    if (previewHash != null) {
+                        val index = page
+                        renderWork = RenderWork(index, signal, preview = true)
+                        try {
+                            withContext(Dispatchers.IO) {
+                                renderLock.withLock {
+                                    val preview = DocumentPreviews.nativePage(owner.session, index, signal)
+                                    try { previews.savePage(previewHash, preview, android.graphics.Color.TRANSPARENT, owner.session.rasterRegions(index, signal)) }
+                                    finally { preview.recycle() }
+                                }
+                            }
+                        } catch (_: OutOfMemoryError) { /* Thumbnail is optional. */ }
+                        catch (failure: Exception) { if (cancelled(failure, signal)) throw failure }
+                        signal.throwIfCanceled()
+                        if (version == documentId && generation == renderGeneration) previewSaved = true
+                        if (renderWork?.signal === signal) renderWork = null
+                        continue
+                    }
+                    val index = next ?: break
                     attemptedPages.add(index)
+                    renderWork = RenderWork(index, signal)
                     var result: Bitmap? = null
-                    var requestedWidth = width
+                    val previousImage = pageImages[index]
+                    var crop = if (cropMargins) previousImage?.crop else null
+                    val discoverCrop = cropMargins && previousImage == null
+                    var requestedWidth = 1
                     try {
                         val aspect = withContext(Dispatchers.IO) {
                             renderLock.withLock { owner.session.pageAspect(index, signal) }
@@ -1058,27 +1293,41 @@ class ReaderModel internal constructor(application: Application, private val sup
                         signal.throwIfCanceled()
                         if (generation != renderGeneration || version != documentId) break
                         if (!cropMargins || index !in pageAspects) rememberAspect(index, aspect)
-                        var crop: RectF? = null
-                        val previewHash = documentHash.takeIf { !previewSaved && index == page }
                         withContext(Dispatchers.IO) {
                             renderLock.withLock {
-                                signal.throwIfCanceled()
-                                requestedWidth = minOf(width, kotlin.math.sqrt(budget / 4.0 / aspect.coerceAtLeast(.001f)).toInt().coerceAtLeast(1))
-                                var original = owner.session.renderPage(index, requestedWidth, ThemeSettings(ReadingMode.ORIGINAL), signal)
-                                try {
-                                    if (original.allocationByteCount > budget) {
-                                        val scale = kotlin.math.sqrt(budget.toDouble() / original.allocationByteCount) * .99
-                                        val reduced = Bitmap.createScaledBitmap(original,
-                                            (original.width * scale).toInt().coerceAtLeast(1),
-                                            (original.height * scale).toInt().coerceAtLeast(1), true)
-                                        if (reduced !== original) original.recycle()
-                                        original = reduced
+                                fun original(width: Int): Bitmap {
+                                    signal.throwIfCanceled()
+                                    requestedWidth = width
+                                    val image = owner.session.renderPage(index, width, ThemeSettings(ReadingMode.ORIGINAL), signal)
+                                    try {
+                                        if (image.allocationByteCount <= budget) return image
+                                        val scale = kotlin.math.sqrt(budget.toDouble() / image.allocationByteCount) * .99
+                                        val reduced = Bitmap.createScaledBitmap(image,
+                                            (image.width * scale).toInt().coerceAtLeast(1),
+                                            (image.height * scale).toInt().coerceAtLeast(1), true)
+                                        if (reduced !== image) image.recycle()
                                         requestedWidth = (requestedWidth * scale).toInt().coerceAtLeast(1)
+                                        return reduced
+                                    } catch (failure: Throwable) { image.recycle(); throw failure }
+                                }
+                                val target = renderWidth(aspect, budget, baseWidth, pose, crop)
+                                var image = original(if (discoverCrop) pageMarginProbeWidth(target, aspect) else target)
+                                val regions = try {
+                                    if (discoverCrop) {
+                                        crop = detectPageMargins(image, signal)
+                                        val detail = renderWidth(aspect, budget, baseWidth, pose, crop)
+                                        if (requestedWidth < detail * .8) {
+                                            // One upgrade, before theming; keep the normalized probe crop at every detail tier.
+                                            image.recycle()
+                                            image = original(detail)
+                                        }
                                     }
-                                    if (cropMargins) crop = detectPageMargins(original, signal)
-                                } catch (failure: Throwable) { original.recycle(); throw failure }
-                                result = themed(original, appearance, signal)
+                                    owner.session.rasterRegionsFor(index, appearance, signal)
+                                } catch (failure: Throwable) { image.recycle(); throw failure }
+                                result = themed(image, appearance, signal, regions)
                             }
+                            signal.throwIfCanceled()
+                            requireNotNull(result).prepareToDraw()
                         }
                         signal.throwIfCanceled()
                         if (version == documentId && generation == renderGeneration && index in pageOrder()) {
@@ -1099,19 +1348,6 @@ class ReaderModel internal constructor(application: Application, private val sup
                             pageImages = retained
                             syncPage()
                             discoverMetadata()
-                            if (previewHash != null) {
-                                try {
-                                    withContext(Dispatchers.IO) {
-                                        renderLock.withLock {
-                                            val preview = DocumentPreviews.nativePage(owner.session, index, signal)
-                                            try { previews.savePage(previewHash, preview, android.graphics.Color.TRANSPARENT) }
-                                            finally { preview.recycle() }
-                                        }
-                                    }
-                                } catch (_: OutOfMemoryError) { /* Thumbnail is optional. */ }
-                                catch (failure: Exception) { if (cancelled(failure, signal)) throw failure }
-                                if (version == documentId && generation == renderGeneration) previewSaved = true
-                            }
                         }
                     } catch (_: OutOfMemoryError) {
                         if (!signal.isCanceled && version == documentId && generation == renderGeneration) {
@@ -1125,9 +1361,176 @@ class ReaderModel internal constructor(application: Application, private val sup
                         failedPages = failedPages + index
                         if (index == page) error = message(failure)
                         syncPage()
-                    } finally { result?.recycle() }
+                    } finally {
+                        result?.recycle()
+                        if (renderWork?.signal === signal) renderWork = null
+                    }
                 }
-            } finally { owner.release() }
+            } finally {
+                if (renderWork?.signal === signal) renderWork = null
+                owner.release()
+            }
+        }
+    }
+
+    fun updateSheetPosition(value: SheetPosition, identity: Long = documentId) {
+        if (identity != documentId || info?.supportsSheets != true) return
+        if (workbook?.sheets?.none { it.index == value.sheet } == true) return
+        val next = value.normalized()
+        val geometry = sheetGeometry?.takeIf { it.sheet.index == next.sheet }
+        sheetPosition = if (geometry == null) next else next.copy(
+            x = next.x.coerceAtMost(geometry.sheet.width), y = next.y.coerceAtMost(geometry.sheet.height))
+    }
+
+    fun selectSheet(index: Int, identity: Long = documentId) {
+        if (identity != documentId || workbook?.sheets?.none { it.index == index } != false || sheetPosition.sheet == index) return
+        if (sheetCovering) pauseSheets()
+        sheetPosition = SheetPosition(index)
+        sheetGeometry = null
+        sheetFrame = null
+        sheetRequest = null
+        pendingSheet = null
+        renderedSheet = null
+        sheetsError = null
+        startSheetRender()
+        flushDocumentState()
+    }
+
+    fun updateSheetViewport(size: IntSize, density: Float, identity: Long = documentId) {
+        if (identity != documentId || info?.supportsSheets != true) return
+        sheetVisibleSize = size
+        sheetDensity = density
+    }
+
+    fun requestSheetViewport(value: SheetViewport, identity: Long = documentId) {
+        if (identity != documentId || !sheetMode || value.sheet != sheetPosition.sheet) return
+        sheetRequest = value.checked()
+        if (sheetCovering) pauseSheets() // Optional thumbnail work never delays a new visible viewport.
+        startSheetRender()
+    }
+
+    fun retrySheet(identity: Long = documentId) {
+        if (identity != documentId || !sheetMode) return
+        pauseSheets()
+        sheetsError = null
+        renderedSheet = null
+        startSheetRender()
+    }
+
+    /** One active render and the newest pending viewport; panning never restarts a busy worker. */
+    private fun startSheetRender() {
+        if (!sheetMode || !foreground || !readerVisible || exporting || preparingPrint || sheetsError != null) return
+        sheetRequest?.let { request ->
+            val work = SheetWork(request, effectiveSettings)
+            pendingSheet = work.takeIf { it != renderedSheet }
+        }
+        if (sheetRendering.running || workbook != null && sheetGeometry?.sheet?.index == sheetPosition.sheet && pendingSheet == null) return
+        val owner = current?.borrow() ?: return
+        val version = documentId
+        val generation = sheetGeneration
+        sheetResident = true
+        sheetsLoading = true
+        sheetRendering.start { signal ->
+            try {
+                sheetPause?.await()
+                while (version == documentId && generation == sheetGeneration && sheetMode && foreground && readerVisible && !exporting && !preparingPrint) {
+                    if (workbook == null) {
+                        val value = withContext(Dispatchers.IO) { owner.session.workbook(signal) }
+                            ?: throw java.io.IOException("Worksheet view unavailable")
+                        signal.throwIfCanceled()
+                        if (version != documentId || generation != sheetGeneration) break
+                        workbook = value
+                        if (value.sheets.none { it.index == sheetPosition.sheet }) sheetPosition = SheetPosition(value.activeSheet)
+                        info = info?.let { it.copy(warnings = (it.warnings + value.warnings).distinct()) }
+                    }
+                    val selected = sheetPosition.sheet
+                    if (sheetGeometry?.sheet?.index != selected) {
+                        val geometry = try {
+                            withContext(Dispatchers.IO) { owner.session.sheetGeometry(selected, signal) }
+                                ?: throw java.io.IOException("Worksheet geometry unavailable")
+                        } catch (failure: Exception) {
+                            if (!cancelled(failure, signal) && selected != sheetPosition.sheet) continue
+                            throw failure
+                        }
+                        signal.throwIfCanceled()
+                        if (version != documentId || generation != sheetGeneration) break
+                        if (selected != sheetPosition.sheet) continue
+                        check(geometry.sheet.index == selected) { "Worksheet changed" }
+                        sheetGeometry = geometry
+                        updateSheetPosition(sheetPosition, version)
+                    }
+                    if (pendingSheet == null) {
+                        val hash = documentHash
+                        val coverViewport = sheetFrame?.viewport
+                        if (!previewSaved && hash != null && coverViewport != null) {
+                            sheetsLoading = false
+                            delay(sheetCoverDelay) // Defer optional covers until visible pan/zoom work settles.
+                            if (pendingSheet != null || selected != sheetPosition.sheet) continue
+                            previewSaved = true
+                            sheetCovering = true
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    val cover = DocumentPreviews.nativeSheet(owner.session, signal, viewport = coverViewport)
+                                    try { previews.savePage(hash, cover.image, android.graphics.Color.TRANSPARENT, cover.regions) }
+                                    finally { cover.image.recycle() }
+                                }
+                            } catch (_: OutOfMemoryError) { /* The visible grid remains usable without a cover. */ }
+                            catch (failure: Exception) { if (cancelled(failure, signal)) throw failure }
+                            finally { if (version == documentId && generation == sheetGeneration) sheetCovering = false }
+                            continue
+                        }
+                        break
+                    }
+                    val work = requireNotNull(pendingSheet)
+                    pendingSheet = null
+                    sheetsLoading = true
+                    if (work == renderedSheet || work.viewport.sheet != selected) continue
+                    var image: Bitmap? = null
+                    try {
+                        withContext(Dispatchers.IO) { image = owner.session.renderSheet(work.viewport, work.appearance, signal) }
+                        signal.throwIfCanceled()
+                        if (version == documentId && generation == sheetGeneration && sheetMode && foreground && readerVisible &&
+                            selected == sheetPosition.sheet && work.appearance == effectiveSettings &&
+                            (renderedSheet?.viewport != sheetRequest || renderedSheet?.appearance != work.appearance)) {
+                            sheetFrame = SheetFrame(requireNotNull(image), work.viewport)
+                            image = null // Compose may still draw an older published frame; GC owns those images.
+                            renderedSheet = work
+                            discoverMetadata()
+                        }
+                    } catch (failure: Exception) {
+                        if (!cancelled(failure, signal) && (selected != sheetPosition.sheet ||
+                            work.viewport != sheetRequest || work.appearance != effectiveSettings)) continue
+                        throw failure
+                    } finally { image?.recycle() }
+                }
+            } catch (failure: Exception) {
+                if (!cancelled(failure, signal) && version == documentId && generation == sheetGeneration)
+                    sheetsError = message(failure)
+            } finally {
+                if (version == documentId && generation == sheetGeneration) sheetsLoading = false
+                owner.release()
+            }
+        }
+    }
+
+    /** Cancellation is immediate; child shutdown and session monitors are worker-only. */
+    private fun pauseSheets() {
+        sheetGeneration++
+        sheetRendering.cancel()
+        printLayout.cancel()
+        preparingPrint = false
+        pendingSheet = null
+        if (sheetCovering) { previewSaved = false; sheetCoverDelay = 1_000 }
+        sheetCovering = false
+        sheetsLoading = false
+        if (!sheetResident) return
+        sheetResident = false
+        val owner = current?.borrow() ?: return
+        val done = CompletableDeferred<Unit>()
+        sheetPause = done
+        CloseWorker.execute {
+            try { runCatching { owner.session.pauseSheets() } }
+            finally { owner.release(); done.complete(Unit) }
         }
     }
 
@@ -1174,7 +1577,7 @@ class ReaderModel internal constructor(application: Application, private val sup
                             withContext(Dispatchers.IO) {
                                 renderLock.withLock {
                                     val preview = DocumentPreviews.nativePage(owner.session, 0, signal)
-                                    try { previews.savePage(previewHash, preview, android.graphics.Color.TRANSPARENT) }
+                                    try { previews.savePage(previewHash, preview, android.graphics.Color.TRANSPARENT, owner.session.rasterRegions(0, signal)) }
                                     finally { preview.recycle() }
                                 }
                             }
@@ -1204,9 +1607,18 @@ class ReaderModel internal constructor(application: Application, private val sup
 
     fun prepareExport(kind: ExportKind, identity: Long = documentId): String? {
         if (identity != documentId || !canExport) return null
+        val sheet = if (kind == ExportKind.IMAGE && sheetMode) {
+            val visible = if (sheetGeometry?.sheet?.index == sheetPosition.sheet)
+                worksheetVisibleViewport(sheetPosition, sheetVisibleSize, sheetDensity.toDouble()) else null
+            visible ?: run { notice = "Worksheet is loading."; return null }
+        } else null
         val owner = current?.borrow() ?: return null
-        pendingExport = Export(owner, kind, page, effectiveSettings, currentTitle.ifBlank { "document" }.substringBeforeLast('.'))
-        return pendingExport!!.name + if (kind == ExportKind.IMAGE) "-page-${page + 1}.png" else ".${kind.extension}"
+        pendingExport = Export(owner, kind, page, effectiveSettings, currentTitle.ifBlank { "document" }.substringBeforeLast('.'), sheet)
+        return pendingExport!!.name + when {
+            sheet != null -> "-sheet-${sheet.sheet + 1}.png"
+            kind == ExportKind.IMAGE -> "-page-${page + 1}.png"
+            else -> ".${kind.extension}"
+        }
     }
 
     fun discardPendingExport() {
@@ -1221,10 +1633,18 @@ class ReaderModel internal constructor(application: Application, private val sup
         }
         pendingExport = null
         if (destination == null) { request.owner.release(); return }
+        notice = null
         exporting = true
+        pauseSheets()
+        // Explicit export owns the session before optional covers or adjacent-page work.
+        renderWork?.let { attemptedPages.remove(it.page) }
+        rendering.cancel()
+        // Once the rich flow is published, its extraction task only owns an optional cover.
+        if (markdown != null && text != null) stopTextExtraction()
         pauseMetadata()
         saving.start { signal ->
             try {
+                sheetPause?.await()
                 withContext(Dispatchers.IO) {
                     val resolver = getApplication<Application>().contentResolver
                     resolver.openFileDescriptor(destination, "wt", signal)?.use { descriptor ->
@@ -1236,7 +1656,8 @@ class ReaderModel internal constructor(application: Application, private val sup
                                 output.bufferedWriter(Charsets.UTF_8).use { it.write(text) }
                             }
                             ExportKind.IMAGE -> {
-                                val image = request.owner.session.renderPage(request.page, 1600, request.settings, signal)
+                                val image = request.sheet?.let { request.owner.session.renderSheet(it, request.settings, signal) }
+                                    ?: request.owner.session.renderPage(request.page, 1600, request.settings, signal)
                                 try {
                                     signal.throwIfCanceled()
                                     check(image.compress(Bitmap.CompressFormat.PNG, 100, output)) { "Could not encode page." }
@@ -1245,6 +1666,7 @@ class ReaderModel internal constructor(application: Application, private val sup
                         }
                         signal.throwIfCanceled()
                         output.flush()
+                        descriptor.checkError()
                     } ?: error("Could not open the selected destination.")
                 }
                 notice = "Export saved."
@@ -1253,8 +1675,13 @@ class ReaderModel internal constructor(application: Application, private val sup
                 else notice = "Export cancelled; the destination may be incomplete."
             } finally {
                 exporting = false
+                if (request.sheet != null && request.owner === current) {
+                    sheetResident = true
+                    if (!foreground || !readerVisible || !sheetMode) pauseSheets()
+                }
                 request.owner.release()
                 if (text != null || bitmap != null) discoverMetadata()
+                startPageRender()
             }
         }
     }
@@ -1271,6 +1698,7 @@ class ReaderModel internal constructor(application: Application, private val sup
     fun dismissNotice(expectedMessage: String? = notice) { if (notice == expectedMessage) notice = null }
 
     private fun cancelWork() {
+        pauseSheets()
         opening.cancel()
         rendering.cancel()
         stopTextExtraction()
@@ -1284,6 +1712,7 @@ class ReaderModel internal constructor(application: Application, private val sup
     }
 
     override fun onCleared() {
+        stopRecentCheck()
         library.close()
         previews.close()
         recentPreviews = emptyMap()
@@ -1313,7 +1742,7 @@ class ReaderModel internal constructor(application: Application, private val sup
         fun retire() = release()
     }
     private class Export(val owner: Lease, val kind: ExportKind, val page: Int,
-        val settings: ThemeSettings, val name: String)
+        val settings: ThemeSettings, val name: String, val sheet: SheetViewport?)
     private inner class Task(private val settleFailure: () -> Unit) {
         private var job: Job? = null
         private var signal: CancellationSignal? = null

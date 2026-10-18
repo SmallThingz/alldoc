@@ -25,6 +25,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -83,41 +91,65 @@ internal fun ReaderSheet(
         modifier = Modifier.semantics { paneTitle = title },
         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh) {
         ReaderModalWindow()
-        ReaderDialogContent(title, dismiss, Modifier.fillMaxWidth(), buttons, showTitle, content)
+        val acceptingInput = !dismissing && !(state.isAnimationRunning && state.targetValue == SheetValue.Hidden)
+        ReaderDialogContent(title, dismiss, Modifier.fillMaxWidth().readerInput(acceptingInput)
+            .onPreviewKeyEvent { event ->
+                if (dismissing || state.targetValue == SheetValue.Hidden) true
+                else if (event.key != Key.Escape) false else {
+                    if (event.type == KeyEventType.KeyUp) dismiss()
+                    true
+                }
+            }, buttons, showTitle, content)
     }
 }
 
 /** Native modal focus and outside dismissal, with the visible panel attached to the top edge. */
 @Composable
 internal fun ReaderTopPanel(
-    title: String, onDismiss: () -> Unit, showTitle: Boolean = true, content: @Composable ColumnScope.() -> Unit,
+    title: String, onDismiss: () -> Unit, showTitle: Boolean = true,
+    content: @Composable ColumnScope.(dismiss: (after: () -> Unit) -> Unit) -> Unit,
 ) {
     var closing by remember { mutableStateOf(false) }
-    Dialog(onDismissRequest = { closing = true }, properties = DialogProperties(
+    var afterClose by remember { mutableStateOf<(() -> Unit)?>(null) }
+    fun close(after: (() -> Unit)? = null) {
+        if (!closing) { afterClose = after; closing = true }
+    }
+    Dialog(onDismissRequest = { close() }, properties = DialogProperties(
         usePlatformDefaultWidth = false, decorFitsSystemWindows = false, windowTitle = title,
     )) {
         ReaderModalWindow()
         val view = LocalView.current
         DisposableEffect(view) {
-            (view.parent as? DialogWindowProvider)?.window?.setGravity(Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+            (view.parent as? DialogWindowProvider)?.window?.apply {
+                setGravity(Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+                setDimAmount(0f)
+            }
             onDispose { }
         }
-        BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
             val availableHeight = maxHeight
-            Box(Modifier.matchParentSize().clickable(remember { MutableInteractionSource() }, indication = null) {
-                closing = true
-            }.clearAndSetSemantics { })
-            ReaderMotionLayer(active = !closing, visible = !closing, onBack = onDismiss, fromTop = true,
-                modifier = Modifier.align(Alignment.TopCenter).widthIn(max = 560.dp).fillMaxWidth()) {
+            ReaderMotionLayer(active = !closing, visible = !closing, onBack = {
+                val action = afterClose
+                afterClose = null
+                onDismiss()
+                action?.invoke()
+            }, fromTop = true, backdrop = { motion ->
+                Box(Modifier.matchParentSize().drawBehind {
+                    drawRect(Color.Black, alpha = .32f * motion.openness.value)
+                }.clickable(remember { MutableInteractionSource() }, indication = null) {
+                    close()
+                }.clearAndSetSemantics { })
+            }, modifier = Modifier.align(Alignment.TopCenter).widthIn(max = 560.dp).fillMaxWidth(),
+                viewportModifier = Modifier.fillMaxSize().safeDrawingPadding().clipToBounds()) {
                 Surface(shape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 6.dp) {
-                    Column(Modifier.fillMaxWidth().heightIn(max = availableHeight).readerTexture()
+                    Column(Modifier.fillMaxWidth().heightIn(max = availableHeight)
                         .verticalScroll(rememberScrollState()).padding(16.dp).semantics {
                             paneTitle = title
-                            dismiss { closing = true; true }
+                            dismiss { close(); true }
                         }, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (showTitle) Text(title, Modifier.semantics { heading() }, style = MaterialTheme.typography.titleLarge)
-                        content()
+                        content { after -> close(after) }
                     }
                 }
             }
@@ -143,16 +175,18 @@ internal fun ReaderPanels(
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                     verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row {
-                        ReaderAction(Icons.AutoMirrored.Outlined.RotateRight, "Rotate page", enabled = !model.loading) {
+                        if (!model.sheetMode) ReaderAction(Icons.AutoMirrored.Outlined.RotateRight, "Rotate page", enabled = !model.loading) {
                             model.updateViewport(model.viewport.copy(rotation = (model.viewport.rotation + 1) % 4), identity)
                             model.flushDocumentState()
                         }
-                        ReaderAction(Icons.Outlined.FitScreen, "Reset zoom and rotation", enabled = !model.loading) {
-                            model.updateViewport(ViewportState(), identity)
+                        ReaderAction(Icons.Outlined.FitScreen,
+                            if (model.sheetMode) "Reset sheet view" else "Reset zoom and rotation", enabled = !model.loading) {
+                            if (model.sheetMode) model.updateSheetPosition(model.sheetPosition.copy(x = 0.0, y = 0.0, zoom = 1f), identity)
+                            else model.updateViewport(ViewportState(), identity)
                             model.flushDocumentState()
                         }
                     }
-                    if (model.canHideMargins) FilterChip(selected = model.hideMargins,
+                    if (model.canHideMargins && !model.sheetMode) FilterChip(selected = model.hideMargins,
                         onClick = { model.setHideMargins(!model.hideMargins, identity) }, enabled = !model.loading,
                         modifier = Modifier.heightIn(min = 48.dp).semantics {
                             contentDescription = if (model.hideMargins) "Show margins" else "Hide margins"
@@ -161,9 +195,9 @@ internal fun ReaderPanels(
             }
         }
         "export" -> model.info?.let { info ->
-            ReaderTopPanel("Export", { onDismiss(panel) }) {
+            ReaderTopPanel("Export", { onDismiss(panel) }) { dismiss ->
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(onClick = { onDismiss(panel); onPrint() }, enabled = model.canExport,
+                    FilledTonalButton(onClick = { dismiss(onPrint) }, enabled = model.canExport,
                         modifier = Modifier.heightIn(min = 48.dp)) {
                         Icon(Icons.Outlined.Print, null, Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
@@ -174,9 +208,9 @@ internal fun ReaderPanels(
                             val (label, icon) = when (kind) {
                                 ReaderModel.ExportKind.TEXT -> "Text" to Icons.Outlined.TextFields
                                 ReaderModel.ExportKind.JSON -> "JSON" to Icons.Outlined.DataObject
-                                ReaderModel.ExportKind.IMAGE -> "Page image" to Icons.Outlined.Image
+                                ReaderModel.ExportKind.IMAGE -> (if (model.sheetMode) "Visible sheet" else "Page image") to Icons.Outlined.Image
                             }
-                            FilledTonalButton(onClick = { onDismiss(panel); onExport(kind) }, enabled = model.canExport,
+                            FilledTonalButton(onClick = { dismiss { onExport(kind) } }, enabled = model.canExport,
                                 modifier = Modifier.heightIn(min = 48.dp)) {
                                 Icon(icon, null, Modifier.size(20.dp))
                                 Spacer(Modifier.width(8.dp))
@@ -216,7 +250,8 @@ internal fun ReaderPanels(
                 }
             }
         }
-        "limits" -> CopyLimitsDialog(model.copySettings, model::updateCopySettings) { onDismiss(panel) }
+        "limits" -> CopyLimitsDialog(model.copySettings, model::updateCopySettings, onDismiss = { onDismiss(panel) },
+            enabled = model.compoundSettingsReady && !model.storageBusy)
         "about" -> ReaderTopPanel("AllDoc", { onDismiss(panel) }, showTitle = false) {
             Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -253,7 +288,7 @@ private fun DocumentDetails(info: DocumentInfo, size: Long, source: Uri?) {
             Text(info.title, style = MaterialTheme.typography.titleMedium)
             FileInfoRow("Type", info.format.uppercase())
             FileInfoRow("Size", readerBytes(size))
-            if (!info.reflowable) FileInfoRow("Pages", info.pageCount.toString())
+            if (!info.reflowable && info.pageCount > 0) FileInfoRow("Pages", info.pageCount.toString())
             source?.let { uri ->
                 FileInfoRow(if (uri.scheme == "file") "Location" else "Source",
                     if (uri.scheme == "file") uri.path.orEmpty() else uri.authority.orEmpty())

@@ -1,5 +1,10 @@
 package app.smallthingz.alldoc.ui
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.MutatePriority
+import androidx.compose.foundation.gestures.stopScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -9,26 +14,24 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -41,8 +44,8 @@ import app.smallthingz.alldoc.theme.ReadingPalette
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.util.Locale
+import kotlin.math.roundToInt
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ReaderSettingsScreen(
     settings: CopySettings, location: String, usedBytes: Long, count: Int, busy: Boolean, warning: String?,
@@ -53,45 +56,41 @@ internal fun ReaderSettingsScreen(
     hiddenLibraryTypes: Set<LibraryCategory> = emptySet(),
     onHiddenLibraryTypesChange: (Set<LibraryCategory>) -> Unit = {},
     onLibraryAccess: (() -> Unit)? = null, onAddLibraryFolder: (() -> Unit)? = null,
+    libraryAccess: ReaderAccessModel? = null, active: Boolean = true, libraryTypesEnabled: Boolean = true,
 ) {
+    val scroll = rememberScrollState()
+    LaunchedEffect(scroll, active) { if (!active) scroll.stopScroll(MutatePriority.PreventUserInput) }
     Column(Modifier.fillMaxSize().readerBackground()) {
         ReaderHeader("Settings", onBack = onBack)
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+        Column(Modifier.weight(1f).verticalScroll(scroll, enabled = active).padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (libraryAccess != null && onLibraryAccess != null) LibraryAccessSetting(libraryAccess, onLibraryAccess)
             SettingsSection("App theme")
-            val systemDark = isSystemInDarkTheme()
-            AppearanceChoices(AppTheme.entries.map { it to when (it) {
-                AppTheme.SYSTEM -> "System"; AppTheme.LIGHT -> "Light"; AppTheme.DARK -> "Dark"; AppTheme.AMOLED -> "AMOLED"
-            } }, appTheme, true, onAppThemeChange, { theme ->
-                val dark = theme.isDark(systemDark)
-                ReadingPalette(if (theme == AppTheme.AMOLED) 0xff000000.toInt() else
-                    if (dark) 0xff101418.toInt() else 0xffF5F6F7.toInt(),
-                    if (dark) 0xffE5EBEF.toInt() else 0xff1A2329.toInt(), 0, 0)
-            }, { "App theme: $it" })
+            SettingsChoices(AppTheme.entries, { it == appTheme }, onAppThemeChange,
+                enabled = active, label = { it.label() }, icon = { when (it) {
+                    AppTheme.SYSTEM -> Icons.Outlined.BrightnessAuto; AppTheme.LIGHT -> Icons.Outlined.LightMode
+                    AppTheme.DARK -> Icons.Outlined.DarkMode; AppTheme.AMOLED -> Icons.Outlined.Contrast
+                } }, description = { "App theme: ${it.label()}" })
             SettingsSection(if (documentAppearance) "This document" else "Document defaults")
-            ReadingAppearanceContent(appearance, appearanceEnabled, onChange = onAppearanceChange)
-            if (onLibraryAccess != null || onAddLibraryFolder != null) {
-                SettingsSection("Library")
+            ReadingAppearanceContent(appearance, appearanceEnabled && active, onChange = onAppearanceChange)
+            SettingsSection("Library")
+            onAddLibraryFolder?.let {
                 Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-                    Column(Modifier.readerTexture()) {
-                        onLibraryAccess?.let { SettingsLink(Icons.Outlined.Storage, "Device access", "", it) }
-                        onAddLibraryFolder?.let { SettingsLink(Icons.Outlined.CreateNewFolder, "Add folder", "", it) }
-                    }
-                }
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    LibraryCategory.available.forEach { category ->
-                        val included = category !in hiddenLibraryTypes
-                        FilterChip(selected = included, onClick = {
-                            onHiddenLibraryTypesChange(if (included) hiddenLibraryTypes + category else hiddenLibraryTypes - category)
-                        }, modifier = Modifier.heightIn(min = 48.dp).semantics {
-                            contentDescription = "Library: ${category.label}"
-                        }, label = { Text(category.label) })
-                    }
+                    SettingsLink(Icons.Outlined.CreateNewFolder, "Add folder", "", it)
                 }
             }
+            SettingsChoices(LibraryCategory.available, { it !in hiddenLibraryTypes }, { category ->
+                onHiddenLibraryTypesChange(if (category in hiddenLibraryTypes) hiddenLibraryTypes - category else hiddenLibraryTypes + category)
+            }, label = { when (it) {
+                LibraryCategory.DOCUMENTS -> "Docs"; LibraryCategory.PRESENTATIONS -> "Slides"
+                LibraryCategory.SPREADSHEETS -> "Sheets"; else -> "Books"
+            } }, icon = { when (it) {
+                LibraryCategory.DOCUMENTS -> Icons.Outlined.Description; LibraryCategory.PRESENTATIONS -> Icons.Outlined.Slideshow
+                LibraryCategory.SPREADSHEETS -> Icons.Outlined.TableChart; else -> Icons.Outlined.MenuBook
+            } }, description = { "Library: ${it.label}" }, multiple = true, enabled = active && libraryTypesEnabled)
             SettingsSection("Storage")
             Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-                Column(Modifier.readerTexture()) {
+                Column {
                     Row(Modifier.fillMaxWidth().toggleable(settings.enabled, enabled = !busy, role = Role.Switch,
                         onValueChange = { onChange(settings.copy(enabled = it)) }).heightIn(min = 56.dp)
                         .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -105,7 +104,7 @@ internal fun ReaderSettingsScreen(
                         modifier = Modifier.padding(start = 44.dp).heightIn(min = 48.dp)
                             .semantics { contentDescription = "Use default location" }) { Text("Use default") }
                     SettingsDivider()
-                    SettingsLink(Icons.Outlined.Storage, "Limits", "${readerBytes(settings.maxBytes)} · ${settings.maxCount} files", onLimits, !busy)
+                    SettingsLink(Icons.Outlined.Storage, "Storage limit", "${settings.maxBytes / (1024 * 1024)} MB", onLimits, !busy)
                     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -161,24 +160,23 @@ internal fun readerBytes(bytes: Long): String = when {
 }
 
 @Composable
-internal fun CopyLimitsDialog(settings: CopySettings, onChange: (CopySettings) -> Unit, onDismiss: () -> Unit) {
-    var megabytes by rememberSaveable { mutableStateOf((settings.maxBytes / (1024 * 1024)).toString()) }
-    var documents by rememberSaveable { mutableStateOf(settings.maxCount.toString()) }
-    val size = megabytes.toLongOrNull()?.takeIf { it in 1..8192 }
-    val count = documents.toIntOrNull()?.takeIf { it in 1..10000 }
-    ReaderDialog("Storage limits", onDismiss, buttons = { dismiss ->
-        TextButton(onClick = dismiss) { Text("Cancel") }
-        TextButton(onClick = { onChange(settings.copy(maxBytes = requireNotNull(size) * 1024 * 1024,
-            maxCount = requireNotNull(count))); dismiss() }, enabled = size != null && count != null) { Text("Save") }
-    }) {
-        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("Lower limits may remove older copies.", style = MaterialTheme.typography.bodySmall)
-            OutlinedTextField(megabytes, { megabytes = it.filter(Char::isDigit).take(5) }, label = { Text("Storage (MiB)") },
-                supportingText = { Text("1–8192") }, singleLine = true, isError = size == null,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(documents, { documents = it.filter(Char::isDigit).take(5) }, label = { Text("Files") },
-                supportingText = { Text("1–10,000") }, singleLine = true, isError = count == null,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+internal fun CopyLimitsDialog(settings: CopySettings, onChange: (CopySettings) -> Unit, onDismiss: () -> Unit,
+    enabled: Boolean = true,
+) {
+    var megabytes by remember(settings.maxBytes) { mutableFloatStateOf((settings.maxBytes / (1024 * 1024)).coerceIn(1, 8192).toFloat()) }
+    ReaderSheet("Storage limit", onDismiss) {
+        Column {
+            Text("${megabytes.roundToInt()} MB", style = MaterialTheme.typography.titleMedium)
+            Slider(value = megabytes, onValueChange = { megabytes = it }, valueRange = 1f..8192f, enabled = enabled,
+                onValueChangeFinished = {
+                    val bytes = megabytes.roundToInt().toLong() * 1024 * 1024
+                    if (enabled && bytes != settings.maxBytes) onChange(settings.copy(maxBytes = bytes))
+                },
+                modifier = Modifier.fillMaxWidth().semantics {
+                    contentDescription = "Storage limit"; stateDescription = "${megabytes.roundToInt()} MB"
+                })
+            Text("Older copies are removed at the limit.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -209,31 +207,58 @@ internal fun ReadingAppearanceContent(
         }
         if (showImageTreatment && settings.mode != ReadingMode.ORIGINAL && settings.mode != ReadingMode.INVERT) {
             Text("Images", style = MaterialTheme.typography.labelLarge)
-            BoxWithConstraints(Modifier.fillMaxWidth().selectableGroup()) {
-                val density = LocalDensity.current
-                val labelWidth = rememberTextMeasurer().measure("Recolor", style = MaterialTheme.typography.labelLarge).size.width
-                val chipWidth = labelWidth + with(density) { 32.dp.roundToPx() }
-                val gap = with(density) { 6.dp.roundToPx() }
-                val columns = when {
-                    constraints.maxWidth >= chipWidth * 4 + gap * 3 -> 4
-                    constraints.maxWidth >= chipWidth * 2 + gap -> 2
-                    else -> 1
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    ImageTreatment.entries.chunked(columns).forEach { row ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            row.forEach { treatment ->
-                                val label = when (treatment) {
-                                    ImageTreatment.AUTO -> "Auto"; ImageTreatment.KEEP -> "Keep"
-                                    ImageTreatment.DIM -> "Dim"; ImageTreatment.RECOLOR -> "Recolor"
-                                }
-                                FilterChip(selected = settings.imageTreatment == treatment,
-                                    onClick = { onChange(settings.copy(imageTreatment = treatment)) }, enabled = enabled,
-                                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics {
-                                        contentDescription = label; role = Role.RadioButton
-                                    }, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
-                            }
-                            repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+            SettingsChoices(ImageTreatment.entries, { it == settings.imageTreatment },
+                { onChange(settings.copy(imageTreatment = it)) }, enabled = enabled,
+                label = { when (it) {
+                    ImageTreatment.AUTO -> "Auto"; ImageTreatment.KEEP -> "Keep"
+                    ImageTreatment.DIM -> "Dim"; ImageTreatment.RECOLOR -> "Recolor"
+                } }, icon = { when (it) {
+                    ImageTreatment.AUTO -> Icons.Outlined.AutoFixHigh; ImageTreatment.KEEP -> Icons.Outlined.Image
+                    ImageTreatment.DIM -> Icons.Outlined.BrightnessLow; ImageTreatment.RECOLOR -> Icons.Outlined.Palette
+                } })
+        }
+    }
+}
+
+private fun AppTheme.label() = when (this) {
+    AppTheme.SYSTEM -> "System"; AppTheme.LIGHT -> "Light"; AppTheme.DARK -> "Dark"; AppTheme.AMOLED -> "AMOLED"
+}
+
+/** Reverb-style segmented choices; narrow layouts keep icons and full accessible names. */
+@Composable
+private fun <T> SettingsChoices(items: List<T>, selected: (T) -> Boolean, onSelect: (T) -> Unit,
+    label: (T) -> String, icon: (T) -> ImageVector, enabled: Boolean = true,
+    description: (T) -> String = label, multiple: Boolean = false,
+) {
+    val colors = MaterialTheme.colorScheme
+    val density = LocalDensity.current
+    val style = MaterialTheme.typography.labelMedium
+    val measurer = rememberTextMeasurer()
+    val widest = items.maxOf { measurer.measure(label(it), style, maxLines = 1, softWrap = false).size.width }
+    val scroll = rememberScrollState()
+    LaunchedEffect(scroll, enabled) { if (!enabled) scroll.stopScroll(MutatePriority.PreventUserInput) }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val rowWidth = maxOf(maxWidth, (items.size * 48 + 8).dp)
+        val showLabels = widest <= with(density) { ((rowWidth - 8.dp) / items.size - 12.dp).roundToPx() }
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(30.dp), color = colors.surfaceContainerLow,
+            border = BorderStroke(1.dp, colors.outlineVariant)) {
+            Row(Modifier.horizontalScroll(scroll, enabled = enabled).width(rowWidth).padding(4.dp)
+                .then(if (multiple) Modifier else Modifier.selectableGroup())) {
+                items.forEach { value ->
+                    val chosen = selected(value)
+                    val fill by animateColorAsState(if (chosen) colors.secondaryContainer else Color.Transparent, label = "Settings choice")
+                    val ink by animateColorAsState((if (chosen) colors.onSecondaryContainer else colors.onSurfaceVariant)
+                        .copy(alpha = if (enabled) 1f else .38f), label = "Settings choice label")
+                    ReaderTooltip(description(value), Modifier.weight(1f), enabled = enabled) {
+                        val action = if (multiple) Modifier.toggleable(chosen, enabled, Role.Checkbox) { onSelect(value) }
+                        else Modifier.selectable(chosen, enabled, Role.RadioButton) { if (!chosen) onSelect(value) }
+                        Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(22.dp)).background(fill)
+                            .then(action).semantics { contentDescription = description(value) }
+                            .padding(horizontal = 6.dp, vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically)) {
+                            Icon(icon(value), null, Modifier.size(20.dp), tint = ink)
+                            if (showLabels) Text(label(value), Modifier.clearAndSetSemantics {}, style = style,
+                                color = ink, maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -242,7 +267,7 @@ internal fun ReadingAppearanceContent(
     }
 }
 
-/** One layout for app and document swatches, keeping labels legible at enlarged font sizes. */
+/** Document swatches keep labels legible at enlarged font sizes. */
 @Composable
 private fun <T> AppearanceChoices(
     choices: List<Pair<T, String>>, selected: T, enabled: Boolean, onChange: (T) -> Unit,

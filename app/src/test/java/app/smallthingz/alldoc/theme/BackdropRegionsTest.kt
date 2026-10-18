@@ -4,6 +4,155 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BackdropRegionsTest {
+    @Test fun knownDarkPaperAdmitsOneColoredInkFamilyWithoutBroadeningUnknownImages() {
+        val width = 256
+        val height = 128
+        val paper = 0xff000000.toInt()
+        val ink = 0xff3366cc.toInt()
+        val pixels = IntArray(width * height) { index ->
+            val x = index % width
+            val y = index / width
+            when {
+                y !in 32 until 72 || x !in 48 until 56 -> paper
+                x == 48 -> DocumentColors.blend(paper, ink, 64)
+                x == 55 -> DocumentColors.blend(paper, ink, 128)
+                else -> ink
+            }
+        }
+        for (band in intArrayOf(1, 17, 64)) {
+            assertTrue("Unknown image policy stays conservative", scan(pixels, width, band).isEmpty)
+            val regions = scan(pixels, width, band, allowNeutralColoredInk = true)
+            assertFalse("Complete vector hints retain dark paper", regions.isEmpty)
+            val all = LongArray((pixels.size + 63) / 64)
+            val neutral = all.copyOf()
+            assertTrue(regions.masks(0, height, all, neutral))
+            assertArrayEquals("Colored lettering does not change the neutral paper role", all, neutral)
+            assertTrue(all.all { it == -1L })
+            regions.prepareInk()
+            val output = pixels.copyOf()
+            for (y in 0 until height) regions.adaptInk(output, y * width, y, null)
+            assertEquals(paper, output[0])
+            assertTrue(DocumentColors.contrast(output[40 * width + 50], paper) >= 4.5)
+            for (index in pixels.indices) assertTrue("AA contrast at $index",
+                DocumentColors.contrast(output[index], paper) + 1e-12 >= DocumentColors.contrast(pixels[index], paper))
+            val protected = pixels.copyOf()
+            val images = LongArray(all.size) { -1L }
+            for (y in 0 until height) regions.adaptInk(protected, y * width, y, images)
+            assertArrayEquals("Known images stay byte exact", pixels, protected)
+        }
+    }
+
+    @Test fun knownDarkPaperKeepsMixedInkWithoutGuessingAnAntialiasFamily() {
+        val width = 256
+        val height = 128
+        val paper = 0xff000000.toInt()
+        val pixels = IntArray(width * height) { index ->
+            val x = index % width
+            val y = index / width
+            val ink = if (x < 128) 0xff3366cc.toInt() else 0xffcc3333.toInt()
+            when {
+                y !in 32 until 72 || x % 128 !in 48 until 56 -> paper
+                x % 128 == 48 -> DocumentColors.blend(paper, ink, 64)
+                x % 128 == 55 -> DocumentColors.blend(paper, ink, 128)
+                else -> ink
+            }
+        }
+        for (band in intArrayOf(1, 17, 64)) {
+            assertTrue("Unknown image admission is unchanged", scan(pixels, width, band).isEmpty)
+            val regions = scan(pixels, width, band, allowNeutralColoredInk = true)
+            assertFalse("Mixed vector lettering must not discard its dark paper", regions.isEmpty)
+            val all = LongArray((pixels.size + 63) / 64)
+            val neutral = all.copyOf()
+            assertTrue(regions.masks(0, height, all, neutral))
+            assertTrue(all.all { it == -1L })
+            assertArrayEquals(all, neutral)
+            regions.prepareInk()
+            val output = pixels.copyOf()
+            for (y in 0 until height) regions.adaptInk(output, y * width, y, null)
+            assertArrayEquals("Unknown mixed AA families retain every original color and contrast", pixels, output)
+        }
+    }
+
+    @Test fun chromaticPanelCorrectionsDoNotWeakenActualAntialiasPixels() {
+        val width = 320
+        val height = 160
+        for ((ink, paper) in arrayOf(0xff1045d1.toInt() to 0xffd80623.toInt(),
+            0xff00b2b9.toInt() to 0xffd4010c.toInt())) {
+            val pixels = IntArray(width * height) { index ->
+                val x = index % width; val y = index / width
+                when {
+                    x !in 8 until 312 || y !in 8 until 152 -> -1
+                    y in 64 until 76 && x in 32 until 288 -> DocumentColors.blend(paper, ink, x - 32)
+                    else -> paper
+                }
+            }
+            for (band in intArrayOf(1, 17, 64)) {
+                val regions = scan(pixels, width, band)
+                assertFalse(regions.isEmpty)
+                regions.prepareInk()
+                val output = pixels.copyOf()
+                for (y in 0 until height) regions.adaptInk(output, y * width, y, null)
+                var changed = 0
+                for (index in pixels.indices) {
+                    if (output[index] != pixels[index]) {
+                        changed++
+                        assertTrue(DocumentColors.contrast(output[index], paper) + 1e-12 >=
+                            DocumentColors.contrast(pixels[index], paper))
+                    }
+                }
+                assertTrue("Identified low-contrast lettering must actually improve", changed > 100)
+                assertEquals(paper, output[40 * width + 100])
+                assertEquals(-1, output[0])
+            }
+        }
+    }
+
+
+    @Test fun coloredLetteringKeepsPanelAndCoverageAcrossBandsButNeverTouchesKnownImages() {
+        val width = 240
+        val height = 100
+        val paper = 0xff18a303.toInt()
+        val ink = 0xff235d75.toInt()
+        val ramp = requireNotNull(DocumentColors.inkRamp(ink, paper))
+        val pixels = IntArray(width * height) { index ->
+            val x = index % width; val y = index / width
+            when {
+                x !in 16 until 224 || y !in 12 until 88 -> -1
+                y in 28 until 64 && x in 60 until 68 ->
+                    DocumentColors.blend(paper, ink, if (x == 60 || x == 67) 100 else 255)
+                y in 28 until 64 && x in 112 until 118 -> -1
+                else -> paper
+            }
+        }
+        for (band in intArrayOf(1, 17, 64)) {
+            val regions = scan(pixels, width, band)
+            assertFalse(regions.isEmpty)
+            regions.prepareInk()
+            val output = pixels.copyOf()
+            for (y in 0 until height) regions.adaptInk(output, y * width, y, null)
+            for (index in output.indices) {
+                val coverage = DocumentColors.inkCoverage(pixels[index], paper, ink)
+                val expected = if (coverage > 0) ramp[coverage] else pixels[index]
+                assertEquals("band=$band pixel=$index", expected, output[index])
+            }
+            assertTrue(DocumentColors.contrast(output[40 * width + 64], paper) >= 4.5)
+            val protected = LongArray((pixels.size + 63) / 64) { -1L }
+            val unchanged = pixels.copyOf()
+            for (y in 0 until height) regions.adaptInk(unchanged, y * width, y, protected)
+            assertArrayEquals(pixels, unchanged)
+            val partial = pixels.copyOf()
+            partial[40 * width + 64] = (partial[40 * width + 64] and 0x00ffffff) or 0xf0000000.toInt()
+            val translucent = partial[40 * width + 64]
+            regions.adaptInk(partial, 40 * width, 40, null)
+            assertEquals("Unknown alpha compositing cannot establish opaque contrast", translucent, partial[40 * width + 64])
+        }
+        // A framed multicolor image is not a single colored lettering/antialias family.
+        val photo = pixels.copyOf()
+        for (y in 28 until 64) for (x in 60 until 68)
+            photo[y * width + x] = if ((x + y) % 2 == 0) 0xff112288.toInt() else 0xffaa2211.toInt()
+        assertTrue(scan(photo, width, 17).isEmpty)
+    }
+
     @Test fun closedPanelsKeepTheirEdgesAndLetteringAcrossStreamingBands() {
         val width = 257
         val height = 193
@@ -82,6 +231,46 @@ class BackdropRegionsTest {
         }
     }
 
+    @Test fun coloredPlateAdmissionUsesPageScaleInsteadOfDetailPixelCount() {
+        for (scale in 1..3) {
+            val width = 720 * scale
+            val height = 192 * scale
+            val pixels = IntArray(width * height) { index ->
+                val x = index % width / scale
+                val y = index / width / scale
+                when {
+                    // Too narrow or too short to be a plate at every detail tier.
+                    x in 32 until 68 && y in 16 until 80 -> 0xff18a303.toInt()
+                    x in 128 until 288 && y in 32 until 50 -> 0xff712580.toInt()
+                    x in 320 until 680 && y in 16 until 176 ->
+                        if (x in 400 until 408 && y in 48 until 128) -1 else 0xff18a303.toInt()
+                    else -> -1
+                }
+            }
+            for (band in intArrayOf(17, 64)) {
+                val regions = scan(pixels, width, band)
+                assertFalse("The large plate remains recognized at scale=$scale band=$band", regions.isEmpty)
+                assertFalse(regions.transparent)
+                for (top in 0 until height step 64) {
+                    val rows = minOf(64, height - top)
+                    val all = LongArray((width * rows + 63) / 64 + 1) { -1L }
+                    val neutral = all.copyOf()
+                    val muted = all.copyOf()
+                    regions.masks(top, rows, all, neutral, muted)
+                    for (index in 0 until all.size * 64) {
+                        val x = index % width / scale
+                        val y = (top + index / width) / scale
+                        val expected = index < width * rows && x in 320 until 680 && y in 16 until 176
+                        val actual = all[index ushr 6] and (1L shl (index and 63)) != 0L
+                        if (expected != actual) fail("Scaled preservation mask: scale=$scale band=$band top=$top pixel=$index")
+                    }
+                    assertTrue("The colored plate is not neutral or muted",
+                        neutral.all { it == 0L } && muted.all { it == 0L })
+                }
+            }
+        }
+    }
+
     @Test fun transparencyDiscardsEarlierCandidatesAndCancellationStopsScanning() {
         val width = 128
         val pixels = IntArray(width * 65) { if (it / width < 32) 0xff101010.toInt() else -1 }
@@ -100,9 +289,9 @@ class BackdropRegionsTest {
         }
     }
 
-    private fun scan(pixels: IntArray, width: Int, band: Int): BackdropRegions {
+    private fun scan(pixels: IntArray, width: Int, band: Int, allowNeutralColoredInk: Boolean = false): BackdropRegions {
         val original = pixels.copyOf()
-        val regions = BackdropRegions(width)
+        val regions = BackdropRegions(width, allowNeutralColoredInk)
         val buffer = IntArray(width * band) { 0x01020304 }
         val height = pixels.size / width
         for (top in 0 until height step band) {

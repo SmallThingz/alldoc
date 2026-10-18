@@ -8,6 +8,75 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DocumentColorsTest {
+    @Test fun coloredInkRampCannotWeakenQuantizedEdgesEvenWhenLuminanceChangesDirection() {
+        val pairs = arrayOf(
+            0xff235d75.toInt() to 0xff18a303.toInt(), // Authored slideshow title.
+            0xff1045d1.toInt() to 0xffd80623.toInt(), // Correction reverses luminance polarity.
+            0xff00b2b9.toInt() to 0xffd4010c.toInt(), // Same polarity; sRGB interpolation still dips.
+            0xff86a6bd.toInt() to 0xff777777.toInt(),
+            0xff553177.toInt() to 0xff151b2f.toInt(),
+        )
+        for ((ink, paper) in pairs) {
+            val ramp = requireNotNull(DocumentColors.inkRamp(ink, paper))
+            assertEquals(paper, ramp[0])
+            assertTrue(DocumentColors.contrast(ramp[255], paper) >= 4.5)
+            for (amount in 0..255) {
+                val source = DocumentColors.blend(paper, ink, amount)
+                // Cover the classifier's quantization envelope, not only perfect synthetic AA.
+                for (dr in intArrayOf(-3, 0, 3)) for (dg in intArrayOf(-3, 0, 3)) for (db in intArrayOf(-3, 0, 3)) {
+                    val value = 0xff000000.toInt() or
+                        (((source ushr 16 and 255) + dr).coerceIn(0, 255) shl 16) or
+                        (((source ushr 8 and 255) + dg).coerceIn(0, 255) shl 8) or
+                        ((source and 255) + db).coerceIn(0, 255)
+                    val coverage = DocumentColors.inkCoverage(value, paper, ink)
+                    if (coverage > 0) assertTrue("ink=$ink paper=$paper coverage=$coverage",
+                        DocumentColors.contrast(ramp[coverage], paper) + 1e-12 >= DocumentColors.contrast(value, paper))
+                }
+                if (amount > 0) for (shift in 16 downTo 0 step 8) {
+                    val previous = ramp[amount - 1] ushr shift and 255
+                    val current = ramp[amount] ushr shift and 255
+                    if ((ramp[255] ushr shift and 255) >= (paper ushr shift and 255))
+                        assertTrue("Coverage cannot run backwards", current >= previous)
+                    else assertTrue("Coverage cannot run backwards", current <= previous)
+                }
+            }
+        }
+        assertNull("Already readable lettering keeps its exact original raster", DocumentColors.inkRamp(-1, 0xff101820.toInt()))
+    }
+
+
+    @Test fun identifiedColoredInkUsesLinearSrgbContrastAndRetainsAntialiasing() {
+        assertEquals(21.0, DocumentColors.contrast(-1, 0xff000000.toInt()), 0.000001)
+        assertEquals(0.2126, DocumentColors.luminance(0xffff0000.toInt()), 0.000001)
+        assertEquals(0.7152, DocumentColors.luminance(0xff00ff00.toInt()), 0.000001)
+        assertEquals(0.0722, DocumentColors.luminance(0xff0000ff.toInt()), 0.000001)
+        // Actual office-guide.ppsx title ink and accent1 fill; do not invert both independently.
+        val ink = 0xff235d75.toInt()
+        val paper = 0xff18a303.toInt()
+        assertEquals(2.169614657, DocumentColors.contrast(ink, paper), 0.000001)
+        val adjusted = DocumentColors.contrastingInk(ink, paper)
+        assertTrue(DocumentColors.contrast(adjusted, paper) >= 4.5)
+        assertTrue((adjusted and 255) > (adjusted ushr 16 and 255))
+        for (coverage in 0..255) {
+            val source = DocumentColors.blend(paper, ink, coverage)
+            val recovered = DocumentColors.inkCoverage(source, paper, ink)
+            assertTrue(recovered in 0..255)
+            assertTrue(kotlin.math.abs(recovered - coverage) <= 2)
+            val pixel = DocumentColors.blend(paper, adjusted, recovered)
+            if (coverage == 0) assertEquals(paper, pixel)
+            if (coverage == 255) assertEquals(adjusted, pixel)
+        }
+        assertEquals(-1, DocumentColors.inkCoverage(0xffff0000.toInt(), paper, ink))
+        for (background in intArrayOf(-1, 0xff101820.toInt(), paper, 0xff777777.toInt())) {
+            for (foreground in intArrayOf(ink, 0xff86a6bd.toInt(), 0xffcf4a35.toInt(), -1, 0xff000000.toInt())) {
+                val corrected = DocumentColors.contrastingInk(foreground, background)
+                assertTrue(DocumentColors.contrast(corrected, background) >= 4.5)
+                if (DocumentColors.contrast(foreground, background) >= 4.5)
+                    assertEquals(foreground, corrected)
+            }
+        }
+    }
+
     @Test fun backdropInkMaskUsesOriginalRowExactBracketsAndClearsReusedStorage() {
         val blue = 0xff157e9e.toInt()
         val coral = 0xffe96951.toInt()

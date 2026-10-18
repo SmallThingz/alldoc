@@ -2,7 +2,7 @@
 
 Home separates **Recents**, limited to six documents, from **Library**, a three-column collage grouped by document type. Each tab keeps its scroll position. Names remain alphabetical within groups; fuzzy search filters names without relevance sorting or searching document contents. The type filter narrows the visible group. Excluded types in Settings persist across launches and subsequent scans.
 
-The main app header stays fixed; tabs and secondary controls collapse while scrolling down and return while scrolling up. Open launches the file picker. Examples opens 46 bundled documents. The centered launcher icon opens a compact top panel with version and repository link. Licenses is the top-left action; Settings is top-right.
+The main app header and bottom tabs stay fixed. Library search and type controls collapse while scrolling down and return while scrolling up. Open launches the file picker. Debug builds include Examples with 46 bundled documents; release builds omit them. The centered launcher icon opens a compact top panel with version and repository link. Licenses is the top-left action; Settings is top-right.
 
 Settings contains device access and Add folder. All-files access covers readable shared volumes, not other apps' private storage. Opening one document needs no broad storage access. An empty Library offers a path to these settings; pull down to refresh an existing Library.
 
@@ -10,7 +10,7 @@ Known document names appear as candidates before signature checks and complete h
 
 Scanning is finite and runs while Library is visible in the foreground. Leaving Library or stopping the app cancels scanning and previews; there is no background service. Permission denial or an inaccessible folder can leave a partial catalog without removing known files.
 
-New documents start in **Normal**, with continuous vertical pages. **Present** fits pages horizontally and advances one page at a time; zoomed pages remain pannable. Markdown has one continuous formatted reading view; its Reading view action toggles directly to Text and back. Other semantic documents use virtual pages. Where authored text can be extracted, a compact chooser also offers **Text**. Otherwise Reading view toggles Normal/Present directly. Explicit choices are saved per hash; search temporarily uses extracted text without changing that preference.
+New documents start in **Normal**, using worksheet grids for spreadsheets and continuous vertical pages for paginated documents. **Present** fits pages horizontally and advances one page at a time; zoomed pages remain pannable. Markdown has one continuous formatted reading view; its Reading view action toggles directly to Text and back. Other semantic documents use virtual pages. Where authored text can be extracted, a compact chooser also offers **Text**. Otherwise Reading view toggles Normal/Present directly. Explicit choices are saved per hash; search temporarily uses extracted text without changing that preference.
 
 The displayed page number follows a probe one-third down the document viewport and opens Jump to page. Its counter is separate from the durable first-visible-page scroll anchor. Position, zoom and rotation survive view changes and reopening.
 
@@ -30,7 +30,7 @@ System, Light, Dark and AMOLED app themes are independent of document appearance
 
 - [Stanford CS147: visual design](https://hci.stanford.edu/courses/cs147/2024/au/lectures/09-visual-design-wo-tufte.pdf): hierarchy, alignment, proximity and restrained emphasis.
 - MIT 6.813/6.831: [efficiency](https://web.mit.edu/6.813/www/sp18/classes/03-efficiency/), [user-centered design](https://web.mit.edu/6.813/www/sp18/classes/06-user-centered-design/), [learnability](https://web.mit.edu/6.813/www/sp18/classes/09-more-learnability/) and [graphic design](https://web.mit.edu/6.813/www/sp18/classes/13-graphic-design/). Applied to task steps, recognizable actions, feedback and progressive disclosure. These materials informed the design; they do not establish results from a usability study.
-- [Reverb](https://github.com/SmallThingz/reverb/tree/0278485cd0b20630900cdd6596ecfcfd3486ea59): inspected surface, theme and toolbar source plus Library/Settings screenshots. No code or assets copied.
+- [Reverb](https://github.com/SmallThingz/reverb/tree/0278485cd0b20630900cdd6596ecfcfd3486ea59): inspected surface, theme and toolbar source plus Library/Settings screenshots. The background texture is reused; its source and bundled license are recorded in [UI_REFERENCE.md](UI_REFERENCE.md).
 - [MJPDF](https://gitlab.com/mudlej_android/mj_pdf_reader): inspected reader layout and official Home/menu screenshots for preview hierarchy and document-first controls. AllDoc retains its own navigation and rendering implementation.
 - Android guidance on [Compose performance](https://developer.android.com/develop/ui/compose/performance/bestpractices) and [accessible controls](https://developer.android.com/develop/ui/compose/accessibility/api-defaults).
 

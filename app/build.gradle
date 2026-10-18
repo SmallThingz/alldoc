@@ -2,6 +2,9 @@ import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.CacheableTask
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.file.FileSystemOperations
+import javax.inject.Inject
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
@@ -22,6 +25,11 @@ android {
  splits { abi { enable true; reset(); include(*readerAbis); universalApk false } }
  buildTypes { release { minifyEnabled true; shrinkResources true; proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'; signingConfig signingConfigs.debug } }
  testOptions { unitTests.returnDefaultValues = true }
+ // Keep renderer fixtures in place; only debug builds bundle the example gallery.
+ sourceSets {
+  main.assets.setSrcDirs([])
+  debug.assets.srcDir('src/main/assets')
+ }
 }
 dependencies {
  implementation project(':api')
@@ -87,8 +95,32 @@ def generateAllDocNotices = tasks.register('generateAllDocNotices', GenerateAllD
  noticeFile.set(rootProject.layout.projectDirectory.file('NOTICE'))
  outputDirectory.set(layout.buildDirectory.dir('generated/assets/alldoc-notices'))
 }
+@CacheableTask
+abstract class GenerateAllDocReleaseAssets extends DefaultTask {
+ @InputDirectory @PathSensitive(PathSensitivity.RELATIVE)
+ abstract DirectoryProperty getSourceDirectory()
+ @OutputDirectory
+ abstract DirectoryProperty getOutputDirectory()
+ @Inject
+ abstract FileSystemOperations getFiles()
+
+ @TaskAction
+ void generate() {
+  files.sync {
+   from(sourceDirectory) { exclude 'examples/**' }
+   into(outputDirectory)
+  }
+ }
+}
+
+def generateAllDocReleaseAssets = tasks.register('generateAllDocReleaseAssets', GenerateAllDocReleaseAssets) {
+ sourceDirectory.set(layout.projectDirectory.dir('src/main/assets'))
+ outputDirectory.set(layout.buildDirectory.dir('generated/assets/alldoc-release'))
+}
 androidComponents {
  onVariants(selector().all()) { variant ->
   variant.sources.assets.addGeneratedSourceDirectory(generateAllDocNotices) { task -> task.outputDirectory }
+  if (variant.buildType == 'release')
+   variant.sources.assets.addGeneratedSourceDirectory(generateAllDocReleaseAssets) { task -> task.outputDirectory }
  }
 }

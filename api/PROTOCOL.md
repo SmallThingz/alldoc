@@ -1,6 +1,6 @@
 # AllDoc document API
 
-Version 1. Android 9 (API 28) or newer. Bind explicitly to
+Version 2 (version 1 calls remain compatible). Android 9 (API 28) or newer. Bind explicitly to
 `app.smallthingz.alldoc/app.smallthingz.alldoc.ipc.DocumentService`.
 Include the small `:api` Android library; `AllDocClient` wraps the three AIDL interfaces.
 
@@ -16,10 +16,12 @@ Include the small `:api` Android library; `AllDocClient` wraps the three AIDL in
 4. Close a result to cancel it. Close the document and connection when done.
    Client-process death closes its sessions automatically.
 
-`ready` metadata includes `reflowable`, `continuous` and the logical `pageCount`.
+For the existing `open` call, `ready` metadata includes `reflowable`, `continuous` and the logical `pageCount`.
 `continuous=true` identifies a single continuous page, currently Markdown;
 other semantic readers report their virtual page count.
-PDF/Office pages keep their intrinsic layout. A Markdown PNG or print request
+PDF pages retain their page geometry. Native Office rendering follows the available
+page layout; semantic fallbacks preserve readable content rather than the original
+layout. Inspect fidelity and warnings for unsupported features. A Markdown PNG or print request
 renders the complete page or reports the 8-million-pixel / 8,192-pixel-height
 limit; no successful result silently clips its remaining content.
 
@@ -35,6 +37,47 @@ for each request; explicit theme names remain fixed.
 `preserveImages` defaults to true. Text and JSON are unaffected by visual themes.
 PDF text depends on the available platform/native backend; inspect `textAvailable`
 and handle unsupported or encrypted inputs. Fidelity and warnings describe omissions.
+
+## Worksheet previews
+
+`openForPreview` is an additive version-2 call for embedded readers. It opens
+spreadsheets as worksheet grids without calculating print pages. Other documents
+still expose their normal pages. Existing `open` and `read("png")` keep their
+original print-page contract; an oversized workbook can exceed that layout limit.
+
+Inspect `view` in ready metadata. `view="worksheet"` has `paginationKnown=false`,
+no `pageCount`, an `activeSheet` ID, and `sheets`: a bounded list of Bundles with
+`index`, `name`, `rowCount`, `columnCount`, `usedRows`, `usedColumns`, `width` and
+`height`. Names are capped at 80 UTF-16 units, with scalar boundaries preserved;
+at most 1,024 sheet descriptors are returned. IDs are original worksheet indices,
+not offsets in the returned list. Worksheet dimensions are logical pixels at
+96 dpi; used-cell bounds are distinct from navigable blank worksheet area.
+`view="page"` has `paginationKnown=true` and a genuine `pageCount`.
+
+Native XLSX grids render supported styles, drawings and charts on a best-effort basis.
+XLS, ODS, FODS and semantic fallback grids expose saved cell values and positions;
+they do not reconstruct source styles, merged cells, charts or drawings.
+
+Use `document.readSheet(sheetId, x, y, scale, width, height, theme, imageTreatment)`
+for a worksheet PNG. Defaults are origin `(0, 0)`, scale `1`, and `1200 × 800`
+output pixels. Origins and scale use `Double`: finite x/y are within `0..1e9`,
+scale within `0.0625..32`, and each output dimension within `64..2048`.
+The request covers `width/scale × height/scale` logical pixels; it does not
+pretend to render the whole worksheet. Empty space outside populated cells is
+intentional. Coordinate headings remain viewer UI, not exported page content.
+
+The machine-readable worksheet request is `worksheet-request.schema.json`.
+Worksheet themes use the same names as page themes. `imageTreatment` is `auto`
+(default, uses the renderer's image regions), `keep`, or `all`; the existing
+page request's `preserveImages` boolean is unchanged. Readable text and JSON
+remain available through the preview-opened session without forcing print
+pagination. PNGs use the same bounded reliable pipes, request IDs, cancellation,
+owner checks and worker admission as existing exports. Close a preview session
+to release its resident workbook.
+
+The Kotlin client negotiates the server version and fails clearly if worksheet
+calls are attempted against a version-1 server. New AIDL methods are appended;
+existing transaction order and page-index meanings are unchanged.
 
 ## Ownership and bounds
 

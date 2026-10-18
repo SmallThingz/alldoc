@@ -244,14 +244,22 @@ pub fn parse(bytes: &[u8], cx: &mut Context) -> Result<Document> {
                         unicode(n as u16, &mut high, &mut text, &mut doc)?;
                         fallback = state.uc;
                     }
-                    b"par" | b"line" => {
+                    b"par" | b"line" | b"page" => {
                         if high.is_some() {
                             return Err(bad("Unpaired RTF surrogate"));
                         }
                         doc.paragraph(section, &text);
                         text.clear();
                     }
-                    b"tab" => append(&mut text, "\t", &mut doc.truncated),
+                    b"row" | b"nestrow" => {
+                        doc.paragraph(section, text.trim_end_matches('\t'));
+                        text.clear();
+                    }
+                    b"tab" | b"cell" | b"nestcell" => append(&mut text, "\t", &mut doc.truncated),
+                    b"lquote" => append(&mut text, "‘", &mut doc.truncated),
+                    b"rquote" => append(&mut text, "’", &mut doc.truncated),
+                    b"ldblquote" => append(&mut text, "“", &mut doc.truncated),
+                    b"rdblquote" => append(&mut text, "”", &mut doc.truncated),
                     b"emdash" => append(&mut text, "\u{2014}", &mut doc.truncated),
                     b"endash" => append(&mut text, "\u{2013}", &mut doc.truncated),
                     b"bullet" => append(&mut text, "\u{2022}", &mut doc.truncated),
@@ -322,6 +330,30 @@ mod regression_tests {
             .collect::<Vec<_>>()
             .join("\n")
     }
+    #[test]
+    fn table_cells_rows_and_typographic_quotes_remain_readable() {
+        assert_eq!(
+            text(br"{\rtf1\trowd Name\cell Value\cell\row\trowd Sea\cell 12\cell\row}"),
+            "Name\tValue\nSea\t12"
+        );
+        assert_eq!(
+            text(br"{\rtf1 \ldblquote Read\rdblquote  and \lquote write\rquote .}"),
+            "“Read” and ‘write’."
+        );
+    }
+
+    #[test]
+    fn page_breaks_preserve_semantic_text_boundaries() {
+        assert_eq!(
+            text(br"{\rtf1 Present view shows one page at a time.\page Second page\par Keep reading.}"),
+            "Present view shows one page at a time.\nSecond page\nKeep reading."
+        );
+        assert_eq!(
+            text(br"{\rtf1 First\page\page Second\line Third}"),
+            "First\n\nSecond\nThird"
+        );
+    }
+
     #[test]
     fn unicode_fallback_counts_whole_tokens() {
         for input in [

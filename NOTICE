@@ -66,12 +66,25 @@ The app includes document-notices.txt, pdf-notices.txt and render-notices.txt.
 
 Examples and design references
 ------------------------------
-Bundled examples and artwork were authored for AllDoc and use its original-work
+Bundled examples and AllDoc-authored artwork use its original-work
 license. Their provenance and generators are documented in scripts/text-examples.md
 and scripts/fixtures/EXAMPLES-OFFICE.md. The separate scripts/fixtures/simple.doc
 smoke fixture comes from Apache POI; its source, hash, attribution and Apache-2.0
 text are retained in scripts/fixtures/README.md and LICENSE-APACHE.txt.
 
-Reverb, MJ PDF and Dark Reader were inspected as behavioral/design references.
-Their code and assets were not copied for that purpose. See docs/UI_REFERENCE.md,
-docs/INTERFACE.md and docs/DARK_MODE.md for the inspected references.
+Reverb background texture
+-------------------------
+app/src/main/res/drawable-nodpi/reader_noise.png is copied unchanged from
+SmallThingz/reverb, app/src/main/res/drawable-nodpi/settings_noise_tile.png, at
+revision 0278485cd0b20630900cdd6596ecfcfd3486ea59. It is third-party material under
+Reverb's GNU General Public License version 3, not AllDoc's original-work grant.
+Its unchanged SHA-256 is
+55ce1eaa8d7c1b78eb0b8298b101aec91ca1ef1d6b467f8899380046355dc517.
+The complete upstream license is bundled as
+app/src/main/assets/reverb-noise-license.txt and shown in the app's Licenses list.
+Source: https://github.com/SmallThingz/reverb
+See docs/UI_REFERENCE.md for the asset's history and rendering scope.
+
+MJ PDF and Dark Reader were inspected as behavioral/design references; their code
+and assets were not copied for that purpose. See docs/INTERFACE.md and
+docs/DARK_MODE.md for those references.

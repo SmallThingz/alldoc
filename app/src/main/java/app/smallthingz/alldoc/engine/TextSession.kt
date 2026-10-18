@@ -8,21 +8,39 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import app.smallthingz.alldoc.core.Document
+import app.smallthingz.alldoc.pdf.PageSize
 import app.smallthingz.alldoc.theme.PaperTexture
 import app.smallthingz.alldoc.theme.DocumentColors
+import app.smallthingz.alldoc.theme.RasterRegion
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 
 internal class TextSession(name: String, mime: String, private val document: Document, signal: CancellationSignal) : DocumentSession {
     init { signal.throwIfCanceled() }
     private val content = document.toPlainText()
+    private val sheets = document.takeIf { it.format in setOf("XLS", "XLSX", "ODS") && it.sections.any { section -> section.kind == "sheet" } }
+        ?.let { SemanticSpreadsheet(it, signal) }
+    @Synchronized override fun workbook(signal: CancellationSignal): WorkbookInfo? { ready(signal); return sheets?.info }
+    @Synchronized override fun sheetGeometry(index: Int, signal: CancellationSignal): SheetGeometry? { ready(signal); return sheets?.geometry(index) }
+    @Synchronized override fun renderSheet(viewport: SheetViewport, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
+        ready(signal); return requireNotNull(sheets).render(viewport, settings, signal)
+    }
+    @Synchronized override fun sheetRasterRegions(viewport: SheetViewport, signal: CancellationSignal): List<RasterRegion> {
+        ready(signal); viewport.checked(); requireNotNull(sheets).geometry(viewport.sheet)
+        return emptyList()
+    }
     private class Pagination(val paint: TextPaint, val layout: StaticLayout, val pages: List<Int>)
     private var pagination: Pagination? = null
     private var closed = false
     override val info = DocumentInfo(name, mime, document.format, 0, content.isNotEmpty(), document.fidelity,
-        document.warnings, reflowable = true)
+        (document.warnings + if (document.truncated) listOf("Document excerpt: remaining content omitted.") else emptyList()).distinct(),
+        reflowable = true, supportsSheets = sheets != null)
     @Synchronized override fun pageCount(signal: CancellationSignal): Int = pages(signal).pages.size - 1
 
+    @Synchronized override fun rasterRegions(index: Int, signal: CancellationSignal): List<RasterRegion> {
+        ready(signal); require(index in 0 until pageCount(signal)) { "Invalid page" }
+        return emptyList()
+    }
     @Synchronized override fun pageAspect(index: Int, signal: CancellationSignal): Float {
         ready(signal)
         require(index in 0 until pageCount(signal)) { "Invalid page" }
@@ -61,9 +79,9 @@ internal class TextSession(name: String, mime: String, private val document: Doc
         val layout = pagination.layout
         val pages = pagination.pages
         require(index in 0 until pages.size - 1) { "Invalid page" }
-        val actual = width.coerceAtMost(1600)
-        val height = actual * PAGE_HEIGHT / PAGE_WIDTH
-        val bitmap = Bitmap.createBitmap(actual, height, Bitmap.Config.ARGB_8888)
+        val size = PageSize.fit(PAGE_WIDTH, PAGE_HEIGHT, width)
+        val actual = size.width
+        val bitmap = Bitmap.createBitmap(actual, size.height, Bitmap.Config.ARGB_8888)
         val invert = settings.mode == ReadingMode.INVERT
         try {
             val colors = DocumentColors.palette(if (invert) settings.copy(mode = ReadingMode.ORIGINAL) else settings)

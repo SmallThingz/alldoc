@@ -65,7 +65,8 @@ data class DocumentNotes(val entries: List<DocumentNote> = emptyList(), val trun
 internal fun withDocumentNotes(delegate: DocumentSession, file: File): DocumentSession {
     if (!OfficeNotes.supports(delegate.info.format)) return delegate
     return object : DocumentSession by delegate {
-        override val info = delegate.info.copy(supportsNotes = true)
+        override val info get() = delegate.info.copy(supportsNotes = true)
+        override fun printInfo(signal: CancellationSignal) = delegate.printInfo(signal).copy(supportsNotes = true)
         private var cached: DocumentNotes? = null
         private var closed = false
         @Synchronized override fun notes(signal: CancellationSignal): DocumentNotes {

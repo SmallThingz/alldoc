@@ -259,6 +259,44 @@ class DocumentPrintAdapterTest {
         }
     }
 
+    @Test fun reliablePrintFailureAfterCompletePdfReportsOneFailure() {
+        ReportedDestinationFailure { bytes ->
+            val text = String(bytes, Charsets.US_ASCII)
+            text.startsWith("%PDF-1.4\n") && text.endsWith("%%EOF\n")
+        }.use { destination ->
+            val released = CountDownLatch(1)
+            val releases = AtomicInteger()
+            val callbacks = AtomicInteger()
+            val done = CountDownLatch(1)
+            val outcome = AtomicReference<String?>()
+            val session = object : StubSession() {
+                override fun renderPage(index: Int, width: Int, settings: ThemeSettings, signal: CancellationSignal): Bitmap =
+                    Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+            }
+            val adapter = DocumentPrintAdapter(session, "Reliable output", { releases.incrementAndGet(); released.countDown() })
+            try {
+                layout(adapter)
+                instrumentation.runOnMainSync {
+                    adapter.onWrite(arrayOf(PageRange(0, 0)), destination.output, CancellationSignal(), object : AllDocWriteResultCallback() {
+                        override fun onWriteFailed(error: CharSequence?) { outcome.set(error?.toString()); callbacks.incrementAndGet(); done.countDown() }
+                        override fun onWriteFinished(pages: Array<out PageRange>) { outcome.set("Unexpected success"); callbacks.incrementAndGet(); done.countDown() }
+                        override fun onWriteCancelled() { outcome.set("Unexpected cancellation"); callbacks.incrementAndGet(); done.countDown() }
+                    })
+                }
+                assertTrue(done.await(10, TimeUnit.SECONDS))
+                assertEquals("Couldn’t print this document.", outcome.get())
+                assertEquals(1, callbacks.get())
+                assertEquals(1, destination.checks)
+                assertTrue("PDF trailer must be flushed before the peer reports its failure", destination.completePayload)
+                assertFalse(destination.output.fileDescriptor.valid())
+            } finally {
+                instrumentation.runOnMainSync { adapter.onFinish(); adapter.abort() }
+                assertTrue(released.await(5, TimeUnit.SECONDS))
+                assertEquals(1, releases.get())
+            }
+        }
+    }
+
     private fun layout(adapter: DocumentPrintAdapter, expectedPages: Int = 5) {
         val done = CountDownLatch(1)
         val error = AtomicReference<String?>()

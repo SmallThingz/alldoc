@@ -157,7 +157,7 @@ class ReaderExamplesTest {
             await { visible("Find a format") && visible(catalog.first().category) }
             assertFalse(visible(lastTitle))
             await {
-                visit { it.isVisibleToUser && it.isScrollable && it.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) }
+                visit { it.isVisibleToUser && it.isScrollable && it.contentDescription?.toString() != "Document tabs" && it.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) }
                 visible(lastTitle)
             }
             // Three nonempty results exceed this short viewport; keeping the old index hides the first.
@@ -196,7 +196,7 @@ class ReaderExamplesTest {
             await { bounds(history.first().title)?.height()?.let { it > 0 } == true }
             val titleHeight = requireNotNull(bounds(history.first().title)).height()
             await {
-                visit { it.isVisibleToUser && it.isScrollable && it.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) }
+                visit { it.isVisibleToUser && it.isScrollable && it.contentDescription?.toString() != "Document tabs" && it.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) }
                 val last = bounds(history.last().title)
                 last != null && last.height() >= titleHeight
             }

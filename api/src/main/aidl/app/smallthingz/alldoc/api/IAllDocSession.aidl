@@ -8,4 +8,6 @@ interface IAllDocSession {
                               String theme, boolean preserveImages);
     void cancel(long requestId);
     void close();
+    ParcelFileDescriptor readSheet(long requestId, int sheet, double x, double y, double scale,
+                                   int width, int height, String theme, String imageTreatment);
 }

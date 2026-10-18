@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AllDoc worksheet PNG request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sheet"
+  ],
+  "properties": {
+    "sheet": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1023
+    },
+    "x": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000000000.0,
+      "default": 0
+    },
+    "y": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000000000.0,
+      "default": 0
+    },
+    "scale": {
+      "type": "number",
+      "minimum": 0.0625,
+      "maximum": 32,
+      "default": 1
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 2048,
+      "default": 1200
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 2048,
+      "default": 800
+    },
+    "theme": {
+      "enum": [
+        "original",
+        "adaptive",
+        "adaptive_light",
+        "system",
+        "sepia",
+        "high_contrast",
+        "invert"
+      ],
+      "default": "original"
+    },
+    "imageTreatment": {
+      "enum": [
+        "auto",
+        "keep",
+        "all"
+      ],
+      "default": "auto"
+    }
+  }
+}

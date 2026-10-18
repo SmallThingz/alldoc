@@ -1,8 +1,6 @@
 package app.smallthingz.alldoc.ui
 
 import android.animation.ValueAnimator
-import android.app.Activity
-import android.content.ContextWrapper
 import android.os.Build
 import android.view.View
 import android.view.ViewTreeObserver
@@ -12,6 +10,7 @@ import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -43,15 +42,13 @@ internal val LocalReaderImmersive = staticCompositionLocalOf { false }
 internal fun ReaderModalWindow() {
     val view = LocalView.current
     val immersive = LocalReaderImmersive.current
-    DisposableEffect(view, immersive) {
+    val lightBars = !LocalAppTheme.current.isDark(isSystemInDarkTheme())
+    DisposableEffect(view, immersive, lightBars) {
         val window = generateSequence(view.parent) { it.parent }
             .filterIsInstance<DialogWindowProvider>().firstOrNull()?.window
-        val activity = generateSequence(view.context) { (it as? ContextWrapper)?.baseContext }
-            .filterIsInstance<Activity>().firstOrNull()
-        if (window == null || activity == null) return@DisposableEffect onDispose { }
+        if (window == null) return@DisposableEffect onDispose { }
         val decor = window.decorView
         val controller = WindowCompat.getInsetsController(window, decor)
-        val host = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.attributes = window.attributes.apply {
             layoutInDisplayCutoutMode = when {
@@ -61,8 +58,8 @@ internal fun ReaderModalWindow() {
             }
         }
         val applyChrome = Runnable {
-            controller.isAppearanceLightStatusBars = host.isAppearanceLightStatusBars
-            controller.isAppearanceLightNavigationBars = host.isAppearanceLightNavigationBars
+            controller.isAppearanceLightStatusBars = lightBars
+            controller.isAppearanceLightNavigationBars = lightBars
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             if (immersive) controller.hide(WindowInsetsCompat.Type.systemBars())
             else controller.show(WindowInsetsCompat.Type.systemBars())
@@ -92,6 +89,8 @@ internal fun ReaderModalWindow() {
 internal class ReaderMotionState(initial: Float, private val scope: CoroutineScope) {
     val openness = Animatable(initial)
     var onClosed: () -> Unit = {}
+    var closing by mutableStateOf(false)
+        private set
     private var revision = 0L
     private var settling: Job? = null
 
@@ -101,11 +100,13 @@ internal class ReaderMotionState(initial: Float, private val scope: CoroutineSco
             .roundToInt().coerceAtLeast(1), easing = FastOutSlowInEasing))
     }
     fun reveal() {
+        closing = false
         val owner = ++revision
         settling?.cancel()
         settling = scope.launch { if (owner == revision) settle(1f) }
     }
     fun dismiss() {
+        closing = true
         val owner = ++revision
         settling?.cancel()
         settling = scope.launch {
@@ -114,23 +115,48 @@ internal class ReaderMotionState(initial: Float, private val scope: CoroutineSco
         }
     }
     suspend fun follow(events: Flow<BackEventCompat>, stillEnabled: () -> Boolean) {
+        // A committed exit keeps ownership. PredictiveBackHandler still requires collection;
+        // cancellation of this later gesture must not enter the original owner's recovery path.
+        if (closing) {
+            events.collect { }
+            return
+        }
+        closing = false
         val owner = ++revision
         settling?.cancel()
         settling = null
         val start = openness.value
+        var committed = false
         try {
             events.collect { event ->
                 if (owner == revision && stillEnabled()) openness.snapTo(start * (1f - event.progress.coerceIn(0f, 1f)))
             }
             if (owner == revision && stillEnabled()) {
-                settle(0f)
-                if (owner == revision) {
-                    if (stillEnabled()) onClosed() else settle(1f)
+                committed = true
+                closing = true
+                // AndroidX cancels the previous callback when another Back starts. Once
+                // committed, the composition owns the exit until completion or supersession.
+                val finish = scope.launch {
+                    settle(0f)
+                    if (owner == revision) {
+                        if (stillEnabled()) onClosed() else {
+                            closing = false
+                            settle(1f)
+                        }
+                    }
                 }
-            } else if (owner == revision) settle(1f)
+                settling = finish
+                finish.join()
+            } else if (owner == revision) {
+                closing = false
+                settle(1f)
+            }
         } catch (cancelled: CancellationException) {
-            // Gesture cancellation cancels this collector. The composition owns the return motion.
-            if (owner == revision) settling = scope.launch { settle(1f) }
+            // Only cancellation before commit returns the surface. A committed exit has its own job.
+            if (owner == revision && !committed) {
+                closing = false
+                settling = scope.launch { settle(1f) }
+            }
             throw cancelled
         }
     }
@@ -142,7 +168,7 @@ private fun rememberReaderMotion(onClosed: () -> Unit, animateEntrance: Boolean 
     var entered by rememberSaveable { mutableStateOf(false) }
     val motion = remember { ReaderMotionState(if (entered || !animateEntrance) 1f else 0f, scope) }
     SideEffect { motion.onClosed = onClosed }
-    LaunchedEffect(motion) { if (!entered) { entered = true; if (animateEntrance) motion.reveal() } }
+    LaunchedEffect(motion) { entered = true }
     return motion
 }
 
@@ -156,16 +182,23 @@ private fun ReaderBackGesture(motion: ReaderMotionState, enabled: Boolean) {
 @Composable
 internal fun ReaderMotionLayer(
     active: Boolean, onBack: () -> Unit, modifier: Modifier = Modifier, fromTop: Boolean = false, visible: Boolean = true,
-    animateEntrance: Boolean = true, content: @Composable (back: () -> Unit) -> Unit,
+    animateEntrance: Boolean = true, backdrop: @Composable (ReaderMotionState) -> Unit = {},
+    viewportModifier: Modifier? = null,
+    content: @Composable (back: () -> Unit) -> Unit,
 ) {
     val motion = rememberReaderMotion(onBack, animateEntrance)
     ReaderBackGesture(motion, active && visible)
     LaunchedEffect(visible) { if (visible) motion.reveal() else motion.dismiss() }
-    Box(modifier.graphicsLayer {
+    backdrop(motion)
+    // Back eligibility can be disabled for a nested reader; exit ownership is independent.
+    val moving = modifier.readerInput(visible && !motion.closing).graphicsLayer {
         val hidden = 1f - motion.openness.value
         if (fromTop) translationY = -size.height * hidden else translationX = size.width * hidden
         alpha = 1f - 0.12f * hidden
-    }) { content(motion::dismiss) }
+    }
+    // A stationary viewport clips foreground travel while the backdrop remains full-window.
+    if (viewportModifier == null) Box(moving) { content(motion::dismiss) }
+    else Box(viewportModifier) { Box(moving) { content(motion::dismiss) } }
 }
 
 /** Fullscreen Back restores chrome without treating text mode as another screen. */
@@ -173,7 +206,7 @@ internal fun ReaderMotionLayer(
 internal fun ReaderFullscreenLayer(
     active: Boolean, fullscreen: Boolean, onExit: () -> Unit, content: @Composable () -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
+    val scope = key(fullscreen) { rememberCoroutineScope() }
     val motion = remember(fullscreen) { ReaderMotionState(1f, scope) }
     SideEffect { motion.onClosed = onExit }
     ReaderBackGesture(motion, active)

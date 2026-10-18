@@ -1,5 +1,7 @@
 package app.smallthingz.alldoc.ui
 
+import androidx.compose.foundation.MutatePriority
+import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -29,21 +31,22 @@ internal fun ReaderDocumentPane(
     identity: Long,
     modifier: Modifier = Modifier,
     onNavigate: () -> Unit = {},
+    active: Boolean = true,
 ) {
     val info = model.info ?: return
     LaunchedEffect(identity, info.supportsNotes) { model.loadNotes(identity) }
-    ReaderNotesContent(info, model.notes, model.notesLoading, model.page, identity, modifier) { page ->
+    ReaderNotesContent(info, model.notes, model.notesLoading, model.page, identity, modifier, onPage = { page ->
         model.goToPage(page, identity)
         model.choosePageView(model.horizontalPages, identity)
         onNavigate()
-    }
+    }, active = active)
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ReaderNotesContent(
     info: DocumentInfo, notes: DocumentNotes, loading: Boolean, currentPage: Int,
-    identity: Long, modifier: Modifier = Modifier, onPage: (Int) -> Unit,
+    identity: Long, modifier: Modifier = Modifier, onPage: (Int) -> Unit, active: Boolean = true,
 ) {
     var currentPageOnly by rememberSaveable(identity) { mutableStateOf(true) }
     val hasOtherPages = remember(notes.entries, currentPage) { notes.entries.any { it.page != null && it.page != currentPage } }
@@ -56,12 +59,15 @@ internal fun ReaderNotesContent(
             selected = !currentPageOnly, onClick = { currentPageOnly = !currentPageOnly })
     }) else null
     val listState = rememberLazyListState()
-    LaunchedEffect(identity, currentPageOnly, if (currentPageOnly) currentPage else null) {
-        listState.scrollToItem(0)
+    val filteredPage = if (currentPageOnly) currentPage else null
+    var resetPending by rememberSaveable(identity, currentPageOnly, filteredPage) { mutableStateOf(true) }
+    LaunchedEffect(identity, currentPageOnly, filteredPage, active) {
+        if (!active) listState.stopScroll(MutatePriority.PreventUserInput)
+        else if (resetPending) { listState.scrollToItem(0); resetPending = false }
     }
-    Surface(modifier.semantics { paneTitle = "Notes and comments" },
+    Surface(modifier.readerInput(active).semantics { paneTitle = "Notes and comments" },
         color = MaterialTheme.colorScheme.surfaceContainer) {
-        LazyColumn(Modifier.fillMaxWidth(), state = listState,
+        LazyColumn(Modifier.fillMaxWidth(), state = listState, userScrollEnabled = active,
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             when {

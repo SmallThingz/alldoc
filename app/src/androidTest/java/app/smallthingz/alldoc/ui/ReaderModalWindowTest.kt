@@ -76,6 +76,40 @@ class ReaderModalWindowTest {
         }
     }
 
+    @Test fun actionDismissalClosesThePanelBeforeLaunchingExactlyOneAction() {
+        val open = mutableStateOf(true)
+        val events = ArrayList<String>()
+        var dismiss: ((() -> Unit) -> Unit)? = null
+        ActivityScenario.launch(ReaderTestActivity::class.java).use { scenario ->
+            scenario.onActivity { activity -> activity.setContent {
+                ReaderTheme {
+                    if (open.value) ReaderTopPanel("Export", {
+                        events += "dismiss"
+                        open.value = false
+                    }) { close ->
+                        SideEffect { dismiss = close }
+                        Text("Export formats")
+                    }
+                }
+            } }
+            await("Panel content is ready") {
+                var ready = false
+                scenario.onActivity { ready = dismiss != null }
+                ready
+            }
+            scenario.onActivity {
+                requireNotNull(dismiss) { "Panel must expose animated dismissal" }.invoke { events += "export" }
+                requireNotNull(dismiss).invoke { events += "duplicate" }
+            }
+            await("The exit transition completes the first action") {
+                var done = false
+                scenario.onActivity { done = events.size >= 2 }
+                done
+            }
+            scenario.onActivity { assertEquals(listOf("dismiss", "export"), events) }
+        }
+    }
+
     private fun assertDialogChrome(scenario: ActivityScenario<ReaderTestActivity>, immersive: Boolean) {
         await("Focused dialog preserves immersive=$immersive") {
             var ready = false

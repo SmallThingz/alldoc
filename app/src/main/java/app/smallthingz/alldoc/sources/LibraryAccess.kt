@@ -1,6 +1,10 @@
 package app.smallthingz.alldoc.sources
 
 import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -14,6 +18,19 @@ internal object LibraryAccess {
     fun hasAccess(context: Context): Boolean = if (Build.VERSION.SDK_INT >= 30)
         Environment.isExternalStorageManager()
     else context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
+    /** The user grants access in Android Settings; a failed per-app route can use the system list. */
+    fun openSettings(packageName: String, allFiles: Boolean, launch: (Intent) -> Unit): Boolean {
+        val application = Uri.fromParts("package", packageName, null)
+        val intents = if (allFiles) listOf(
+            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, application),
+            Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+        else listOf(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, application))
+        for (intent in intents) try { launch(intent); return true }
+            catch (_: ActivityNotFoundException) { }
+            catch (_: SecurityException) { }
+        return false
+    }
 
     /** Shared volumes only. Canonicalization and filesystem checks belong on the scan worker. */
     @WorkerThread

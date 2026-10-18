@@ -384,6 +384,292 @@
           }
         }
       }
+    },
+    {
+      "id": "render_sheet",
+      "description": "Render a worksheet viewport PNG without print pagination. Legacy/fallback grids show saved cells, not original charts or styling.",
+      "domain": "documents",
+      "parameters": [
+        {
+          "name": "uri",
+          "type": "string",
+          "required": false,
+          "description": "Caller-readable content URI. Grant AllDoc read access with ClipData; omit to choose a document."
+        },
+        {
+          "name": "recipient_package",
+          "type": "string",
+          "required": false,
+          "description": "Reply app package for launches without a platform-authenticated caller; the user selects a document before sharing."
+        },
+        {
+          "name": "display_name",
+          "type": "string",
+          "required": false,
+          "description": "Optional filename, at most 256 characters."
+        },
+        {
+          "name": "mime_type",
+          "type": "string",
+          "required": false,
+          "description": "Optional MIME type, at most 128 characters."
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "required": false,
+          "description": "Optional PDF password, at most 256 characters; never include it in logs."
+        },
+        {
+          "name": "width",
+          "type": "integer",
+          "required": false,
+          "description": "Target viewport pixel width.",
+          "default": 1200,
+          "minimum": 64,
+          "maximum": 2048
+        },
+        {
+          "name": "sheet",
+          "type": "integer",
+          "required": false,
+          "description": "Original worksheet index; omit for the active sheet.",
+          "minimum": 0,
+          "maximum": 1023
+        },
+        {
+          "name": "x",
+          "type": "number",
+          "required": false,
+          "description": "Horizontal origin in logical 96-dpi units.",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1000000000.0
+        },
+        {
+          "name": "y",
+          "type": "number",
+          "required": false,
+          "description": "Vertical origin in logical 96-dpi units.",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1000000000.0
+        },
+        {
+          "name": "scale",
+          "type": "number",
+          "required": false,
+          "description": "Pixels per logical unit.",
+          "default": 1,
+          "minimum": 0.0625,
+          "maximum": 32
+        },
+        {
+          "name": "height",
+          "type": "integer",
+          "required": false,
+          "description": "Target viewport pixel height.",
+          "default": 800,
+          "minimum": 64,
+          "maximum": 2048
+        },
+        {
+          "name": "theme",
+          "type": "string",
+          "required": false,
+          "description": "Document theme; system resolves at request time.",
+          "default": "original",
+          "enum": [
+            "original",
+            "adaptive",
+            "adaptive_light",
+            "system",
+            "sepia",
+            "high_contrast",
+            "invert"
+          ]
+        },
+        {
+          "name": "imageTreatment",
+          "type": "string",
+          "required": false,
+          "description": "AUTO uses worksheet raster masks; KEEP preserves images; ALL applies the renderer\u2019s RECOLOR policy.",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "keep",
+            "all"
+          ]
+        }
+      ],
+      "confirmation": "never",
+      "visibility": "public",
+      "requiresForeground": true,
+      "completionMode": "async_result",
+      "sensitivity": "high",
+      "idempotent": true,
+      "sideEffects": "Creates a bounded temporary result; does not change the source or reading history.",
+      "resultTransport": {
+        "android": {
+          "type": "broadcast",
+          "action": "org.oacp.ACTION_RESULT"
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "uri",
+          "mimeType",
+          "bytes",
+          "format",
+          "fidelity",
+          "warnings",
+          "view",
+          "paginationKnown",
+          "sheet",
+          "viewport",
+          "theme",
+          "imageTreatment"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string",
+            "description": "Read-granted content URI, at most one hour or until cache eviction."
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "maximum": 33554432
+          },
+          "format": {
+            "const": "png"
+          },
+          "fidelity": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "view": {
+            "const": "worksheet"
+          },
+          "paginationKnown": {
+            "const": false
+          },
+          "sheet": {
+            "type": "object",
+            "required": [
+              "index",
+              "name",
+              "rowCount",
+              "columnCount",
+              "usedRows",
+              "usedColumns",
+              "width",
+              "height"
+            ],
+            "properties": {
+              "index": {
+                "type": "integer"
+              },
+              "rowCount": {
+                "type": "integer"
+              },
+              "columnCount": {
+                "type": "integer"
+              },
+              "usedRows": {
+                "type": "integer"
+              },
+              "usedColumns": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "width": {
+                "type": "number"
+              },
+              "height": {
+                "type": "number"
+              }
+            }
+          },
+          "viewport": {
+            "type": "object",
+            "required": [
+              "x",
+              "y",
+              "scale",
+              "width",
+              "height"
+            ],
+            "properties": {
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              },
+              "scale": {
+                "type": "number"
+              },
+              "width": {
+                "type": "integer"
+              },
+              "height": {
+                "type": "integer"
+              }
+            }
+          },
+          "theme": {
+            "type": "string"
+          },
+          "imageTreatment": {
+            "enum": [
+              "auto",
+              "keep",
+              "all"
+            ]
+          }
+        }
+      },
+      "errorCodes": [
+        "invalid_parameters",
+        "missing_parameters",
+        "not_authorized",
+        "not_authenticated",
+        "unsupported_state",
+        "cancelled",
+        "internal_error"
+      ],
+      "invoke": {
+        "android": {
+          "type": "activity",
+          "action": "__APPLICATION_ID__.oacp.ACTION_RENDER_SHEET",
+          "extrasMapping": {
+            "uri": "uri",
+            "recipient_package": "recipient_package",
+            "display_name": "display_name",
+            "mime_type": "mime_type",
+            "password": "password",
+            "width": "width",
+            "sheet": "sheet",
+            "x": "x",
+            "y": "y",
+            "scale": "scale",
+            "height": "height",
+            "theme": "theme",
+            "imageTreatment": "imageTreatment"
+          }
+        }
+      }
     }
   ]
 }

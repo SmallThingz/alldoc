@@ -5,13 +5,21 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.View
+import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.compose.ui.platform.ViewRootForTest
+import androidx.compose.ui.semantics.SemanticsNode
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.smallthingz.alldoc.MainActivity
+import app.smallthingz.alldoc.state.TextPosition
 import java.io.File
 import java.util.UUID
 import org.junit.Assert.*
@@ -63,6 +71,113 @@ class ReaderSearchRestorationTest {
                 assertTrue(horizontalPages); assertTrue(notesVisible)
             } }
         }
+    }
+
+    @Test fun laterSearchHitAndItsAnchorSurviveRecreationButNewQueriesAndDocumentsReset() = withDocument(pages = 12) { file, scenario ->
+        click("Find in document"); await { visible("Close search") }; setQuery("fixture")
+        await { visible("1 / 12") }
+        repeat(6) {
+            click("Next match")
+            await { visible("${it + 2} / 12") }
+        }
+        var selectedPosition = TextPosition()
+        var selectedHighlight: String? = null
+        await {
+            var anchorReached = false
+            scenario.onActivity {
+                val model = ViewModelProvider(it)[ReaderModel::class.java]
+                selectedPosition = model.textPosition
+                val offsets = searchOffsets(model.text.orEmpty(), "fixture")
+                anchorReached = offsets.size == 12 && selectedPosition.offset in (offsets[5] + 1)..offsets[6]
+            }
+            selectedHighlight = activeHighlight(scenario, "fixture")
+            anchorReached && selectedHighlight?.startsWith("fixture 7") == true
+        }
+        scenario.recreate()
+        await { visible("7 / 12") && activeHighlight(scenario, "fixture") == selectedHighlight }
+        SystemClock.sleep(150) // Let restoration and search reveal publish their final reading anchor.
+        scenario.onActivity {
+            val restored = ViewModelProvider(it)[ReaderModel::class.java].textPosition
+            assertEquals("Rotation must preserve the selected result's reading anchor", selectedPosition.offset, restored.offset)
+            assertEquals(selectedPosition.fraction, restored.fraction, .01f)
+        }
+        scrollText(scenario, -240f)
+        val manualPosition = settledTextPosition(scenario, selectedPosition)
+        scenario.recreate()
+        await { visible("7 / 12") && activeHighlight(scenario, "fixture") == selectedHighlight }
+        val restoredManual = settledTextPosition(scenario)
+        assertEquals("Rotation must preserve manual scrolling after a completed search", manualPosition.offset, restoredManual.offset)
+        assertEquals(manualPosition.fraction, restoredManual.fraction, .01f)
+        setQuery("Readable")
+        await { visible("1 / 12") && activeHighlight(scenario, "Readable")?.startsWith("Readable PDF content") == true }
+        repeat(2) {
+            click("Next match")
+            await { visible("${it + 2} / 12") }
+        }
+        val nextFile = File(file.parentFile, "search-next-${UUID.randomUUID()}.pdf")
+        writeReaderPdf(nextFile, pages = 12, marker = "Another PDF fixture")
+        try {
+            scenario.onActivity { ViewModelProvider(it)[ReaderModel::class.java].open(Uri.fromFile(nextFile), mimeHint = "application/pdf") }
+            await {
+                var ready = false
+                scenario.onActivity {
+                    val model = ViewModelProvider(it)[ReaderModel::class.java]
+                    ready = model.source == Uri.fromFile(nextFile) && model.info != null && !model.loading
+                }
+                ready && !visible("Close search")
+            }
+            click("Find in document"); await { visible("Close search") && queryIs("") }; setQuery("Readable")
+            await { visible("1 / 12") && activeHighlight(scenario, "Readable")?.startsWith("Readable PDF content") == true }
+        } finally { nextFile.delete() }
+    }
+
+    private fun composeRoot(view: View): ViewRootForTest? = (view as? ViewRootForTest) ?: (view as? ViewGroup)?.let { group ->
+        (0 until group.childCount).firstNotNullOfOrNull { composeRoot(group.getChildAt(it)) }
+    }
+
+    private fun scrollText(scenario: ActivityScenario<MainActivity>, delta: Float) {
+        scenario.onActivity { activity ->
+            fun scroll(node: SemanticsNode): Boolean {
+                if (node.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange) != null &&
+                    node.config.getOrNull(SemanticsActions.ScrollBy)?.action?.invoke(0f, delta) == true) return true
+                return node.children.any(::scroll)
+            }
+            assertTrue(scroll(checkNotNull(composeRoot(activity.window.decorView)).semanticsOwner.unmergedRootSemanticsNode))
+        }
+    }
+
+    private fun settledTextPosition(scenario: ActivityScenario<MainActivity>, differentFrom: TextPosition? = null): TextPosition {
+        var position = TextPosition()
+        var unchangedAt = SystemClock.uptimeMillis()
+        await {
+            scenario.onActivity {
+                val current = ViewModelProvider(it)[ReaderModel::class.java].textPosition
+                if (current != position) { position = current; unchangedAt = SystemClock.uptimeMillis() }
+            }
+            position != differentFrom && SystemClock.uptimeMillis() - unchangedAt >= 200
+        }
+        return position
+    }
+
+    // The selected hit has the ordinary match span plus the overriding active color span.
+    // Inspect the actual text annotation so a retained count/query cannot hide a wrong highlight.
+    private fun activeHighlight(scenario: ActivityScenario<MainActivity>, query: String): String? {
+        var result: String? = null
+        scenario.onActivity { activity ->
+            fun visit(node: SemanticsNode) {
+                node.config.getOrNull(SemanticsProperties.Text)?.forEach { text ->
+                    text.spanStyles.groupBy { it.start to it.end }.forEach { (range, spans) ->
+                        if (text.text.substring(range.first, range.second).equals(query, ignoreCase = true) &&
+                            spans.map { it.item.background }.distinct().size > 1) {
+                            result = text.text.substring(range.first, minOf(text.length, range.second + 20))
+                        }
+                    }
+                }
+                node.children.forEach(::visit)
+            }
+            composeRoot(activity.window.decorView)?.semanticsOwner?.unmergedRootSemanticsNode?.let(::visit)
+        }
+        return result
     }
 
     @Test fun failedFreshModelOpenWithRestoredSearchStillAllowsSystemBack() = withDocument { file, scenario ->
@@ -126,10 +241,10 @@ class ReaderSearchRestorationTest {
         activityOwnsBack && !visible("Couldn’t open document")
     }
 
-    private fun withDocument(test: (File, ActivityScenario<MainActivity>) -> Unit) {
+    private fun withDocument(pages: Int = 4, test: (File, ActivityScenario<MainActivity>) -> Unit) {
         val context = instrumentation.targetContext
         val file = File(context.cacheDir, "search-restored-${UUID.randomUUID()}.pdf")
-        writeReaderPdf(file, pages = 4)
+        writeReaderPdf(file, pages = pages)
         try { ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)
             .setAction(Intent.ACTION_VIEW).setDataAndType(Uri.fromFile(file), "application/pdf")).use { scenario ->
             await { var ready = false; scenario.onActivity {
@@ -139,7 +254,7 @@ class ReaderSearchRestorationTest {
             test(file, scenario)
         } } finally { file.delete() }
     }
-    private fun queryIs(value: String) = visit { it.isVisibleToUser && it.className?.toString() == "android.widget.EditText" && it.text?.toString() == value }
+    private fun queryIs(value: String) = visit { it.isVisibleToUser && it.className?.toString() == "android.widget.EditText" && it.text?.toString().orEmpty() == value }
     private fun setQuery(value: String) = await { visit {
         it.isVisibleToUser && it.className?.toString() == "android.widget.EditText" && it.performAction(
             AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value) })

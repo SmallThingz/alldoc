@@ -25,8 +25,8 @@ import app.smallthingz.alldoc.state.AppTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-// Original AllDoc implementation. Reverb's static textured Material chrome is the visual reference.
-// No Reverb code or assets are incorporated; reader_noise.png is an independently generated tile.
+// Reader chrome is original AllDoc code. The background tile is Reverb's GPL-3.0 asset;
+// its source revision, license and unchanged SHA-256 are recorded in docs/UI_REFERENCE.md.
 private val ReaderTypography = Typography(
     headlineLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 30.sp, lineHeight = 36.sp),
     headlineSmall = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 24.sp, lineHeight = 30.sp),
@@ -46,8 +46,10 @@ fun ReaderTheme(appTheme: AppTheme = AppTheme.SYSTEM, content: @Composable () ->
     val context = LocalContext.current
     val dark = appTheme.isDark(isSystemInDarkTheme())
     val black = appTheme == AppTheme.AMOLED
-    val texture by produceState<ShaderBrush?>(null, context.resources) {
-        value = withContext(Dispatchers.IO) { ReaderTexture.brush(context.resources) }
+    val texture by produceState<ShaderBrush?>(null, context.resources, black) {
+        value = if (black) null else withContext(Dispatchers.IO) {
+            try { ReaderTexture.brush(context.resources) } catch (_: OutOfMemoryError) { null }
+        }
     }
     val colors = remember(context, dark, black) {
         val accent = if (Build.VERSION.SDK_INT >= 31) {
@@ -83,7 +85,7 @@ fun ReaderTheme(appTheme: AppTheme = AppTheme.SYSTEM, content: @Composable () ->
             large = RoundedCornerShape(16.dp), extraLarge = RoundedCornerShape(20.dp))) {
         CompositionLocalProvider(LocalContentColor provides colors.onSurface, LocalAppTheme provides appTheme,
             LocalReaderTexture provides texture) {
-            Box(Modifier.fillMaxSize().readerBackground()) { content() }
+            Box(Modifier.fillMaxSize().background(colors.background)) { content() }
         }
     }
 }
@@ -93,7 +95,7 @@ fun ReaderTheme(appTheme: AppTheme = AppTheme.SYSTEM, content: @Composable () ->
 fun ReaderTheme(dark: Boolean, content: @Composable () -> Unit) =
     ReaderTheme(if (dark) AppTheme.DARK else AppTheme.LIGHT, content)
 
-/** One immutable 96px tile and shader, shared by all chrome. No timers or generated frames. */
+/** One immutable 1024px tile and shader for backgrounds; no timers or generated frames. */
 private object ReaderTexture {
     private var brush: ShaderBrush? = null
 
@@ -104,17 +106,12 @@ private object ReaderTexture {
     }
 }
 
-/** Grain only, for a Material surface that already paints its own color. */
-@Composable
-internal fun Modifier.readerTexture(): Modifier {
-    val brush = LocalReaderTexture.current ?: return this
-    return drawBehind { drawRect(brush) }
-}
-
 @Composable
 internal fun Modifier.readerBackground(raised: Boolean = false, color: Color = Color.Unspecified): Modifier {
     val surface = if (color != Color.Unspecified) color else if (raised)
         MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surface
     val base = background(surface)
-    return if (LocalAppTheme.current == AppTheme.AMOLED && surface == Color.Black) base else base.readerTexture()
+    val brush = LocalReaderTexture.current
+    return if (raised || brush == null || LocalAppTheme.current == AppTheme.AMOLED) base
+        else base.drawBehind { drawRect(brush) }
 }

@@ -2,6 +2,10 @@
  <queries><package android:name="app.smallthingz.alldoc" /></queries>
  <application android:label="AllDoc API test client" android:allowBackup="false">
   <activity android:name=".OacpCallerActivity" android:exported="false" />
+  <activity android:name=".StressDocumentActivity" android:exported="true" />
+  <provider android:name=".StressFixtureProvider"
+   android:authorities="app.smallthingz.alldoc.clienttest.stress-fixtures"
+   android:exported="false" android:grantUriPermissions="true" />
   <provider android:name=".OacpFixtureProvider"
    android:authorities="app.smallthingz.alldoc.clienttest.oacp-fixtures"
    android:exported="false" android:grantUriPermissions="true" />

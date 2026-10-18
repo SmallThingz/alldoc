@@ -1,5 +1,7 @@
 package app.smallthingz.alldoc.ui
 
+import androidx.compose.foundation.MutatePriority
+import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,10 +35,13 @@ import java.util.Locale
 
 /** The catalog is metadata only; opening one item materializes only that asset on the reader worker. */
 @Composable
-internal fun ReaderExamplesScreen(onBack: () -> Unit, onOpen: (ExampleDocument) -> Unit) {
+internal fun ReaderExamplesScreen(onBack: () -> Unit, onOpen: (ExampleDocument) -> Unit, active: Boolean = true) {
     val context = LocalContext.current.applicationContext
     var query by rememberSaveable { mutableStateOf("") }
     val scroll = rememberLazyListState()
+    LaunchedEffect(scroll, active) {
+        if (!active) scroll.stopScroll(MutatePriority.PreventUserInput)
+    }
     fun changeQuery(value: String) {
         val next = value.takeScalarSafe(128)
         if (next != query) { query = next; scroll.requestScrollToItem(0) }
@@ -74,7 +79,7 @@ internal fun ReaderExamplesScreen(onBack: () -> Unit, onOpen: (ExampleDocument) 
                 }
                 examples == null -> CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp), strokeWidth = 2.dp)
                 groups.isEmpty() -> Text("No matches", Modifier.align(Alignment.Center), style = MaterialTheme.typography.bodyMedium)
-                else -> LazyColumn(Modifier.fillMaxSize(), state = scroll, contentPadding = PaddingValues(16.dp),
+                else -> LazyColumn(Modifier.fillMaxSize(), state = scroll, userScrollEnabled = active, contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     groups.forEach { (category, items) ->
                         item(key = "category:$category", contentType = "heading") {

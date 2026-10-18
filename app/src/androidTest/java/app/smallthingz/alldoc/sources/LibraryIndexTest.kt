@@ -11,6 +11,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
+import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
 import android.os.ParcelFileDescriptor
@@ -60,7 +61,7 @@ class LibraryIndexTest {
     @Test fun metadataPrecedesHashingAndCancellationNeverPrunesThenRefreshRehashesUnchangedStats() = fixture { context, catalog ->
         val root = File(context.root, "documents").apply { mkdirs() }.canonicalFile
         val file = File(root, "a.md").apply { writeText("first") }
-        File(root, "b.md").writeText("second")
+        val other = File(root, "b.md").apply { writeText("second") }
         File(root, "ignored.unsupported-format").writeBytes(byteArrayOf(0, 1, 2, 3, -1))
         val uri = Uri.fromFile(root)
         val oldGeneration = catalog.beginScan(uri.toString())
@@ -75,7 +76,8 @@ class LibraryIndexTest {
                     partial = true
                     assertEquals(0L, progress.indexed)
                     val discovered = catalog.location(Uri.fromFile(file).toString())
-                    if (discovered == null) fail("Missing ${Uri.fromFile(file)} after $progress; locations=${catalog.page(0, 10).map { it.uri }}")
+                        ?: catalog.location(Uri.fromFile(other).toString())
+                    if (discovered == null) fail("Missing discovered fixture after $progress; locations=${catalog.page(0, 10).map { it.uri }}")
                     assertNull(requireNotNull(discovered).hash)
                     signal.cancel()
                 }
@@ -103,6 +105,141 @@ class LibraryIndexTest {
         assertTrue(changed.revision > before.revision)
         assertFalse("Discovery must not create reading history", context.getDatabasePath("documents.db").exists())
         assertFalse("Discovery must not retain copies", context.getDatabasePath("imports.sqlite").exists())
+    }
+
+    @androidx.test.filters.SdkSuppress(minSdkVersion = 29)
+    @Test fun pendingMetadataPublishesBeforeFurtherUnsupportedFileProbes() = metadataPublication(false)
+
+    @androidx.test.filters.SdkSuppress(minSdkVersion = 29)
+    @Test fun pendingMetadataPublishesBeforeFirstProviderOpen() = metadataPublication(true)
+
+    private fun metadataPublication(checkFirstProbe: Boolean) = fixture { context, catalog ->
+        val pdf = File(context.root, "known.pdf")
+        context.assets.open("examples/office/office-guide.pdf").use { input ->
+            pdf.outputStream().use { input.copyTo(it) }
+        }
+        val ignored = File(context.root, "ignored.bin").apply { writeBytes(byteArrayOf(0, 1, 2, 3, -1)) }
+        val tree = DocumentsContract.buildTreeDocumentUri("publication-index", "root")
+        val known = DocumentsContract.buildDocumentUriUsingTree(tree, "known")
+        var now = 0L
+        var published = false
+        var visibleDuringDiscovery = false
+        var rejectedProbes = 0
+        context.resolver = ContentResolver.wrap(object : ContentProvider() {
+            override fun onCreate() = true
+            override fun getType(uri: Uri) = if (DocumentsContract.getDocumentId(uri) == "known") "application/pdf" else "application/octet-stream"
+            override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+            override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?) = 0
+            override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?) = 0
+            override fun query(request: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?) =
+                MatrixCursor(requireNotNull(projection)).apply {
+                    assertEquals("children", request.lastPathSegment)
+                    for (id in listOf("known", "ignored-0", "ignored-1")) addRow(columnNames.map { when (it) {
+                        "document_id" -> id
+                        "_display_name" -> if (id == "known") "known.pdf" else "$id.bin"
+                        "mime_type" -> if (id == "known") "application/pdf" else "application/octet-stream"
+                        "_size" -> if (id == "known") pdf.length() else ignored.length()
+                        "last_modified" -> 1L
+                        else -> error("Unexpected column: $it")
+                    } }.toTypedArray<Any>())
+                }
+            override fun openFile(request: Uri, mode: String): ParcelFileDescriptor {
+                val id = DocumentsContract.getDocumentId(request)
+                if (id != "known") {
+                    rejectedProbes++
+                    if (id == "ignored-0") {
+                        if (checkFirstProbe) {
+                            assertEquals("The batching deadline has not elapsed", 0L, now)
+                            assertTrue("Known metadata must publish before a provider can block",
+                                published && catalog.location(known.toString())?.let { it.hash == null } == true)
+                        }
+                        now = 100L
+                    } else visibleDuringDiscovery = published && catalog.location(known.toString())?.let { it.hash == null } == true
+                }
+                return ParcelFileDescriptor.open(if (id == "known") pdf else ignored, ParcelFileDescriptor.MODE_READ_ONLY)
+            }
+        })
+        val result = LibraryIndex(context, catalog, elapsed = { now }).scanRoots(listOf(tree), CancellationSignal()) {
+            if (it.discovered == 1L && it.indexed == 0L) published = true
+        }
+        assertEquals(2, rejectedProbes)
+        assertTrue("Known metadata stayed hidden while rejected entries were probed", visibleDuringDiscovery)
+        assertTrue(result.complete); assertEquals(1L, result.discovered); assertEquals(1L, result.indexed)
+        assertNotNull(requireNotNull(catalog.location(known.toString())).hash)
+    }
+
+    @androidx.test.filters.SdkSuppress(minSdkVersion = 29)
+    @Test fun loadingProviderListingKeepsPublishedRowsAndDefersPruning() = incompleteProviderListing(DocumentsContract.EXTRA_LOADING)
+
+    @androidx.test.filters.SdkSuppress(minSdkVersion = 29)
+    @Test fun erroredProviderListingKeepsPublishedRowsAndDefersPruning() = incompleteProviderListing(DocumentsContract.EXTRA_ERROR)
+
+    private fun incompleteProviderListing(extra: String) = fixture { context, catalog ->
+        val body = "# Partial folder\nA readable document remains visible."
+        val file = File(context.root, "listed.md").apply { writeText(body) }
+        val tree = DocumentsContract.buildTreeDocumentUri("partial-index", "root")
+        val listed = DocumentsContract.buildDocumentUriUsingTree(tree, "listed")
+        val omitted = DocumentsContract.buildDocumentUriUsingTree(tree, "omitted")
+        val generation = catalog.beginScan(tree.toString())
+        val previous = requireNotNull(catalog.discover(LibraryFile(omitted.toString(), "previous.md", "text/markdown", 10, 1),
+            tree.toString(), generation)).let { requireNotNull(catalog.resolve(it, hash("previous document"))) }
+        assertTrue(catalog.finishScan(tree.toString(), generation))
+        var incomplete = true
+        var queries = 0
+        context.resolver = ContentResolver.wrap(object : ContentProvider() {
+            override fun onCreate() = true
+            override fun getType(uri: Uri) = "text/markdown"
+            override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+            override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?) = 0
+            override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?) = 0
+            override fun query(request: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?) =
+                MatrixCursor(requireNotNull(projection)).apply {
+                    assertEquals("children", request.lastPathSegment)
+                    queries++
+                    addRow(columnNames.map { when (it) {
+                        "document_id" -> "listed"
+                        "_display_name" -> file.name
+                        "mime_type" -> "text/markdown"
+                        "_size" -> file.length()
+                        "last_modified" -> 1L
+                        else -> error("Unexpected column: $it")
+                    } }.toTypedArray<Any>())
+                    setExtras(Bundle().apply {
+                        putBoolean(DocumentsContract.EXTRA_LOADING, incomplete && extra == DocumentsContract.EXTRA_LOADING)
+                        putString(DocumentsContract.EXTRA_ERROR, if (incomplete && extra == DocumentsContract.EXTRA_ERROR)
+                            "The remote folder is temporarily unavailable." else "")
+                    })
+                }
+            override fun openFile(request: Uri, mode: String): ParcelFileDescriptor {
+                assertEquals(listed, request)
+                return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            }
+        })
+        val index = LibraryIndex(context, catalog)
+        var publishedBeforeHashing = false
+        val partial = index.scanRoots(listOf(tree), CancellationSignal()) { progress ->
+            if (progress.discovered == 1L && progress.indexed == 0L) {
+                publishedBeforeHashing = true
+                assertNull(requireNotNull(catalog.location(listed.toString())).hash)
+                assertEquals(previous, catalog.location(omitted.toString()))
+            }
+        }
+        assertTrue("Partial listing metadata must still publish", publishedBeforeHashing)
+        assertFalse("A loading or failed provider listing cannot certify a complete scan", partial.complete)
+        assertEquals(1L, partial.discovered); assertEquals(1L, partial.indexed); assertEquals(1L, partial.skipped)
+        assertEquals(previous, catalog.location(omitted.toString()))
+        assertEquals(hash(body), requireNotNull(catalog.location(listed.toString())).hash)
+        assertEquals(2, catalog.count()); assertEquals(1, queries)
+        // A later explicit complete scan may prune; no polling or automatic retry is introduced.
+        incomplete = false
+        val refreshed = index.scanRoots(listOf(tree), CancellationSignal())
+        assertTrue(refreshed.complete); assertEquals(0L, refreshed.skipped)
+        assertEquals(1L, refreshed.discovered); assertEquals(1L, refreshed.indexed)
+        assertNull(catalog.location(omitted.toString())); assertEquals(1, catalog.count())
+        assertEquals(hash(body), requireNotNull(catalog.location(listed.toString())).hash)
+        assertEquals(2, queries)
+        assertFalse(context.getDatabasePath("imports.sqlite").exists())
+        assertFalse(context.getDatabasePath("documents.db").exists())
     }
 
     @Test fun documentHashFailureAndLocationLimitsReportIncompleteAndCanRetry() = fixture { context, catalog ->

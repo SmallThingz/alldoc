@@ -105,6 +105,8 @@ class ReaderNotesTest {
                 val shown = mutableStateOf(true)
                 val documentBounds = AtomicReference<androidx.compose.ui.geometry.Rect>()
                 val paneBounds = AtomicReference<androidx.compose.ui.geometry.Rect>()
+                var documentCompositions = 0
+                var documentDisposals = 0
                 val documentDirection = AtomicReference<LayoutDirection>()
                 val paneDirection = AtomicReference<LayoutDirection>()
                 val diagnostic = "direction=$direction, orientation=$orientation"
@@ -121,6 +123,10 @@ class ReaderNotesTest {
                                             modifier.onGloballyPositioned { paneBounds.set(it.boundsInRoot()) },
                                             {})
                                     }, content = { modifier ->
+                                        DisposableEffect(Unit) {
+                                            documentCompositions++
+                                            onDispose { documentDisposals++ }
+                                        }
                                         val inheritedDirection = LocalLayoutDirection.current
                                         SideEffect { documentDirection.set(inheritedDirection) }
                                         Box(modifier.onGloballyPositioned { documentBounds.set(it.boundsInRoot()) }
@@ -147,6 +153,16 @@ class ReaderNotesTest {
                         documentBounds.get().height > document.height else documentBounds.get().width > document.width) }
                     assertTrue(visible("Document page"))
                     assertEquals("Hiding notes preserves document direction: $diagnostic", direction, documentDirection.get())
+                    instrumentation.runOnMainSync {
+                        assertEquals("Notes must not recreate the document surface: $diagnostic", 1, documentCompositions)
+                        assertEquals("Notes must not dispose its scroll/zoom state: $diagnostic", 0, documentDisposals)
+                        shown.value = true
+                    }
+                    await { visible("Visible speaker") }
+                    instrumentation.runOnMainSync {
+                        assertEquals("Reopening notes keeps the same document: $diagnostic", 1, documentCompositions)
+                        assertEquals(0, documentDisposals)
+                    }
                 }
             }
         }

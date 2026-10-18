@@ -9,6 +9,7 @@ import app.smallthingz.alldoc.sources.LibrarySourceChangedException
 import app.smallthingz.alldoc.sources.LibrarySourceMissingException
 import app.smallthingz.alldoc.state.LibraryDocument
 import app.smallthingz.alldoc.theme.BitmapTheme
+import app.smallthingz.alldoc.theme.RasterRegion
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.io.File
@@ -28,7 +29,7 @@ class LibraryPreviewsTest {
         fun drain() { var count = 0; while (tasks.isNotEmpty()) { check(count++ < 20); tasks.removeFirst().run() } }
     }
     private fun hash(id: Long) = id.toString(16).padStart(64, '0')
-    private fun document(id: Long, revision: Long = 1) = LibraryDocument(id, null, "$id.md", "text/markdown", 8, "content://preview/$id", 1, revision)
+    private fun document(id: Long, revision: Long = 1) = LibraryDocument(id, null, "$id.pdf", "application/pdf", 8, "content://preview/$id", 1, revision)
     private fun image() = Bitmap.createBitmap(24, 32, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.MAGENTA) }
     private fun directory() = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "library-preview-${UUID.randomUUID()}")
 
@@ -109,7 +110,7 @@ class LibraryPreviewsTest {
             assertEquals(Color.BLACK, published.single().first.getPixel(0, 0))
             assertTrue(sources.all { it.isRecycled })
             assertEquals(2, loads)
-            val disk = requireNotNull(DocumentPreviews.read(folder.listFiles()!!.single { it.extension == "png" }, 240, 320))
+            val disk = requireNotNull(DocumentPreviews.readCached(folder.listFiles()!!.single { it.extension == "png" }, 240, 320)).image
             try { assertEquals("Appearance never mutates the original disk thumbnail", Color.WHITE, disk.getPixel(0, 0)) }
             finally { disk.recycle() }
             cache.setVisible(listOf(document(1).copy(hash = hash(1))))
@@ -176,7 +177,7 @@ class LibraryPreviewsTest {
             }
             val file = folder.listFiles().orEmpty().single { it.extension == "png" }
             val cachedBytes = file.readBytes()
-            val raw = requireNotNull(DocumentPreviews.read(file, 240, 320))
+            val raw = requireNotNull(DocumentPreviews.readCached(file, 240, 320)).image
             try {
                 assertArrayEquals("Disk retains the complete original alpha and AA", original, pixels(raw))
                 assertEquals(0, Color.alpha(raw.getPixel(0, 0)))
@@ -238,4 +239,60 @@ class LibraryPreviewsTest {
             assertTrue(sources.all { it.isRecycled }); assertTrue(published.all { !it.second.isRecycled })
         } finally { cache.close(); queue.drain(); published.forEach { it.second.recycle() }; folder.deleteRecursively() }
     }
+    @Test fun rasterRegionRolesSurviveWarmLibraryHitsAndMissingMetadataReopensOnlyItsSource() {
+        val folder = directory(); val queue = Queue()
+        val settings = ThemeSettings(ReadingMode.ADAPTIVE)
+        val roles = listOf(null, emptyList(), listOf(RasterRegion(.125f, .125f, .875f, .875f)))
+        val documents = roles.indices.map { document(it + 1L).copy(hash = hash(it + 1L)) }
+        fun original() = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.WHITE)
+            for (y in 5 until 27) for (x in 5 until 27)
+                setPixel(x, y, Color.rgb((x * 7 + y * 13) and 255, (x * 11 + y * 3) and 255, (x * 5 + y * 17) and 255))
+        }
+        val expected = roles.map { role ->
+            val source = original()
+            BitmapTheme.apply(source, settings, CancellationSignal(), role).also { if (it !== source) source.recycle() }
+        }
+        val delivered = mutableListOf<Bitmap>()
+        val sources = mutableListOf<Bitmap>()
+        var loads = 0
+        val loader: (LibraryDocument, CancellationSignal) -> LibraryPreviews.Preview = { doc, _ ->
+            loads++
+            val source = original().also(sources::add)
+            LibraryPreviews.Preview(requireNotNull(doc.hash), source, doc.mimeType, roles[doc.id.toInt() - 1])
+        }
+        fun open(load: (LibraryDocument, CancellationSignal) -> LibraryPreviews.Preview) {
+            LibraryPreviews({ folder }, load, queue) { doc, bitmap, _ ->
+                delivered += bitmap
+                assertTrue("Cold/warm Library pixels use the complete image-role metadata", expected[doc.id.toInt() - 1].sameAs(bitmap))
+            }.use { cache -> cache.setAppearance(settings); cache.setVisible(documents); queue.drain() }
+        }
+        try {
+            assertFalse("Known no-image metadata must not retain photographic colors", expected[1].sameAs(expected[2]))
+            original().let { original ->
+                try {
+                    assertEquals("Known photo edges remain original", Color.WHITE, expected[2].getPixel(4, 12))
+                    assertEquals(original.getPixel(16, 16), expected[2].getPixel(16, 16))
+                    assertNotEquals(Color.WHITE, expected[2].getPixel(0, 0))
+                }
+                finally { original.recycle() }
+            }
+            open(loader)
+            assertEquals(3, loads); assertTrue(sources.all { it.isRecycled })
+            val originals = folder.listFiles().orEmpty().associate { it.name to it.readBytes() }
+            open { _, _ -> error("A metadata-complete warm cache must not reopen a document") }
+            assertEquals(6, delivered.size); assertEquals(3, loads)
+            originals.forEach { (name, bytes) -> assertArrayEquals(bytes, File(folder, name).readBytes()) }
+            val photo = folder.listFiles().orEmpty().filter { it.extension == "png" }.single { file ->
+                val cached = requireNotNull(DocumentPreviews.readCached(file, 240, 320))
+                try { cached.regions?.isNotEmpty() == true } finally { cached.image.recycle() }
+            }
+            assertTrue(DocumentPreviews.regionsFile(photo).delete())
+            open(loader)
+            assertEquals("Only the incomplete cache pair needs a new source render", 4, loads)
+            assertEquals(9, delivered.size); assertTrue(sources.all { it.isRecycled })
+            assertTrue(DocumentPreviews.regionsFile(photo).isFile)
+        } finally { expected.forEach(Bitmap::recycle); delivered.forEach(Bitmap::recycle); folder.deleteRecursively() }
+    }
+
 }

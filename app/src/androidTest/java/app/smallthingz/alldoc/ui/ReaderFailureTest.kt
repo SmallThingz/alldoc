@@ -2,6 +2,12 @@ package app.smallthingz.alldoc.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.ContentProvider
+import android.content.ContentResolver
+import android.content.ContentValues
+import android.database.Cursor
+import android.os.ParcelFileDescriptor
+import androidx.test.filters.SdkSuppress
 import android.content.ContextWrapper
 import android.content.SharedPreferences
 import android.database.DatabaseErrorHandler
@@ -329,6 +335,81 @@ class ReaderFailureTest {
         }
     }
 
+    @Test @SdkSuppress(minSdkVersion = 29)
+    fun reliableExportFailureReplacesPriorSuccessAfterFlushedPayload() {
+        val context = ScopedContext(instrumentation.targetContext)
+        val documentStore = DocumentStore(context)
+        val sources = DocumentSources(context)
+        val application = object : Application() { init { attachBaseContext(context) } }
+        val owner = ViewModelStore()
+        val input = File(context.root, "export.md").apply { writeText("Reliable export fixture.") }
+        val ordinary = File(context.root, "export.txt")
+        var reader: ReaderModel? = null
+        var failed: ReportedDestinationFailure? = null
+        try {
+            main {
+                reader = ReaderModel(application, documentStore, sources).also {
+                    owner.put("reader", it)
+                    it.open(Uri.fromFile(input))
+                }
+            }
+            val current = requireNotNull(reader)
+            await { !current.loading && current.info != null && !current.storageBusy }
+            main {
+                assertNotNull(current.prepareExport(ReaderModel.ExportKind.TEXT))
+                current.export(Uri.fromFile(ordinary))
+            }
+            await { !current.exporting }
+            main { assertNull(current.error); assertEquals("Export saved.", current.notice) }
+            val expected = ordinary.readBytes()
+            assertTrue(String(expected, Charsets.UTF_8).contains("Reliable export fixture."))
+            main {
+                assertNotNull(current.prepareExport(ReaderModel.ExportKind.TEXT))
+                current.export(null)
+                assertEquals("Cancelling the picker preserves the previous notice", "Export saved.", current.notice)
+            }
+            val destination = ReportedDestinationFailure { it.contentEquals(expected) }.also { failed = it }
+            val uri = Uri.parse("content://alldoc.export.failure/result")
+            var opens = 0
+            // wrap(ContentProvider) calls the local ContentInterface directly: no Binder parcel
+            // round trip can erase this descriptor's deterministic acknowledgement hook.
+            context.testResolver = ContentResolver.wrap(object : ContentProvider() {
+                override fun onCreate() = true
+                override fun openFile(request: Uri, mode: String): ParcelFileDescriptor {
+                    check(request == uri && mode == "wt")
+                    opens++
+                    return destination.output
+                }
+                override fun getType(uri: Uri) = "text/plain"
+                override fun query(uri: Uri, projection: Array<out String>?, selection: String?,
+                    args: Array<out String>?, sort: String?): Cursor? = null
+                override fun insert(uri: Uri, values: ContentValues?): Uri? = error("Unexpected insert")
+                override fun update(uri: Uri, values: ContentValues?, selection: String?, args: Array<out String>?) = error("Unexpected update")
+                override fun delete(uri: Uri, selection: String?, args: Array<out String>?) = error("Unexpected delete")
+            })
+            main {
+                assertEquals("Export saved.", current.notice)
+                assertNotNull(current.prepareExport(ReaderModel.ExportKind.TEXT))
+                current.export(uri)
+                assertNull("A new export clears the previous success immediately", current.notice)
+            }
+            await { !current.exporting }
+            main {
+                assertNull("Failed export must not retain or publish success", current.notice)
+                assertTrue(current.error.orEmpty().contains(ReportedDestinationFailure.MESSAGE))
+            }
+            assertEquals(1, opens)
+            assertEquals(1, destination.checks)
+            assertTrue("The provider consumed the complete flushed payload before reporting failure", destination.completePayload)
+            assertFalse(destination.output.fileDescriptor.valid())
+        } finally {
+            context.testResolver = null
+            reader?.let { closeModel(owner, it) }
+            failed?.close()
+            documentStore.close(); sources.close(); context.clear()
+        }
+    }
+
     private fun closeModel(owner: ViewModelStore, reader: ReaderModel) {
         var job: Job? = null
         main { job = reader.viewModelScope.coroutineContext[Job]; owner.clear() }
@@ -342,6 +423,8 @@ class ReaderFailureTest {
 
     private class ScopedContext(base: Context) : ContextWrapper(base) {
         val root = File(base.cacheDir, "reader-failure-${UUID.randomUUID()}").apply { mkdirs() }
+        @Volatile var testResolver: ContentResolver? = null
+        override fun getContentResolver(): ContentResolver = testResolver ?: super.getContentResolver()
         override fun getApplicationContext(): Context = this
         override fun getDatabasePath(name: String): File = File(root, name)
         override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?): SQLiteDatabase =

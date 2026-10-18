@@ -1004,12 +1004,18 @@ name = "alldoc_render"
 version = "0.1.0"
 dependencies = [
  "deckcraft-fonts",
+ "deckcraft-geom",
+ "deckcraft-model",
  "deckcraft-pptx",
  "deckcraft-render",
+ "gridcraft-core",
  "gridcraft-engine",
+ "gridcraft-model",
  "gridcraft-xlsx",
  "image",
  "quick-xml",
+ "serde_json",
+ "wordcraft-doc",
  "wordcraft-docx",
  "wordcraft-fonts",
  "wordcraft-layout",

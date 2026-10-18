@@ -1,5 +1,7 @@
 package app.smallthingz.alldoc.ui
 
+import androidx.compose.foundation.MutatePriority
+import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -7,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -72,7 +75,9 @@ internal fun markdownText(block: MarkdownBlock?, visible: String, ink: Color): A
 /** A bounded rich block, never a document-sized bitmap or a separate artificial page. */
 @Composable
 internal fun ReaderMarkdownView(block: MarkdownBlock, text: AnnotatedString, ink: Color,
-    onTextLayout: (TextLayoutResult) -> Unit, searchMatch: Pair<String, TextRange>? = null) {
+    onTextLayout: (TextLayoutResult) -> Unit, searchMatch: Pair<Long, TextRange>? = null, active: Boolean = true,
+    layoutKey: Any? = null,
+) {
     val typography = MaterialTheme.typography
     val maximumLine = with(LocalDensity.current) { 8192.toDp() }
     val style = when (block.kind) {
@@ -93,15 +98,24 @@ internal fun ReaderMarkdownView(block: MarkdownBlock, text: AnnotatedString, ink
         }.padding(start = 14.dp)
         MarkdownKind.CODE, MarkdownKind.TABLE -> {
             val scroll = rememberScrollState()
-            var viewport by remember { mutableIntStateOf(0) }
-            var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+            var viewport by remember(layoutKey) { mutableIntStateOf(0) }
+            var layout by remember(layoutKey) { mutableStateOf<TextLayoutResult?>(null) }
             val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
             val inset = with(LocalDensity.current) { 10.dp.toPx() }
-            // A search request reveals its glyphs; ordinary horizontal scrolling never retriggers it.
-            LaunchedEffect(searchMatch, layout, viewport, scroll.maxValue, rtl, inset) {
-                val range = searchMatch?.second ?: return@LaunchedEffect
+            LaunchedEffect(scroll, active) {
+                if (!active) scroll.stopScroll(MutatePriority.PreventUserInput)
+            }
+            var revealedVisit by rememberSaveable { mutableStateOf<Long?>(null) }
+            // Hydration/reflow never replays a completed reveal over the user's horizontal position.
+            // The parent visit also changes when an evicted block's result is selected again.
+            LaunchedEffect(searchMatch, layout, viewport, scroll.maxValue, rtl, inset, active) {
+                if (!active) return@LaunchedEffect
+                val selection = searchMatch ?: return@LaunchedEffect
+                val range = selection.second
+                if (revealedVisit == selection.first) return@LaunchedEffect
                 val measured = layout ?: return@LaunchedEffect
-                if (viewport <= 0 || range.start !in 0 until measured.layoutInput.text.length) return@LaunchedEffect
+                if (viewport <= 0 || scroll.maxValue == Int.MAX_VALUE || measured.layoutInput.text != text ||
+                    range.start !in 0 until measured.layoutInput.text.length) return@LaunchedEffect
                 val first = measured.getBoundingBox(range.start)
                 val lineEnd = measured.getLineEnd(measured.getLineForOffset(range.start), visibleEnd = true)
                 var left = first.left
@@ -120,13 +134,16 @@ internal fun ReaderMarkdownView(block: MarkdownBlock, text: AnnotatedString, ink
                     else -> current
                 }.coerceIn(0, scroll.maxValue)
                 scroll.scrollTo(if (rtl) scroll.maxValue - next else next)
+                revealedVisit = selection.first
             }
             // Keep text coordinates inside the scroll node for accessibility character bounds.
-            Box(Modifier.background(ink.copy(alpha = .06f), MaterialTheme.shapes.extraSmall)
-                .onSizeChanged { viewport = it.width }.horizontalScroll(scroll)) {
-                Text(text, color = ink, style = style,
-                    modifier = Modifier.widthIn(max = maximumLine).padding(horizontal = 10.dp),
-                    onTextLayout = { layout = it; onTextLayout(it) })
+            key(layoutKey) {
+                Box(Modifier.background(ink.copy(alpha = .06f), MaterialTheme.shapes.extraSmall)
+                    .onSizeChanged { viewport = it.width }.horizontalScroll(scroll, enabled = active)) {
+                    Text(text, color = ink, style = style,
+                        modifier = Modifier.widthIn(max = maximumLine).padding(horizontal = 10.dp),
+                        onTextLayout = { layout = it; onTextLayout(it) })
+                }
             }
             return
         }

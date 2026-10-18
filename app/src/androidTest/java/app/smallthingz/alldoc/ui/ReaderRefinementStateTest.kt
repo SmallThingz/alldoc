@@ -174,7 +174,7 @@ class ReaderRefinementStateTest {
         }
         val alias = File(fixture.context.root, "B.pdf").also { first.copyTo(it) }
         val hash = java.security.MessageDigest.getInstance("SHA-256").digest(first.readBytes()).toHexString()
-        val folder = File(fixture.context.cacheDir, "library-previews-v4").apply { check(mkdirs()) }
+        val folder = File(fixture.context.cacheDir, "library-previews-v7").apply { check(mkdirs()) }
         // Existing releases cached by hash alone, without confirming a location's advertised type.
         val obsolete = android.graphics.Bitmap.createBitmap(8, 4, android.graphics.Bitmap.Config.ARGB_8888)
         try {

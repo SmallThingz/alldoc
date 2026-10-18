@@ -5,13 +5,23 @@ import app.smallthingz.alldoc.theme.ThemeSettings
 
 /** Center coordinates are fractions of the unrotated document; rotation counts quarter turns. */
 data class ViewportState(val zoom: Float = 1f, val centerX: Float = .5f, val centerY: Float = .5f, val rotation: Int = 0) {
-    fun normalized() = copy(zoom = zoom.finite(1f).coerceIn(1f, 8f),
+    fun normalized() = copy(zoom = zoom.finite(1f).coerceIn(MIN_ZOOM, MAX_ZOOM),
         centerX = centerX.finite(.5f).coerceIn(0f, 1f), centerY = centerY.finite(.5f).coerceIn(0f, 1f),
         rotation = ((rotation % 4) + 4) % 4)
+    companion object {
+        const val MIN_ZOOM = .75f
+        const val MAX_ZOOM = 8f
+    }
 }
 
 data class TextPosition(val offset: Int = 0, val fraction: Float = 0f) {
     fun normalized() = copy(offset = offset.coerceAtLeast(0), fraction = fraction.finite(0f).coerceIn(0f, 1f))
+}
+
+/** -1 selects the authored active worksheet when this document has no saved sheet. */
+data class SheetPosition(val sheet: Int = -1, val x: Double = 0.0, val y: Double = 0.0, val zoom: Float = 1f) {
+    fun normalized() = copy(sheet = sheet.coerceIn(-1, 1023), x = x.takeIf { it.isFinite() }?.coerceIn(0.0, 1e9) ?: 0.0,
+        y = y.takeIf { it.isFinite() }?.coerceIn(0.0, 1e9) ?: 0.0, zoom = zoom.finite(1f).coerceIn(.25f, 8f))
 }
 
 enum class DocumentViewMode { PAGES, TEXT }
@@ -27,8 +37,9 @@ data class DocumentState(
     val pageFraction: Float = 0f,
     val horizontalPages: Boolean = false,
     val notesVisible: Boolean = false,
+    val sheetPosition: SheetPosition = SheetPosition(),
 ) {
-    fun normalized() = copy(page = page.coerceAtLeast(0), viewport = viewport.normalized(),
+    fun normalized() = copy(page = page.coerceAtLeast(0), viewport = viewport.normalized(), sheetPosition = sheetPosition.normalized(),
         textPosition = textPosition.normalized(), appearance = appearance.normalized(), pageFraction = if (pageFraction == -1f) -1f else pageFraction.finite(0f).coerceIn(0f, 1f))
 }
 

@@ -30,7 +30,7 @@ Only readable shared storage and granted folders are scanned. Scans run while Li
 
 ## Limits and cleanup
 
-Retained copies default to 256 MiB and 1,000 documents. Settings allow up to 8 GiB and 10,000 copies; both limits apply. Reducing limits can remove older retained copies. Disabling future retention does not itself discard existing copies. The explicit clear action removes only copies managed by AllDoc and preserves original files and reading preferences.
+Retained copies default to 256 MiB and 1,000 documents. Settings adjusts the storage limit up to 8 GiB. The saved file-count limit is preserved and capped at 10,000; both limits apply. Reducing limits can remove older retained copies. Disabling future retention does not itself discard existing copies. The explicit clear action removes only copies managed by AllDoc and preserves original files and reading preferences.
 
 Copy publication and eviction are journaled. Invalidating an evicted reference matches its exact old URI, so a delayed cleanup cannot erase a newer copy for the same hash. Failed or cancelled admission closes its session and removes temporary work. If a provider refuses an operation, the reader reports the failure rather than claiming that a copy was saved or removed. When saved storage settings are unavailable, opening a document does not create copies or enforce guessed quotas.
 

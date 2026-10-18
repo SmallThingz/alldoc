@@ -1,0 +1,9 @@
+office-heading and office-chart are exact RGB crops of authored native Android Original renders.
+Heading: standard-complex-12.docx, crop (64,136,640,40), Original PNG SHA-256
+fdef534c2ed1339e685dca2906d3097d937bf1a78be465ad3c18d8f329cbc7c8.
+Chart: complex-control-3.pptx, crop (640,160,128,192), Original PNG SHA-256
+ea14d7b034cbfa8b10fc82d42b4f69efdfd31d8e99c7f022e0f35b27a34aec7e.
+These crops contain authored text and vector chart marks, with no third-party imagery.
+office-photo is the existing authored procedural scan-photo RGB control. Actual Word/PPTX
+photographs remain in private paired native rendering qualification, not these assets.
+Sources are gzip-compressed RGB; Android packaging exposes the expanded .rgb asset paths.

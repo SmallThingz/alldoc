@@ -55,7 +55,16 @@ class AllDocClient private constructor(
 
     /** Consumes input even on failure. Callbacks carry their owner and may run before open returns. */
     fun open(input: ParcelFileDescriptor, name: String, mime: String = "",
-             password: String = "", onState: (Document, Bundle) -> Unit): Document {
+             password: String = "", onState: (Document, Bundle) -> Unit): Document =
+        open(input, name, mime, password, false, onState)
+
+    /** Version 2: workbook previews keep their worksheet grid without resolving print pages. */
+    fun openForPreview(input: ParcelFileDescriptor, name: String, mime: String = "",
+                       password: String = "", onState: (Document, Bundle) -> Unit): Document =
+        open(input, name, mime, password, true, onState)
+
+    private fun open(input: ParcelFileDescriptor, name: String, mime: String, password: String,
+                     preview: Boolean, onState: (Document, Bundle) -> Unit): Document {
         val active = AtomicBoolean(true)
         val publication = Any()
         var document: Document? = null
@@ -72,11 +81,17 @@ class AllDocClient private constructor(
             }
         }
         var remote: IAllDocSession? = null
+        var version = 1
         try {
             remote = input.use {
-                checkNotNull(service) { "AllDoc is not connected" }.open(it, name, mime, password, callback)
+                val bound = checkNotNull(service) { "AllDoc is not connected" }
+                version = bound.version()
+                if (preview) {
+                    check(version >= 2) { "This AllDoc version does not support worksheet previews" }
+                    bound.openForPreview(it, name, mime, password, callback)
+                } else bound.open(it, name, mime, password, callback)
             }
-            val opened = Document(remote, callback, active)
+            val opened = Document(remote, callback, active, version)
             val status = synchronized(publication) {
                 document = opened
                 pending.also { pending = null }
@@ -99,7 +114,8 @@ class AllDocClient private constructor(
     class Document internal constructor(
         private val remote: IAllDocSession,
         @Suppress("unused") private val callback: IAllDocCallback,
-        private val active: AtomicBoolean
+        private val active: AtomicBoolean,
+        private val version: Int
     ) : Closeable {
         private val ids = AtomicLong()
         fun status(): Bundle = remote.status()
@@ -109,6 +125,15 @@ class AllDocClient private constructor(
             check(active.get()) { "Document is closed" }
             val id = ids.incrementAndGet()
             return Result(remote, id, remote.read(id, format, page, width, theme, preserveImages))
+        }
+        /** Sheet IDs come from ready metadata; x/y are logical pixels, not row/column indices. */
+        fun readSheet(sheet: Int, x: Double = 0.0, y: Double = 0.0, scale: Double = 1.0,
+                      width: Int = 1200, height: Int = 800, theme: String = "original",
+                      imageTreatment: String = "auto"): Result {
+            check(active.get()) { "Document is closed" }
+            check(version >= 2) { "This AllDoc version does not support worksheet previews" }
+            val id = ids.incrementAndGet()
+            return Result(remote, id, remote.readSheet(id, sheet, x, y, scale, width, height, theme, imageTreatment))
         }
         override fun close() { if (active.getAndSet(false)) remote.close() }
     }
@@ -128,14 +153,22 @@ class AllDocClient private constructor(
     companion object {
         const val PACKAGE = "app.smallthingz.alldoc"
         const val SERVICE = "app.smallthingz.alldoc.ipc.DocumentService"
-        const val VERSION = 1
+        const val VERSION = 2
         fun connect(context: Context, executor: Executor = context.mainExecutor,
                     onDisconnected: () -> Unit = {}, onConnected: (AllDocClient) -> Unit): AllDocClient {
             val client = AllDocClient(context.applicationContext, executor, onConnected, onDisconnected)
             synchronized(client) {
-                client.bound = client.context.bindService(
-                    Intent().setComponent(ComponentName(PACKAGE, SERVICE)), client.connection, Context.BIND_AUTO_CREATE
-                )
+                client.bound = try {
+                    client.context.bindService(
+                        Intent().setComponent(ComponentName(PACKAGE, SERVICE)), client.connection, Context.BIND_AUTO_CREATE
+                    )
+                } catch (failure: SecurityException) {
+                    try { client.context.unbindService(client.connection) }
+                    catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
+                    throw failure
+                }
+                // Android retains the connection registration even when no service is found.
+                if (!client.bound) client.context.unbindService(client.connection)
             }
             check(client.bound) { "AllDoc is not installed or its service is unavailable" }
             return client

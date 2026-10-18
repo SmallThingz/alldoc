@@ -1,11 +1,79 @@
 package app.smallthingz.alldoc.ui
 
 import app.smallthingz.alldoc.state.ViewportState
+import kotlin.math.roundToInt
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ReaderPagesGeometryTest {
+    @Test fun interruptedZoomSavesAnEquivalentAnchorBeforeNegativeRequestsAreMeasured() {
+        val gap = 22f
+        val focus = 654f
+        val originalTop = 567f
+        val originalHeight = 607.5f
+        for (leading in listOf(44f, 220f)) {
+            var top = originalTop
+            var height = originalHeight
+            for (zoom in listOf(2f, 1f)) {
+                val nextHeight = originalHeight * zoom
+                val nextTop = focus - (focus - top) * nextHeight / height
+                val requested = (leading - nextTop).roundToInt()
+                assertTrue(requested < 0)
+                val anchor = pageOffsetAnchor(1, requested.toFloat(), gap, 2) { nextHeight }
+                assertEquals("A negative focal-page offset belongs to the preceding row", 0, anchor.page)
+                val restoredOffset = (anchor.fraction * (nextHeight + gap)).roundToInt()
+                val restoredTop = leading - restoredOffset + nextHeight.roundToInt() + gap
+                assertEquals("Saving before layout must retain the requested page position", nextTop, restoredTop, .001f)
+                top = restoredTop
+                height = nextHeight
+            }
+            assertEquals(originalTop, top, .001f)
+        }
+        val lengths = listOf(100f, 200f, 300f)
+        assertEquals(PageAnchor(0, .4f), pageOffsetAnchor(2, -260f, 0f, lengths.size) { lengths[it] })
+        assertEquals(PageAnchor(0, 0f), pageOffsetAnchor(2, -400f, 0f, lengths.size) { lengths[it] })
+    }
+
+    @Test fun interruptedZoomNormalizesMixedFractionalRowsUsingTheirMeasuredSpans() {
+        val lengths = listOf(10.49f, 11.49f, 12.49f, 10.49f, 11.49f, 12.49f, 25f)
+        val gap = 3f
+        val anchor = pageOffsetAnchor(6, -80f, gap, lengths.size) { lengths[it] }
+        assertEquals(0, anchor.page)
+        // LazyList measures the preceding spans as 13+14+15+13+14+15 = 84px.
+        // place() converts the saved fraction using the unrounded model extent.
+        val restoredOffset = (anchor.fraction * (lengths[anchor.page] + gap)).roundToInt()
+        assertEquals(4, restoredOffset)
+        assertEquals("The focal row remains 80px below the padded origin", 80, 84 - restoredOffset)
+    }
+
+    @Test fun interruptedForwardPanSavesTheNextRowOffsetAndStopsAtTheLastRow() {
+        val lengths = listOf(608f, 407.49f, 900f)
+        val gap = 22f
+        fun anchor(offset: Float) = pageOffsetAnchor(0, offset, gap, lengths.size) { lengths[it] }
+        val next = anchor(700f)
+        assertEquals(1, next.page)
+        assertEquals(70, (next.fraction * (lengths[next.page] + gap)).roundToInt())
+        val across = anchor(1600f)
+        assertEquals(2, across.page)
+        assertEquals(541, (across.fraction * (lengths[across.page] + gap)).roundToInt())
+        assertEquals(PageAnchor(2, 1f), anchor(3000f))
+        assertEquals(PageAnchor(0, 0f), anchor(-3000f))
+    }
+
+    @Test fun zoomOutPreservesPageGeometryAndCenteredPresentationSlots() {
+        val pose = ViewportState(zoom = .75f).normalized()
+        assertEquals(.75f, pose.zoom, 0f)
+        assertEquals(.75f, ViewportState(zoom = .1f).normalized().zoom, 0f)
+        assertEquals(1f, ViewportState(zoom = Float.NaN).normalized().zoom, 0f)
+        assertEquals(8f, ViewportState(zoom = 20f).normalized().zoom, 0f)
+        assertEquals(225f, pageRowLength(600f, 400f, .5f, pose, false), 0f)
+        assertEquals(450f, pageImageLength(600f, 400f, .5f, pose, true), 0f)
+        assertEquals(600f, pageRowLength(600f, 400f, .5f, pose, true), 0f)
+        assertEquals(150f, pageImageLength(600f, 400f, 2f, pose, true), 0f)
+        assertEquals(450f, pageImageLength(600f, 400f, 2f, pose.copy(rotation = 1), true), 0f)
+    }
+
     @Test fun presentationPinchingInLetterboxesCannotEscapeTheCurrentPage() {
         val width = 1000f
         val height = 400f

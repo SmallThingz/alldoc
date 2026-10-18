@@ -17,11 +17,15 @@ import app.smallthingz.alldoc.core.DocumentProbe
 import app.smallthingz.alldoc.core.takeScalarSafe
 import app.smallthingz.alldoc.pdf.PdfDocument
 import app.smallthingz.alldoc.render.DocRenderCore
+import app.smallthingz.alldoc.theme.ImageTreatment
+import app.smallthingz.alldoc.theme.RasterRegion
+import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.BitmapTheme
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.security.MessageDigest
 
 /** Local, worker-only document admission. Every descriptor and snapshot has one owner. */
@@ -83,7 +87,7 @@ object DocumentEngine {
             signal.throwIfCanceled()
             PdfDocument.configure(context)
             if (detected == "application/pdf") {
-                result = openPdf(ParcelFileDescriptor.open(snapshot, ParcelFileDescriptor.MODE_READ_ONLY), name, password, signal, emptyList())
+                result = openPdf(ParcelFileDescriptor.open(snapshot, ParcelFileDescriptor.MODE_READ_ONLY), name, password, signal, emptyList(), snapshot)
             } else {
                 val document = DocumentParser.parseDocument(snapshot, renderName) { signal.isCanceled }
                 if (identification.inconclusive && (renderName == "document.zip" || DocumentFormats.isNative(renderName))) {
@@ -108,7 +112,7 @@ object DocumentEngine {
                     try {
                         file.writeBytes(preview.bytes)
                         inner = if (preview.mime == "application/pdf")
-                            openPdf(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY), name, null, signal, document.warnings)
+                            openPdf(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY), name, null, signal, document.warnings, file)
                         else ImageSession(file, name, preview.mime, signal, document.warnings)
                         result = OwnedSession(PreviewSession(inner, ext, mime, preview.name, document.warnings), file)
                         inner = null
@@ -123,6 +127,7 @@ object DocumentEngine {
                     result = try { OfficeSession(snapshot, name, mime, document, signal, renderName) }
                     catch (error: IOException) {
                         signal.throwIfCanceled()
+                        if (error is InterruptedIOException && Thread.currentThread().isInterrupted) throw error
                         if (document.sections.isEmpty()) throw error
                         TextSession(name, mime, document.copy(warnings = document.warnings +
                             "Original-layout view unavailable: ${error.message.orEmpty().takeScalarSafe(180)}"), signal)
@@ -138,8 +143,9 @@ object DocumentEngine {
     }
 
     private fun openPdf(fd: ParcelFileDescriptor, name: String, password: String?, signal: CancellationSignal,
-        warnings: List<String>): DocumentSession {
-        val pdf = PdfDocument.open(fd, name, password, signal)
+        warnings: List<String>, snapshot: File? = null): DocumentSession {
+        val pdf = if (snapshot == null) PdfDocument.open(fd, name, password, signal)
+            else PdfDocument.openSnapshot(fd, name, password, signal, snapshot)
         try { return PdfSession(pdf, name, warnings) }
         catch (failure: Throwable) {
             try { pdf.close() } catch (closing: Throwable) { failure.addSuppressed(closing) }
@@ -232,6 +238,11 @@ internal class OwnedSession(private val delegate: DocumentSession, private val s
 
 internal class PreviewSession(private val delegate: DocumentSession, format: String, mime: String, private val part: String, warnings: List<String>) : DocumentSession by delegate {
     override val info = delegate.info.copy(format = format, mimeType = mime, fidelity = "EMBEDDED_PREVIEW_ONLY", warnings = (delegate.info.warnings + warnings + "Saved embedded preview; it may be stale or incomplete.").distinct())
+    override val textInfo get() = info.copy(warnings = (delegate.textInfo.warnings + info.warnings).distinct())
+    override fun printInfo(signal: CancellationSignal): DocumentInfo {
+        val resolved = delegate.printInfo(signal)
+        return info.copy(pageCount = resolved.pageCount, warnings = (resolved.warnings + info.warnings).distinct())
+    }
     override fun text(signal: CancellationSignal): String = "[Saved embedded preview; it may be stale or incomplete.]\n\n" + delegate.text(signal)
     override fun json(signal: CancellationSignal): String = org.json.JSONObject(delegate.json(signal)).apply {
         put("contentSource", "embedded-preview")
@@ -250,6 +261,10 @@ internal class PreviewSession(private val delegate: DocumentSession, format: Str
 
 internal class PdfSession(private val pdf: PdfDocument, name: String, warnings: List<String>) : DocumentSession {
     override val info = DocumentInfo(name, "application/pdf", "pdf", pdf.pageCount, pdf.textAvailable, "ORIGINAL_LAYOUT", warnings, supportsMargins = true, supportsOutline = true, supportsNotes = true)
+    override val textInfo get() = info.copy(fidelity = if (pdf.textAvailable) "extracted-text" else "metadata",
+        warnings = info.warnings + "Text reading order may differ from page layout. Scanned pages need OCR, which is not included.")
+    override fun rasterRegions(index: Int, signal: CancellationSignal): List<app.smallthingz.alldoc.theme.RasterRegion>? =
+        pdf.rasterRegions(index, signal)
     override fun outline(signal: CancellationSignal) = pdf.outline(signal)
     override fun notes(signal: CancellationSignal) = pdf.notes(signal)
     override fun bodyText(signal: CancellationSignal) = pdf.text(signal)
@@ -263,13 +278,20 @@ internal class PdfSession(private val pdf: PdfDocument, name: String, warnings: 
         val json = pdf.json(signal)
         return notesForExport(signal).appendTo(json)
     }
-    override fun renderPage(index: Int, width: Int, settings: ThemeSettings, signal: CancellationSignal): Bitmap = themed(pdf.renderPage(index, width, signal), settings, signal)
+    override fun renderPage(index: Int, width: Int, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
+        val regions = rasterRegionsFor(index, settings, signal)
+        return themed(pdf.renderPage(index, width, signal), settings, signal, regions)
+    }
     override fun close() = pdf.close()
 }
 
-internal fun themed(source: Bitmap, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
+internal fun DocumentSession.rasterRegionsFor(index: Int, settings: ThemeSettings, signal: CancellationSignal): List<RasterRegion>? =
+    if (settings.imageTreatment == ImageTreatment.AUTO && settings.mode != ReadingMode.ORIGINAL && settings.mode != ReadingMode.INVERT)
+        rasterRegions(index, signal) else null
+
+internal fun themed(source: Bitmap, settings: ThemeSettings, signal: CancellationSignal, rasterRegions: List<RasterRegion>? = null): Bitmap {
     try {
-        val result = BitmapTheme.apply(source, settings, signal)
+        val result = BitmapTheme.apply(source, settings, signal, rasterRegions)
         if (result !== source) source.recycle()
         return result
     } catch (failure: Throwable) { source.recycle(); throw failure }

@@ -89,8 +89,8 @@ class DocumentCapabilityActivity : ComponentActivity() {
                                     grantUriPermission(target, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     val data = mapOf("uri" to uri.toString(), "mimeType" to result.mime,
                                         "bytes" to result.bytes, "format" to result.format,
-                                        "fidelity" to result.fidelity, "warnings" to result.warnings, "page" to result.page,
-                                        "continuous" to result.continuous)
+                                        "fidelity" to result.fidelity, "warnings" to result.warnings) +
+                                        (result.worksheet ?: mapOf("page" to result.page, "continuous" to result.continuous))
                                     finishWith(OacpResult.success("Document ready.", data), RESULT_OK, uri, result.mime)
                                     model.releaseResult()
                                 } catch (_: Exception) {

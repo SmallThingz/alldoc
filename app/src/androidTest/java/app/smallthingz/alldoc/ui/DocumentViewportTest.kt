@@ -248,6 +248,183 @@ class DocumentViewportTest {
         } } finally { image.recycle() }
     }
 
+    @Test fun doubleTapKeepsLaterPagePixelsAtTheFocusWithLargeEdgePadding() = checkDoubleTapFocus(false)
+
+    @Test fun doubleTapKeepsLaterPagePixelsWhenDetailGeometryRefreshes() = checkDoubleTapFocus(true)
+
+    @Test fun coveringDuringZoomSavesTheMeasuredAnchorBeforeReactivation() = checkDoubleTapFocus(false, true)
+
+    private fun checkDoubleTapFocus(refreshAspects: Boolean, coverDuringZoom: Boolean = false) {
+        // Exercise actual LazyColumn layout and input; the oracle is a drawn stripe,
+        // independent of the scroll-anchor helpers and saved callback values.
+        val bitmap = Bitmap.createBitmap(240, 360, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(android.graphics.Color.WHITE)
+            setPixels(IntArray(240 * 4) { android.graphics.Color.MAGENTA }, 0, 240, 0, 38, 240, 4)
+        }
+        val images = (0..5).associateWith { ReaderPageImage(bitmap) }
+        val aspects = mutableStateOf((0..5).associateWith { 1.5f })
+        val refinements = AtomicInteger()
+        val pose = mutableStateOf(ViewportState())
+        val active = mutableStateOf(true)
+        val covered = AtomicBoolean()
+        val position = AtomicReference(1 to 218f / 368f)
+        val saved = AtomicReference(position.get())
+        val finishes = AtomicInteger()
+        val current = AtomicInteger(-1)
+        val bounds = AtomicReference<android.graphics.Rect>()
+        fun await(message: String, condition: () -> Boolean) {
+            val deadline = SystemClock.uptimeMillis() + 5000
+            while (!condition()) {
+                check(SystemClock.uptimeMillis() < deadline) { "$message; zoom=${pose.value.zoom}, page=${current.get()}" }
+                SystemClock.sleep(16)
+            }
+        }
+        fun find(node: SemanticsNode, label: String): SemanticsNode? {
+            if (node.config.getOrNull(SemanticsProperties.ContentDescription)?.contains(label) == true) return node
+            return node.children.firstNotNullOfOrNull { find(it, label) }
+        }
+        try { launchReaderTestActivity().use { scenario ->
+            scenario.onActivity { activity -> activity.setContent {
+                CompositionLocalProvider(LocalDensity provides Density(1f)) {
+                    MaterialTheme {
+                        ReaderPages(114L, 6, 1, 218f / 368f, pose.value, 0L, images, aspects.value, {},
+                            { page, fraction -> position.set(page to fraction) },
+                            {
+                                pose.value = it
+                                if (coverDuringZoom && it.zoom >= 1.5f && covered.compareAndSet(false, true)) active.value = false
+                            }, { saved.set(position.get()); finishes.incrementAndGet() },
+                            Modifier.width(240.dp).height(540.dp).onGloballyPositioned { layout ->
+                                val origin = layout.localToWindow(Offset.Zero)
+                                val left = origin.x.roundToInt(); val top = origin.y.roundToInt()
+                                bounds.set(android.graphics.Rect(left, top, left + layout.size.width, top + layout.size.height))
+                            }, normalEdgePadding = 80.dp, onCurrentPage = current::set, active = active.value,
+                            onZoomAnimation = { moving ->
+                                if (refreshAspects && !moving) {
+                                    // Detail metadata can change by one raster row before settled capture.
+                                    // The source page is the same; this quarter-pixel row-size difference
+                                    // must not turn its transient negative scroll request into a page jump.
+                                    aspects.value = aspects.value + (2 to if (aspects.value[2] == 1.5f) 1441f / 960f else 1.5f)
+                                    refinements.incrementAndGet()
+                                }
+                            })
+                    }
+                }
+            } }
+            await("Later-page fixture did not settle") {
+                var placed = false
+                scenario.onActivity { activity ->
+                    val roots = activity.testSemantics()
+                    val area = roots.firstNotNullOfOrNull { find(it, "Document pages") }?.boundsInRoot
+                    val previous = roots.firstNotNullOfOrNull { find(it, "Page 2") }?.boundsInRoot
+                    val page = roots.firstNotNullOfOrNull { find(it, "Page 3") }?.boundsInRoot
+                    placed = area != null && previous != null && page != null &&
+                        kotlin.math.abs(page.top - area.top - 230f) < 1f &&
+                        kotlin.math.abs(previous.bottom - area.top - 222f) < 1f
+                }
+                current.get() == 1 && bounds.get() != null && placed
+            }
+            scenario.onActivity { activity ->
+                val roots = activity.testSemantics()
+                val area = checkNotNull(roots.firstNotNullOfOrNull { find(it, "Document pages") }).boundsInRoot
+                val page = checkNotNull(roots.firstNotNullOfOrNull { find(it, "Page 3") }).boundsInRoot
+                assertEquals(240f, area.width, 0f)
+                assertEquals(540f, area.height, 0f)
+                val previous = checkNotNull(roots.firstNotNullOfOrNull { find(it, "Page 2") }).boundsInRoot
+                assertEquals("The zoom target must be a later visible page", 230f, page.top - area.top, 1f)
+                assertEquals(222f, previous.bottom - area.top, 1f)
+            }
+            val area = checkNotNull(bounds.get())
+            // Page 3 starts at y230; its stripe at source y40 lies under y270.
+            // Enlarging about y270 moves its top to y190, beyond the 80px leading
+            // edge: LazyColumn must normalize a negative request through page 2.
+            val focusX = area.left + 120f
+            val focusY = area.top + 270f
+            fun doubleTap() {
+                fun tap() {
+                    val down = SystemClock.uptimeMillis()
+                    for (action in intArrayOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                        scenario.onActivity { activity ->
+                            activity.verifyTestDisplay()
+                            val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, focusX, focusY, 0)
+                                .apply { source = android.view.InputDevice.SOURCE_TOUCHSCREEN }
+                            try { assertTrue("Owned reader rejected touch", activity.dispatchTouchEvent(event)) }
+                            finally { event.recycle() }
+                        }
+                        if (action == MotionEvent.ACTION_DOWN) SystemClock.sleep(24)
+                    }
+                }
+                tap(); SystemClock.sleep(80); tap()
+            }
+            fun stripe(phase: String, expectedThickness: Int): Float {
+                instrumentation.waitForIdleSync()
+                var latest: Bitmap? = null
+                var rows = emptyList<Int>()
+                try {
+                    await("The $phase frame did not draw its expected zoomed stripe") {
+                        copyViewport(scenario, area)?.let { image ->
+                            latest?.recycle(); latest = image
+                            rows = (0 until image.height).filter { y ->
+                                val pixel = image.getPixel(image.width / 2, y)
+                                // Include half-covered filtered edges when measuring the magenta stripe.
+                                android.graphics.Color.red(pixel) > 220 && android.graphics.Color.blue(pixel) > 220 &&
+                                    android.graphics.Color.green(pixel) < 128
+                            }
+                        }
+                        rows.size in (expectedThickness - 1)..(expectedThickness + 1)
+                    }
+                    assertEquals("The stripe must be one contiguous band", rows.size, rows.last() - rows.first() + 1)
+                    return (rows.first() + rows.last()) / 2f
+                } finally {
+                    try { latest?.let { image ->
+                        val target = File(instrumentation.targetContext.cacheDir, "viewport-pixels/zoom-anchor-$phase.png")
+                        check(target.parentFile!!.isDirectory || target.parentFile!!.mkdirs())
+                        target.outputStream().use { output -> check(image.compress(Bitmap.CompressFormat.PNG, 100, output)) }
+                    } } finally { latest?.recycle() }
+                }
+            }
+            assertEquals("No detail refresh precedes the first zoom", 0, refinements.get())
+            val prefix = if (coverDuringZoom) "covered-" else if (refreshAspects) "detail-" else ""
+            val original = stripe("${prefix}initial", 4)
+            assertEquals("The authored stripe must start under the fixed touch focus", 270f, original, 1f)
+            if (coverDuringZoom) {
+                val before = finishes.get()
+                doubleTap()
+                await("Covered zoom did not save after stopping") {
+                    covered.get() && finishes.get() >= before + if (pose.value.zoom < 2f) 2 else 1
+                }
+                val stopped = pose.value
+                val width = (4f * stopped.zoom).roundToInt()
+                assertEquals(original, stripe("${prefix}stopped", width), 2f)
+                val snapshot = saved.get()
+                val extent = 360f * stopped.zoom
+                val offset = (snapshot.second * (extent + 8f)).roundToInt()
+                val pageTop = 80f - offset + (2 - snapshot.first) * (extent.roundToInt() + 8)
+                assertEquals("The saved anchor must restore the drawn document point", original,
+                    pageTop + 39.5f * stopped.zoom, 2f)
+                scenario.onActivity { active.value = true }
+                instrumentation.waitForIdleSync()
+                assertEquals(stopped, pose.value)
+                assertEquals(snapshot, saved.get())
+                assertEquals(original, stripe("${prefix}reactivated", width), 2f)
+                return@use
+            }
+            repeat(2) { cycle ->
+                for ((target, width) in listOf(2f to 8, 1f to 4)) {
+                    val before = finishes.get()
+                    doubleTap()
+                    await("Double tap did not finish at $target") {
+                        kotlin.math.abs(pose.value.zoom - target) < 0.00001f && finishes.get() > before
+                    }
+                    if (refreshAspects) assertEquals("Every zoom completion must publish its detail metadata",
+                        cycle * 2 + if (target == 2f) 1 else 2, refinements.get())
+                    val phase = "${prefix}cycle-${cycle + 1}-zoom-${target.toInt()}"
+                    val actual = stripe(phase, width)
+                    assertEquals("Visible content drifted at $phase; captures are in viewport-pixels", original, actual, 2f)
+                }
+            }
+        } } finally { bitmap.recycle() }
+    }
+
     @Test fun pinchingInAPresentationLetterboxKeepsItsPageAndZoom() {
         val bitmap = Bitmap.createBitmap(80, 160, Bitmap.Config.ARGB_8888)
         val pose = mutableStateOf(ViewportState())

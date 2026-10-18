@@ -22,6 +22,7 @@ import app.smallthingz.alldoc.core.MarkdownDocument
 import app.smallthingz.alldoc.core.MarkdownKind
 import app.smallthingz.alldoc.theme.DocumentColors
 import app.smallthingz.alldoc.theme.PaperTexture
+import app.smallthingz.alldoc.theme.RasterRegion
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.io.IOException
@@ -42,6 +43,10 @@ internal class MarkdownSession(name: String, mime: String, document: Document, s
     @Synchronized override fun text(signal: CancellationSignal): String { ready(signal); return flow.exportText() }
     @Synchronized override fun json(signal: CancellationSignal): String { ready(signal); return flow.toJson() }
     @Synchronized override fun pageCount(signal: CancellationSignal): Int { ready(signal); return 1 }
+    @Synchronized override fun rasterRegions(index: Int, signal: CancellationSignal): List<RasterRegion> {
+        ready(signal); require(index == 0) { "Invalid Markdown document page" }
+        return emptyList()
+    }
     @Synchronized override fun pageAspect(index: Int, signal: CancellationSignal): Float {
         ready(signal); require(index == 0) { "Invalid Markdown document page" }
         return (layout(signal).height + 2 * MARGIN).toFloat() / WIDTH
@@ -98,12 +103,21 @@ internal class MarkdownSession(name: String, mime: String, document: Document, s
         return result
     }
 
-    @Synchronized override fun renderPage(index: Int, width: Int, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
+    @Synchronized override fun renderCover(index: Int, width: Int, height: Int, signal: CancellationSignal): Bitmap {
+        require(width in 1..512 && height in 1..512)
+        return render(index, width, ThemeSettings(ReadingMode.ORIGINAL), signal, height)
+    }
+
+    @Synchronized override fun renderPage(index: Int, width: Int, settings: ThemeSettings, signal: CancellationSignal): Bitmap =
+        render(index, width, settings, signal)
+
+    private fun render(index: Int, width: Int, settings: ThemeSettings, signal: CancellationSignal, coverHeight: Int? = null): Bitmap {
         ready(signal); require(index == 0) { "Markdown has one continuous document page" }
         require(width in 1..4096) { "Invalid preview width" }
         val layout = layout(signal)
         val actualWidth = width.coerceAtMost(1600)
-        val height = ceil((layout.height.toDouble() + 2 * MARGIN) * actualWidth / WIDTH).toLong().coerceAtLeast(1)
+        val fullHeight = ceil((layout.height.toDouble() + 2 * MARGIN) * actualWidth / WIDTH).toLong().coerceAtLeast(1)
+        val height = minOf(fullHeight, coverHeight?.toLong() ?: fullHeight)
         if (height > 8192 || actualWidth.toLong() * height > 8_000_000L)
             throw ContinuousPageLimitException()
         val bitmap = Bitmap.createBitmap(actualWidth, height.toInt(), Bitmap.Config.ARGB_8888)

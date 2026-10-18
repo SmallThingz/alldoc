@@ -1,5 +1,7 @@
 package app.smallthingz.alldoc.ui
 
+import androidx.compose.foundation.MutatePriority
+import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -17,6 +19,7 @@ import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -41,6 +44,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.smallthingz.alldoc.core.MarkdownDocument
+import app.smallthingz.alldoc.core.MarkdownKind
 import app.smallthingz.alldoc.core.takeScalarSafe
 import app.smallthingz.alldoc.state.TextPosition
 import app.smallthingz.alldoc.theme.DocumentColors
@@ -62,6 +66,7 @@ internal fun ReaderTextView(
     onScrollDirection: (Boolean) -> Unit = {},
     contentPadding: PaddingValues = PaddingValues(horizontal = 22.dp, vertical = 20.dp),
     markdown: MarkdownDocument? = null,
+    active: Boolean = true,
 ) {
     val query = queryState.text.toString()
     val colors = DocumentColors.palette(settings)
@@ -69,7 +74,7 @@ internal fun ReaderTextView(
     val paper by produceState<android.graphics.Paint?>(null, roughness) {
         value = if (roughness == 0) null else withContext(Dispatchers.Default) { PaperTexture.paint(roughness) }
     }
-    BoxWithConstraints(modifier.background(Color(colors.background)).drawBehind {
+    BoxWithConstraints(modifier.readerInput(active).background(Color(colors.background)).drawBehind {
         if (roughness > 0) paper?.let { drawContext.canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, it) }
     }.windowInsetsPadding(contentInsets)) {
         val density = LocalDensity.current
@@ -134,8 +139,8 @@ internal fun ReaderTextView(
             val height = (layout.getLineBottom(line) - top).coerceAtLeast(1f)
             currentOnPosition(TextPosition(starts[index] + layout.getLineStart(line), ((y - top) / height).coerceIn(0f, 1f)))
         }
-        LaunchedEffect(chunks, documentKey, layoutKey, showSearch, contentPadding, hasViewport) {
-            if (restored || chunks.isEmpty() || !hasViewport) return@LaunchedEffect
+        LaunchedEffect(chunks, documentKey, layoutKey, showSearch, contentPadding, hasViewport, active) {
+            if (!active || restored || chunks.isEmpty() || !hasViewport) return@LaunchedEffect
             val index = chunkIndex(starts, initialPosition.offset.coerceAtMost(text.orEmpty().length))
             val ready = layoutReady.getOrPut(index) { CompletableDeferred() }
             listState.scrollToItem(index)
@@ -148,8 +153,13 @@ internal fun ReaderTextView(
             listState.scrollToItem(index, y.toInt().coerceAtLeast(0) + padding)
             restored = true
         }
-        LaunchedEffect(listState, restored, documentKey, layoutKey, showSearch, contentPadding) {
-            if (!restored) return@LaunchedEffect
+        LaunchedEffect(listState, documentKey, active) {
+            if (active) return@LaunchedEffect
+            listState.stopScroll(MutatePriority.PreventUserInput)
+            if (restored) { capturePosition(); currentOnScrollEnd() }
+        }
+        LaunchedEffect(listState, restored, documentKey, layoutKey, showSearch, contentPadding, active) {
+            if (!active || !restored) return@LaunchedEffect
             var scrolling = false
             snapshotFlow { Triple(listState.isScrollInProgress, listState.firstVisibleItemIndex,
                 listState.firstVisibleItemScrollOffset) }.collect { (active, _, _) ->
@@ -163,38 +173,38 @@ internal fun ReaderTextView(
                 }
             }
         }
-        var match by remember(query, text) { mutableIntStateOf(0) }
+        var match by rememberSaveable(documentKey, query) { mutableIntStateOf(0) }
         val activeStart = matches.getOrNull(match) ?: -1
-        var lastSearch by remember(documentKey) { mutableStateOf<Pair<String, Int>?>(null) }
-        var pendingSearch by remember(documentKey) { mutableStateOf<Pair<String, Int>?>(null) }
-        var matchLine by remember(matches, match, layoutKey) { mutableStateOf<Pair<Int, Int>?>(null) }
-        LaunchedEffect(request, matches, match, starts, restored) {
-            if (activeStart < 0) { lastSearch = null; pendingSearch = null }
-            else if (restored && starts.isNotEmpty() && lastSearch != (query to activeStart)) {
-                lastSearch = query to activeStart
-                pendingSearch = lastSearch
+        // A visit survives restoration but advances even when Next wraps to the same result.
+        var searchVisit by rememberSaveable(documentKey) { mutableLongStateOf(0L) }
+        var visitQuery by rememberSaveable(documentKey) { mutableStateOf(query) }
+        if (visitQuery != query) { visitQuery = query; searchVisit++ }
+        var lastSearchVisit by rememberSaveable(documentKey) { mutableStateOf<Long?>(null) }
+        var lastSearch by rememberSaveable(documentKey, query) { mutableStateOf<Int?>(null) }
+        LaunchedEffect(request, matches, match, searchVisit, starts, restored, active, loading) {
+            if (!active || loading || text == null || matches === NoTextMatches) return@LaunchedEffect
+            if (activeStart < 0) lastSearch = null
+            else if (restored && starts.isNotEmpty() && (lastSearch != activeStart || lastSearchVisit != searchVisit)) {
                 val index = chunkIndex(starts, activeStart)
+                val ready = layoutReady.getOrPut(index) { CompletableDeferred() }
                 listState.scrollToItem(index)
-                layouts[index]?.let { layout ->
-                    matchLine = index to layout.getLineTop(layout.getLineForOffset((activeStart - starts[index]).coerceAtMost(layout.layoutInput.text.length))).toInt().coerceAtLeast(0)
-                }
-            }
-        }
-        LaunchedEffect(request, matchLine, restored) {
-            if (restored && pendingSearch == (query to activeStart)) matchLine?.let { (index, offset) ->
-                listState.scrollToItem(index, offset)
+                val layout = layouts[index] ?: ready.await()
+                val line = layout.getLineForOffset((activeStart - starts[index]).coerceAtMost(layout.layoutInput.text.length))
+                listState.scrollToItem(index, layout.getLineTop(line).toInt().coerceAtLeast(0))
                 capturePosition()
                 currentOnScrollEnd()
-                pendingSearch = null
+                // A canceled reveal remains pending; closing a modal never repeats a completed one.
+                lastSearch = activeStart
+                lastSearchVisit = searchVisit
             }
         }
         Column(Modifier.fillMaxSize()) {
-            if (showSearch) ReaderMotionLayer(active = backEnabled && searching, visible = searching,
+            if (showSearch) ReaderMotionLayer(active = active && backEnabled && searching, visible = searching,
                 onBack = { onCloseSearch(); showSearch = false }, fromTop = true) { dismissSearch ->
                 val focus = remember(documentKey) { FocusRequester() }
                 val keyboard = LocalSoftwareKeyboardController.current
-                LaunchedEffect(requestSearchFocus, searching, backEnabled, documentKey) {
-                    if (requestSearchFocus && searching && backEnabled && focus.requestFocus()) {
+                LaunchedEffect(requestSearchFocus, searching, backEnabled, documentKey, active) {
+                    if (active && requestSearchFocus && searching && backEnabled && focus.requestFocus()) {
                         keyboard?.show()
                         onSearchFocusConsumed()
                     }
@@ -203,14 +213,17 @@ internal fun ReaderTextView(
                 val count = if (matches.size == 0) "No matches" else
                     "${match + 1} / ${matches.size}${if (matches.size == 10000) "+" else ""}"
                 val stepMatch: (Int) -> Unit = { step ->
-                    if (matches.size > 0) match = (match + step + matches.size) % matches.size
+                    if (matches.size > 0) {
+                        match = (match + step + matches.size) % matches.size
+                        searchVisit++
+                    }
                 }
                 Surface(color = MaterialTheme.colorScheme.surface) {
                     Column {
                         Row(Modifier.fillMaxWidth().padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             OutlinedTextField(state = queryState,
                                 modifier = Modifier.weight(1f).focusRequester(focus).semantics { contentDescription = "Find in text" },
-                                enabled = backEnabled && searching, lineLimits = TextFieldLineLimits.SingleLine,
+                                enabled = active && backEnabled && searching, lineLimits = TextFieldLineLimits.SingleLine,
                                 inputTransformation = InputTransformation {
                                     val capped = asCharSequence().toString().takeScalarSafe(128)
                                     if (length > capped.length) delete(capped.length, length)
@@ -221,13 +234,13 @@ internal fun ReaderTextView(
                                     Text(count, Modifier.widthIn(max = 80.dp).padding(horizontal = 8.dp),
                                         style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }) else null)
-                            if (hasQuery && !stackedSearch) ReaderMatchActions(matches.size > 0, stepMatch)
+                            if (hasQuery && !stackedSearch) ReaderMatchActions(active && matches.size > 0, stepMatch)
                             ReaderAction(Icons.Outlined.Close, "Close search", onClick = dismissSearch)
                         }
                         if (hasQuery && stackedSearch) Row(Modifier.fillMaxWidth().padding(start = 16.dp),
                             verticalAlignment = Alignment.CenterVertically) {
                             Text(count, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
-                            ReaderMatchActions(matches.size > 0, stepMatch)
+                            ReaderMatchActions(active && matches.size > 0, stepMatch)
                         }
                     }
                 }
@@ -238,18 +251,18 @@ internal fun ReaderTextView(
                     Text(if (text == null) "Text is unavailable." else "No extractable text.", color = Color(colors.foreground))
                 }
                 else -> SelectionContainer {
-                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize().nestedScroll(scrollObserver).graphicsLayer { alpha = if (restored) 1f else 0f },
+                    LazyColumn(state = listState, userScrollEnabled = active, modifier = Modifier.fillMaxSize().nestedScroll(scrollObserver).graphicsLayer { alpha = if (restored) 1f else 0f },
                         contentPadding = contentPadding) {
                         itemsIndexed(chunks) { index, chunk ->
-                            key(layoutKey) {
-                            DisposableEffect(index) { onDispose { layouts.remove(index); layoutReady.remove(index) } }
+                            val block = markdown?.blocks?.getOrNull(index)
+                            key(documentKey, block) {
+                            DisposableEffect(index, chunks, layoutKey) { onDispose { layouts.remove(index); layoutReady.remove(index) } }
                             val highlight = MaterialTheme.colorScheme.primaryContainer
                             val foreground = MaterialTheme.colorScheme.onPrimaryContainer
                             val activeBackground = MaterialTheme.colorScheme.primary
                             val activeForeground = MaterialTheme.colorScheme.onPrimary
                             val offset = starts[index]
                             val visible = remember(chunk, index, chunks.size) { visibleTextChunk(chunk, index == chunks.lastIndex) }
-                            val block = markdown?.blocks?.getOrNull(index)
                             val richText = markdownText(block, visible, Color(colors.foreground))
                             val marked = remember(richText, query, highlight, foreground, activeStart, offset, activeBackground, activeForeground) {
                                 val builder = AnnotatedString.Builder(richText)
@@ -269,15 +282,16 @@ internal fun ReaderTextView(
                             val onLayout: (TextLayoutResult) -> Unit = { layout ->
                                 layouts[index] = layout
                                 layoutReady.getOrPut(index) { CompletableDeferred() }.complete(layout)
-                                if (pendingSearch == (query to activeStart) && activeStart in offset until offset + chunk.length) {
-                                    val line = layout.getLineForOffset((activeStart - offset).coerceAtMost(visible.length))
-                                    matchLine = index to layout.getLineTop(line).toInt().coerceAtLeast(0)
-                                }
                             }
-                            if (block == null) Text(marked, color = Color(colors.foreground), style = MaterialTheme.typography.bodyLarge, onTextLayout = onLayout)
-                            else ReaderMarkdownView(block, marked, Color(colors.foreground), onLayout,
-                                searchMatch = if (activeStart in offset until offset + visible.length)
-                                    query to TextRange(activeStart - offset, minOf(visible.length, activeStart + query.length - offset)) else null)
+                            val searchMatch = if (activeStart in offset until offset + visible.length)
+                                searchVisit to TextRange(activeStart - offset, minOf(visible.length, activeStart + query.length - offset)) else null
+                            if (block?.kind == MarkdownKind.CODE || block?.kind == MarkdownKind.TABLE)
+                                ReaderMarkdownView(block, marked, Color(colors.foreground), onLayout, active = active,
+                                    searchMatch = searchMatch, layoutKey = layoutKey)
+                            else key(layoutKey) {
+                                if (block == null) Text(marked, color = Color(colors.foreground), style = MaterialTheme.typography.bodyLarge, onTextLayout = onLayout)
+                                else ReaderMarkdownView(block, marked, Color(colors.foreground), onLayout, active = active)
+                            }
                             }
                         }
                     }

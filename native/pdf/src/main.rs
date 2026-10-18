@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use std::{cell::RefCell, env, fmt, fs, io::Read, path::Path, rc::Rc};
 mod notes;
 mod outline;
+mod raster;
 
 const MAX_INPUT: u64 = 128 * 1024 * 1024;
 const MAX_TEXT: usize = 2_000_000;
@@ -135,7 +136,9 @@ fn metadata(input: &Path, password: &str, mode: &str) -> Result<Value, Box<dyn s
             .into_iter()
             .map(|entry| json!({"title":entry.title,"page":entry.page,"level":entry.level}))
             .collect::<Vec<_>>();
-        Ok(json!({"version":1,"format":"pdf-outline","entries":entries}))
+        Ok(json!({"version":1,"format":"pdf-outline","entries":entries,
+            "rasterPageCount":doc.get_pages().len(),"rasterRegions":raster::pages(&doc).into_iter().map(|(page, regions)|
+                json!({"page":page,"regions":regions})).collect::<Vec<_>>()}))
     } else {
         let notes = notes::read(&doc);
         let entries = notes.entries.into_iter()

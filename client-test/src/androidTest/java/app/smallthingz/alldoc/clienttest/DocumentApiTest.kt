@@ -32,6 +32,8 @@ import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 @RunWith(AndroidJUnit4::class)
 class DocumentApiTest {
@@ -54,7 +56,7 @@ class DocumentApiTest {
     }
     @Before fun connect() {
         service = IAllDocService.Stub.asInterface(bind(ComponentName(AllDocClient.PACKAGE, AllDocClient.SERVICE)))
-        assertEquals(1, service.version())
+        assertEquals(AllDocClient.VERSION, service.version())
         assertNotEquals(context.applicationInfo.uid, context.packageManager.getApplicationInfo(AllDocClient.PACKAGE, 0).uid)
     }
     @After fun cleanup() {
@@ -111,6 +113,101 @@ class DocumentApiTest {
         val invalid = document.read(3, "png", 1, 480, "original", true)
         assertThrows(IOException::class.java) { ParcelFileDescriptor.AutoCloseInputStream(invalid).use { it.readBytes() } }
         assertEquals(1, document.status().getInt("pageCount"))
+    }
+
+    @Suppress("DEPRECATION")
+    @Test fun previewSdkRendersSparseWorksheetsWithoutPrintPaginationAcrossUid() {
+        val source = File.createTempFile("api-sparse-", ".xlsx", context.cacheDir)
+        writeSparseWorkbook(source)
+        val connected = CountDownLatch(1)
+        val ready = CountDownLatch(1)
+        val state = AtomicReference<Bundle>()
+        try {
+            AllDocClient.connect(context, Executor { it.run() }, onConnected = { connected.countDown() }).use { client ->
+                assertTrue(connected.await(10, TimeUnit.SECONDS))
+                client.openForPreview(ParcelFileDescriptor.open(source, ParcelFileDescriptor.MODE_READ_ONLY), source.name,
+                    onState = { _, value -> state.set(value); ready.countDown() }).use { document ->
+                    assertTrue("Sparse workbook did not settle", ready.await(30, TimeUnit.SECONDS))
+                    val status = checkNotNull(state.get())
+                    assertEquals(status.getString("error"), "ready", status.getString("state"))
+                    assertEquals("worksheet", status.getString("view"))
+                    assertFalse(status.getBoolean("paginationKnown"))
+                    assertFalse("An unpaginated worksheet must not claim zero pages", status.containsKey("pageCount"))
+                    val sheets = checkNotNull(status.getParcelableArrayList<Bundle>("sheets"))
+                    val active = status.getInt("activeSheet")
+                    val sheet = sheets.single { it.getInt("index") == active }
+                    assertEquals(12000, sheet.getInt("usedRows"))
+                    assertEquals(52, sheet.getInt("usedColumns"))
+                    val images = ArrayList<android.graphics.Bitmap>()
+                    try {
+                        for (theme in listOf("original", "adaptive")) {
+                            val bytes = document.readSheet(active, width = 192, height = 128, theme = theme).use {
+                                it.inputStream().use { input -> input.readBytes() }
+                            }
+                            images += checkNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                        }
+                        assertTrue(images.all { it.width == 192 && it.height == 128 })
+                        assertFalse("Adaptive worksheet rendering must apply its theme", images[0].sameAs(images[1]))
+                    } finally { images.forEach { it.recycle() } }
+                    val text = document.read("text").use { it.inputStream().use { input -> input.readBytes().toString(Charsets.UTF_8) } }
+                    val json = document.read("json").use { it.inputStream().use { input -> input.readBytes().toString(Charsets.UTF_8) } }
+                    assertTrue(text.contains("Origin")); assertTrue(text.contains("Far cell"))
+                    assertTrue(json.contains("Far cell"))
+                    assertFalse(document.status().containsKey("pageCount"))
+                    for (x in listOf(Double.NaN, Double.POSITIVE_INFINITY, -1.0)) {
+                        assertThrows(IllegalArgumentException::class.java) { document.readSheet(active, x = x).close() }
+                    }
+                    assertThrows(IllegalArgumentException::class.java) { document.readSheet(active, width = 2049).close() }
+                    assertThrows(IllegalArgumentException::class.java) { document.readSheet(active, scale = 0.0).close() }
+                    assertThrows(IllegalArgumentException::class.java) { document.readSheet(active, imageTreatment = "unknown").close() }
+                    assertThrows(IOException::class.java) {
+                        document.readSheet(1023, width = 64, height = 64).use { it.inputStream().use { input -> input.readBytes() } }
+                    }
+                    assertTrue(document.read("text").use { it.inputStream().use { input -> input.readBytes().isNotEmpty() } })
+                }
+            }
+        } finally { source.delete() }
+    }
+
+    @Test fun previewSdkRejectsLegacyServerWithoutLeakingItsInput() {
+        val source = File.createTempFile("api-legacy-", ".md", context.cacheDir).apply { writeText("Old server") }
+        val legacy = object : IAllDocService.Stub() {
+            override fun version() = 1
+            override fun open(input: ParcelFileDescriptor?, name: String?, mime: String?, password: String?,
+                              callback: IAllDocCallback?): IAllDocSession = error("Preview must negotiate before opening")
+            override fun openForPreview(input: ParcelFileDescriptor?, name: String?, mime: String?, password: String?,
+                                        callback: IAllDocCallback?): IAllDocSession = error("Version-1 transaction must not be invoked")
+        }
+        val fake = object : ContextWrapper(context) {
+            lateinit var connection: ServiceConnection
+            override fun getApplicationContext(): Context = this
+            override fun bindService(intent: Intent, connection: ServiceConnection, flags: Int): Boolean {
+                this.connection = connection; return true
+            }
+            override fun unbindService(connection: ServiceConnection) = Unit
+        }
+        try {
+            AllDocClient.connect(fake, Executor { it.run() }, onConnected = {}).use { client ->
+                fake.connection.onServiceConnected(ComponentName(AllDocClient.PACKAGE, AllDocClient.SERVICE), legacy)
+                val input = ParcelFileDescriptor.open(source, ParcelFileDescriptor.MODE_READ_ONLY)
+                val fd = input.fileDescriptor
+                assertThrows(IllegalStateException::class.java) { client.openForPreview(input, source.name, onState = { _, _ -> }) }
+                assertFalse("Rejected preview must consume its source descriptor", fd.valid())
+            }
+        } finally { source.delete() }
+    }
+
+    private fun writeSparseWorkbook(file: File) {
+        val parts = mapOf(
+            "[Content_Types].xml" to """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>""",
+            "_rels/.rels" to """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>""",
+            "xl/workbook.xml" to """<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sparse" sheetId="1" r:id="rId1"/></sheets></workbook>""",
+            "xl/_rels/workbook.xml.rels" to """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>""",
+            "xl/worksheets/sheet1.xml" to """<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:AZ12000"/><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Origin</t></is></c></row><row r="12000"><c r="AZ12000" t="inlineStr"><is><t>Far cell</t></is></c></row></sheetData></worksheet>"""
+        )
+        ZipOutputStream(file.outputStream()).use { zip ->
+            for ((name, xml) in parts) { zip.putNextEntry(ZipEntry(name)); zip.write(xml.toByteArray(Charsets.UTF_8)); zip.closeEntry() }
+        }
     }
 
     @Test fun nonemptyWhitespacePasswordIsPassedLiterally() {

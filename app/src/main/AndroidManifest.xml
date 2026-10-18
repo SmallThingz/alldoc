@@ -128,6 +128,7 @@
                 <action android:name="${applicationId}.oacp.ACTION_READ_DOCUMENT" />
                 <action android:name="${applicationId}.oacp.ACTION_DOCUMENT_STRUCTURE" />
                 <action android:name="${applicationId}.oacp.ACTION_RENDER_PAGE" />
+                <action android:name="${applicationId}.oacp.ACTION_RENDER_SHEET" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>

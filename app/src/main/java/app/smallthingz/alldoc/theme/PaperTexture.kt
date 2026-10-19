@@ -34,15 +34,26 @@ internal object PaperTexture {
         if (cachedRoughness == amount) return checkNotNull(cachedPaint)
         val pixels = IntArray(64 * 64) { pixel(PAPER, it and 63, it ushr 6, amount) }
         val tile = Bitmap.createBitmap(pixels, 64, 64, Bitmap.Config.ARGB_8888)
-        return Paint().apply { shader = BitmapShader(tile, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT) }.also {
+        return Paint().apply {
+            isFilterBitmap = false // Keep canonical grain texels stable when a detail region is magnified.
+            shader = BitmapShader(tile, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
+        }.also {
             cachedPaint = it
             cachedRoughness = amount
         }
     }
 
-    /** Call before semantic text is drawn. The Canvas is still in output-pixel coordinates. */
-    fun background(canvas: Canvas, width: Int, height: Int, settings: ThemeSettings) {
-        if (settings.mode == ReadingMode.SEPIA && settings.paperRoughness > 0)
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint(settings.paperRoughness))
+    /** Map output pixels to canonical page coordinates so grain does not restart in a detail tile. */
+    fun background(canvas: Canvas, width: Int, height: Int, settings: ThemeSettings,
+        originX: Float = 0f, originY: Float = 0f, scaleX: Float = 1f, scaleY: Float = 1f) {
+        require(originX.isFinite() && originY.isFinite() && scaleX.isFinite() && scaleY.isFinite() && scaleX > 0f && scaleY > 0f)
+        if (settings.mode == ReadingMode.SEPIA && settings.paperRoughness > 0) {
+            val saved = canvas.save()
+            try {
+                canvas.translate(-originX / scaleX, -originY / scaleY)
+                canvas.scale(1f / scaleX, 1f / scaleY)
+                canvas.drawRect(originX, originY, originX + width * scaleX, originY + height * scaleY, paint(settings.paperRoughness))
+            } finally { canvas.restoreToCount(saved) }
+        }
     }
 }

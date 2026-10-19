@@ -3,7 +3,9 @@ package app.smallthingz.alldoc.ui
 import android.animation.ValueAnimator
 import android.app.Application
 import android.os.SystemClock
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewTreeObserver
 import androidx.activity.compose.setContent
@@ -11,6 +13,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.BroadcastFrameClock
 import androidx.compose.runtime.CompositionLocalProvider
@@ -26,6 +30,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.AndroidUiDispatcher
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.ViewRootForTest
@@ -35,6 +40,7 @@ import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.paging.PagingData
 import androidx.paging.compose.collectAsLazyPagingItems
@@ -298,7 +304,7 @@ class ReaderHomeInputLifecycleTest {
         }
     }
 
-    @Test fun libraryTypePopupStopsScrollWithoutReplayingItAfterReturn() {
+    @Test fun libraryScrollStopsOnDepartureWithoutReplayingItAfterReturn() {
         requireMotion()
         launchReaderTestActivity().use { scenario ->
             val active = mutableStateOf(true)
@@ -325,16 +331,14 @@ class ReaderHomeInputLifecycleTest {
             }
             val vertical = axis(scenario, root, label = "Library 1.pdf")
             val libraryTravel = travel(scenario, vertical)
-            interruptScroll(scenario, motion, libraryTravel) { click(root, "Document type") }
+            interruptScroll(scenario, motion, libraryTravel) { active.value = false }
             val stopped = stoppedValue(vertical)
-            scenario.onActivity { assertTrue("Grid motion completed before popup cancellation", libraryTravel.partial(motion)) }
+            scenario.onActivity { assertTrue("Grid motion completed before departure", libraryTravel.partial(motion)) }
             assertTrue("The fixture must interrupt before reaching the end", stopped < vertical.range.maxValue() - .01f)
-            // Route departure closes this local popup. Returning must keep the stopped grid offset.
-            scenario.onActivity { active.value = false }
-            SystemClock.sleep(80)
+            // Inline format choices no longer open a modal; route departure still owns cancellation.
             scenario.onActivity { active.value = true }
             SystemClock.sleep(100)
-            assertEquals("Closing the popup replayed the grid scroll", stopped, vertical.range.value(), .001f)
+            assertEquals("Returning replayed the grid scroll", stopped, vertical.range.value(), .001f)
         }
     }
 
@@ -468,7 +472,6 @@ class ReaderHomeInputLifecycleTest {
                 scenario.onActivity { activity ->
                     assertNotNull("The exiting search must still be composed", action("Clear search", raw = true))
                     assertNull("A closing search exposed its clear action", action("Clear search"))
-                    assertNull("A closing search exposed its filter", action("Document type"))
                     assertFalse("A closing search remained editable", exposed(root.get().semanticsOwner.unmergedRootSemanticsNode).any {
                         it.config.getOrNull(SemanticsActions.SetText)?.action != null
                     })
@@ -486,7 +489,7 @@ class ReaderHomeInputLifecycleTest {
                 }
                 scenario.onActivity { activity ->
                     assertEquals("Reopening lost the query", "keep", query.get())
-                    assertNotNull("Reopening lost the filter", action("Document type"))
+                    assertNull("Compact search must leave the format row inactive", action("Library: Documents"))
                     enter(activity, "Clear search", true)
                 }
                 await("Reopened clear action did not accept Enter") { query.get().isEmpty() }
@@ -553,6 +556,147 @@ class ReaderHomeInputLifecycleTest {
         }
     }
 
+
+    @Test fun paperRoughnessDragIsCancelledWhenSettingsClosesAndFreshDragWorksAfterReopen() =
+        paperRoughnessDragClose(sheet = false)
+
+    @Test fun paperRoughnessDragIsCancelledWhenAppearanceSheetClosesAndFreshDragWorksAfterReopen() =
+        paperRoughnessDragClose(sheet = true)
+
+    private fun paperRoughnessDragClose(sheet: Boolean) {
+        requireMotion()
+        launchReaderTestActivity().use { scenario ->
+            val open = mutableStateOf(true)
+            val appearance = mutableStateOf(ThemeSettings(ReadingMode.SEPIA, paperRoughness = 20))
+            val writes = AtomicInteger()
+            val closed = AtomicInteger()
+            val root = AtomicReference<ViewRootForTest>()
+            val view = AtomicReference<View>()
+            val motion = AtomicReference<ReaderMotionState>()
+            val change: (ThemeSettings) -> Unit = { appearance.value = it; writes.incrementAndGet() }
+            scenario.onActivity { activity -> activity.setContent {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    MaterialTheme {
+                        if (sheet) {
+                            if (open.value) ReaderSheet("Appearance", onDismiss = {
+                                closed.incrementAndGet(); open.value = false
+                            }, buttons = { dismiss -> TextButton(onClick = dismiss) { Text("Close paper") } }) {
+                                val currentView = LocalView.current
+                                SideEffect { view.set(currentView); root.set(currentView as ViewRootForTest) }
+                                ReadingAppearanceContent(appearance.value, showImageTreatment = false, onChange = change)
+                            }
+                        } else Box(Modifier.width(360.dp).height(720.dp)) {
+                            ReaderMotionLayer(active = true, onBack = { closed.incrementAndGet() },
+                                animateEntrance = false, backdrop = { motion.set(it) }) { back ->
+                                val currentView = LocalView.current
+                                SideEffect { view.set(currentView); root.set(currentView as ViewRootForTest) }
+                                ReaderSettingsScreen(CopySettings(), "Default", 0, 0, false, null,
+                                    {}, {}, {}, appearance.value, change, back)
+                            }
+                        }
+                    }
+                }
+            } }
+            fun slider(): SemanticsNode? = root.get()?.semanticsOwner?.unmergedRootSemanticsNode?.let { tree ->
+                find(tree) { "Paper roughness" in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty() &&
+                    it.config.getOrNull(SemanticsProperties.ProgressBarRangeInfo) != null }
+            }
+            fun ready() {
+                var last: androidx.compose.ui.geometry.Rect? = null
+                var stable = 0
+                await("Paper slider did not settle on its owned window") {
+                    scenario.onActivity { activity ->
+                        activity.verifyTestDisplay()
+                        val current = view.get()
+                        val node = slider()
+                        val bounds = node?.boundsInWindow
+                        val enabled = node?.config?.getOrNull(SemanticsProperties.Disabled) == null
+                        val settled = sheet || motion.get()?.let { !it.closing && it.openness.value == 1f } == true
+                        val usable = current?.isAttachedToWindow == true && current.hasWindowFocus() &&
+                            current.display?.displayId == activity.window.decorView.display?.displayId && enabled && settled &&
+                            bounds != null && bounds.width > 80f && bounds.height > 0f
+                        stable = if (usable && bounds == last) stable + 1 else 0
+                        last = bounds
+                    }
+                    stable >= 4
+                }
+                scenario.onActivity { assertEquals(20f, slider()!!.config[SemanticsProperties.ProgressBarRangeInfo].current, .01f) }
+            }
+            var touchRoot: View? = null
+            var downTime = 0L
+            var pointerDown = false
+            var point = Offset.Zero
+            fun send(action: Int) {
+                val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, point.x, point.y, 0)
+                try { event.source = InputDevice.SOURCE_TOUCHSCREEN; touchRoot!!.dispatchTouchEvent(event) }
+                finally { event.recycle() }
+                pointerDown = action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL
+            }
+            fun drag() {
+                var start = Offset.Zero
+                var end = Offset.Zero
+                scenario.onActivity { activity ->
+                    activity.verifyTestDisplay()
+                    val current = view.get()
+                    assertTrue(current.isAttachedToWindow && current.hasWindowFocus())
+                    assertEquals(activity.window.decorView.display?.displayId, current.display?.displayId)
+                    touchRoot = current.rootView
+                    val origin = IntArray(2).also { touchRoot!!.getLocationInWindow(it) }
+                    val bounds = slider()!!.boundsInWindow
+                    start = Offset(bounds.left + bounds.width * .2f - origin[0], bounds.center.y - origin[1])
+                    end = Offset(bounds.left + bounds.width * .75f - origin[0], start.y)
+                    point = start; downTime = SystemClock.uptimeMillis(); send(MotionEvent.ACTION_DOWN)
+                }
+                for (step in 1..3) {
+                    SystemClock.sleep(16)
+                    scenario.onActivity { point = start + (end - start) * (step / 3f); send(MotionEvent.ACTION_MOVE) }
+                }
+                await("Actual pointer drag did not change the uncommitted Paper draft") {
+                    var moved = false
+                    scenario.onActivity { moved = slider()?.config?.getOrNull(SemanticsProperties.ProgressBarRangeInfo)?.current?.let { it > 40f } == true }
+                    moved
+                }
+                assertEquals("A drag must not persist before release", 0, writes.get())
+                scenario.onActivity { assertEquals(20, appearance.value.paperRoughness) }
+            }
+            try {
+                ready(); drag()
+                scenario.onActivity {
+                    click(root, if (sheet) "Close paper" else "Back")
+                    assertEquals("Close animation must still own its pending gesture", 0, closed.get())
+                    // Same-turn release checks callback ownership before recomposition. The sheet
+                    // keeps its pointer down instead, exercising Material's drag-cancellation path.
+                    if (!sheet) { assertTrue(motion.get().closing); send(MotionEvent.ACTION_UP) }
+                }
+                await("Paper surface did not finish closing") { closed.get() == 1 }
+                scenario.onActivity {
+                    if (sheet) send(MotionEvent.ACTION_UP) // Cleanup on the old owned window only.
+                    assertEquals("Closing committed an abandoned draft", 0, writes.get())
+                    assertEquals(20, appearance.value.paperRoughness)
+                }
+                if (!sheet) await("Retained Settings did not reset its cancelled Paper draft") {
+                    var reset = false
+                    scenario.onActivity { reset = slider()?.config?.getOrNull(SemanticsProperties.ProgressBarRangeInfo)?.current == 20f }
+                    reset
+                }
+                // Return to the retained route; the sheet gets its own fresh local window.
+                scenario.onActivity { if (sheet) open.value = true else motion.get().reveal() }
+                ready(); drag()
+                var expected = 0
+                scenario.onActivity {
+                    expected = slider()!!.config[SemanticsProperties.ProgressBarRangeInfo].current.toInt()
+                    send(MotionEvent.ACTION_UP)
+                }
+                await("A fresh reopened Paper drag did not commit") { writes.get() == 1 }
+                scenario.onActivity { assertEquals(expected, appearance.value.paperRoughness) }
+                SystemClock.sleep(80)
+                assertEquals("A single fresh gesture committed more than once", 1, writes.get())
+            } finally {
+                if (pointerDown) scenario.onActivity { send(MotionEvent.ACTION_CANCEL) }
+            }
+        }
+    }
+
     @Test fun settingsStopsVerticalAndNarrowChoiceScrollingWithoutResetOnReturn() {
         requireMotion()
         launchReaderTestActivity().use { scenario ->
@@ -563,7 +707,7 @@ class ReaderHomeInputLifecycleTest {
                 SideEffect { root.set(view as ViewRootForTest) }
                 MaterialTheme { Box(Modifier.width(148.dp).height(440.dp)) {
                     ReaderSettingsScreen(CopySettings(), "Default", 0, 0, false, null,
-                        {}, {}, {}, {}, ThemeSettings(ReadingMode.ORIGINAL), {}, {}, active = active.value)
+                        {}, {}, {}, ThemeSettings(ReadingMode.ORIGINAL), {}, {}, active = active.value)
                 } }
             } }
             val horizontal = axis(scenario, root, horizontal = true)

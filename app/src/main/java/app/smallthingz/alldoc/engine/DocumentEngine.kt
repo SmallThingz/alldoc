@@ -21,6 +21,7 @@ import app.smallthingz.alldoc.theme.ImageTreatment
 import app.smallthingz.alldoc.theme.RasterRegion
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.BitmapTheme
+import app.smallthingz.alldoc.theme.RegionThemeContext
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.io.File
 import java.io.FileOutputStream
@@ -260,6 +261,10 @@ internal class PreviewSession(private val delegate: DocumentSession, format: Str
 }
 
 internal class PdfSession(private val pdf: PdfDocument, name: String, warnings: List<String>) : DocumentSession {
+    private var themeContextPage = -1
+    private var themeContext: RegionThemeContext? = null
+    private var themeContextSettings: ThemeSettings? = null
+    private var closed = false
     override val info = DocumentInfo(name, "application/pdf", "pdf", pdf.pageCount, pdf.textAvailable, "ORIGINAL_LAYOUT", warnings, supportsMargins = true, supportsOutline = true, supportsNotes = true)
     override val textInfo get() = info.copy(fidelity = if (pdf.textAvailable) "extracted-text" else "metadata",
         warnings = info.warnings + "Text reading order may differ from page layout. Scanned pages need OCR, which is not included.")
@@ -279,19 +284,61 @@ internal class PdfSession(private val pdf: PdfDocument, name: String, warnings: 
         return notesForExport(signal).appendTo(json)
     }
     override fun renderPage(index: Int, width: Int, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
-        val regions = rasterRegionsFor(index, settings, signal)
-        return themed(pdf.renderPage(index, width, signal), settings, signal, regions)
+        return themePage(index, pdf.renderPage(index, width, signal), settings, signal)
     }
-    override fun close() = pdf.close()
+    override fun themePage(index: Int, bitmap: Bitmap, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
+        try { return themed(bitmap, settings, signal, context = contextFor(index, settings, signal, bitmap)) }
+        catch (failure: Throwable) { if (!bitmap.isRecycled) bitmap.recycle(); throw failure }
+    }
+    @Synchronized override fun pageThemeContext(index: Int, settings: ThemeSettings, signal: CancellationSignal): RegionThemeContext? {
+        signal.throwIfCanceled(); check(!closed) { "Document is closed" }
+        require(index in 0 until info.pageCount) { "Invalid page" }
+        return themeContext.takeIf { themeContextPage == index && themeContextSettings == settings }
+    }
+    override fun renderRegion(index: Int, region: PageRegion, settings: ThemeSettings, signal: CancellationSignal): Bitmap =
+        renderRegionWithContext(index, region, settings, signal, null)
+    override fun renderRegionWithContext(index: Int, region: PageRegion, settings: ThemeSettings, signal: CancellationSignal,
+        context: RegionThemeContext?): Bitmap {
+        val applied = context ?: contextFor(index, settings, signal)
+        return themed(pdf.renderRegion(index, region, signal), settings, signal, context = applied, region = region)
+    }
+    @Synchronized private fun contextFor(index: Int, settings: ThemeSettings, signal: CancellationSignal, source: Bitmap? = null): RegionThemeContext? {
+        signal.throwIfCanceled()
+        check(!closed) { "Document is closed" }
+        if (settings.mode == ReadingMode.ORIGINAL || settings.mode == ReadingMode.INVERT) return null
+        if (themeContextPage == index && themeContextSettings == settings) return themeContext
+        val regions = rasterRegionsFor(index, settings, signal)
+        val prepared = if (source != null) BitmapTheme.prepareContext(source, settings, signal, regions) else {
+            val aspect = pdf.pageAspect(index, signal)
+            val width = RegionThemeContext.probeWidth(aspect)
+            val height = if (aspect >= 1f) 512 else (512.0 * aspect).toInt().coerceAtLeast(1)
+            val probe = pdf.renderRegion(index, PageRegion(0f, 0f, 1f, 1f, width, height), signal)
+            try { BitmapTheme.prepareContext(probe, settings, signal, regions) }
+            finally { probe.recycle() }
+        }
+        signal.throwIfCanceled()
+        themeContext = prepared
+        themeContextPage = index
+        themeContextSettings = settings
+        return prepared
+    }
+    @Synchronized override fun close() {
+        closed = true
+        themeContext = null
+        themeContextSettings = null
+        themeContextPage = -1
+        pdf.close()
+    }
 }
 
 internal fun DocumentSession.rasterRegionsFor(index: Int, settings: ThemeSettings, signal: CancellationSignal): List<RasterRegion>? =
     if (settings.imageTreatment == ImageTreatment.AUTO && settings.mode != ReadingMode.ORIGINAL && settings.mode != ReadingMode.INVERT)
         rasterRegions(index, signal) else null
 
-internal fun themed(source: Bitmap, settings: ThemeSettings, signal: CancellationSignal, rasterRegions: List<RasterRegion>? = null): Bitmap {
+internal fun themed(source: Bitmap, settings: ThemeSettings, signal: CancellationSignal, rasterRegions: List<RasterRegion>? = null,
+    context: RegionThemeContext? = null, region: PageRegion? = null): Bitmap {
     try {
-        val result = BitmapTheme.apply(source, settings, signal, rasterRegions)
+        val result = BitmapTheme.apply(source, settings, signal, rasterRegions, context, region)
         if (result !== source) source.recycle()
         return result
     } catch (failure: Throwable) { source.recycle(); throw failure }

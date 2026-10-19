@@ -1,6 +1,7 @@
 package app.smallthingz.alldoc.render
 
 import app.smallthingz.alldoc.theme.RasterRegion
+import app.smallthingz.alldoc.engine.PageRegion
 import java.io.File
 import java.io.IOException
 import java.io.InterruptedIOException
@@ -16,7 +17,7 @@ object DocRenderCore {
     const val PAGE_LIMIT = 1024
     const val SIDE_LIMIT = 2800
     const val PIXEL_LIMIT = 8_000_000
-    const val RECEIPT_OVERHEAD = 8192 + 36 + 64 * 16
+    const val RECEIPT_OVERHEAD = 8192 + 52 + 64 * 16
     fun interface Check { fun cancelled(): Boolean }
     class ViewState(
         @JvmField val page: Int, @JvmField val generation: Long,
@@ -98,15 +99,39 @@ object DocRenderCore {
         return decode(wire, state)
     }
 
+    /** Render original document geometry directly into a bounded source-region raster. */
     @JvmStatic @Throws(IOException::class)
-    fun decode(wire: ByteArray?, state: ViewState): RenderedPage {
+    fun renderRegionFile(snapshot: File, name: String, state: ViewState, region: PageRegion, check: Check?): RenderedPage {
+        if (!snapshot.isFile || snapshot.length() !in 1..INPUT_LIMIT.toLong())
+            throw IOException("Visual input supports 1 byte through 16 MiB")
+        val kind = kind(name)
+        if (kind == 0) throw IOException("No visual renderer for this format")
+        val poll = Check { Thread.currentThread().isInterrupted || check?.cancelled() == true }
+        if (poll.cancelled()) throw InterruptedIOException("Visual preview cancelled")
+        val installed = module
+        if (installed == null || !installed.available()) throw IOException("Visual renderer module is unavailable")
+        val wire = RenderProcess.run(installed, null, snapshot, kind, state.page, 0, poll, region)
+        if (poll.cancelled()) throw InterruptedIOException("Visual preview cancelled")
+        return decodeRegion(wire, state, region)
+    }
+
+    @JvmStatic @Throws(IOException::class)
+    fun decode(wire: ByteArray?, state: ViewState): RenderedPage = decode(wire, state, null)
+
+    @JvmStatic @Throws(IOException::class)
+    fun decodeRegion(wire: ByteArray?, state: ViewState, region: PageRegion): RenderedPage = decode(wire, state, region)
+
+    private fun decode(wire: ByteArray?, state: ViewState, region: PageRegion?): RenderedPage {
         if (wire == null || wire.size < 32 || wire.size > OUTPUT_LIMIT + RECEIPT_OVERHEAD)
             throw IOException("Invalid visual renderer receipt")
         if (wire[0] != 'Z'.code.toByte() || wire[1] != 'F'.code.toByte() ||
-            wire[2] != 'R'.code.toByte() || wire[3] !in byteArrayOf('1'.code.toByte(), '2'.code.toByte()))
+            wire[2] != 'R'.code.toByte() || wire[3] !in byteArrayOf('1'.code.toByte(), '2'.code.toByte(), '3'.code.toByte()))
             throw IOException("Unsupported visual receipt version")
-        val version2 = wire[3] == '2'.code.toByte()
-        if (version2 && wire.size < 36) throw IOException("Invalid visual renderer receipt")
+        val regionReceipt = wire[3] == '3'.code.toByte()
+        if (regionReceipt != (region != null)) throw IOException("Visual receipt does not match the requested region")
+        val hasRegions = wire[3] != '1'.code.toByte()
+        if ((hasRegions && wire.size < 36) || (regionReceipt && wire.size < 52))
+            throw IOException("Invalid visual renderer receipt")
         val b = ByteBuffer.wrap(wire).order(ByteOrder.LITTLE_ENDIAN)
         b.position(4)
         val format = b.int
@@ -116,7 +141,12 @@ object DocRenderCore {
         val pages = b.int
         val noteLen = b.int
         val dataLen = b.int
-        val count = if (version2) b.int else -1
+        val count = if (hasRegions) b.int else -1
+        if (regionReceipt) {
+            val requested = requireNotNull(region)
+            if (b.float != requested.left || b.float != requested.top || b.float != requested.right || b.float != requested.bottom)
+                throw IOException("Visual receipt region changed")
+        }
         if (count !in -1..64) throw IOException("Invalid visual raster-region count")
         val regionBytes = count.coerceAtLeast(0) * 16
         if (noteLen < 0 || noteLen > 8192 || dataLen < 0 || dataLen > OUTPUT_LIMIT ||
@@ -138,9 +168,12 @@ object DocRenderCore {
             if (message == "CANCELLED") throw InterruptedIOException("Visual preview cancelled")
             throw IOException(message)
         }
-        if ((format != 1 && format != 2) || w < 1 || h < 1 || w > SIDE_LIMIT || h > SIDE_LIMIT ||
+        val sideLimit = if (regionReceipt) PageRegion.MAX_EDGE else SIDE_LIMIT
+        if ((format != 1 && format != 2) || w < 1 || h < 1 || w > sideLimit || h > sideLimit ||
             w.toLong() * h > PIXEL_LIMIT || pages < 1 || pages > PAGE_LIMIT || page < 0 ||
             page >= pages || page != state.page || dataLen < 8) throw IOException("Invalid visual page metadata")
+        if (region != null && (format != RenderedPage.PNG || w != region.width || h != region.height))
+            throw IOException("Visual receipt dimensions differ from the requested region")
         val data = ByteArray(dataLen)
         b.get(data)
         if (format == 1) {

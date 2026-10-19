@@ -72,10 +72,10 @@ class ReaderAccessModel internal constructor(application: Application, private v
     fun returned(): Boolean {
         requesting = false
         val changed = refresh()
-        if (!granted) message = "Access not granted. You can still choose folders."
+        if (!granted) message = "Access not granted. You can still open individual documents."
         return changed
     }
-    fun launchFailed() { requesting = false; message = "Device access unavailable. Choose a folder instead." }
+    fun launchFailed() { requesting = false; message = "Device access unavailable. You can still open individual documents." }
     private fun persist(key: String) {
         ReaderModel.enqueueStateWrite("$preferencesName:$key") {
             try { check(preferences().edit().putBoolean(key, true).commit()) }
@@ -103,7 +103,7 @@ internal fun LibraryAccessSetting(access: ReaderAccessModel, onRequest: () -> Un
 
 @Composable
 internal fun ReaderAccessScreen(access: ReaderAccessModel, onRequest: () -> Unit,
-    onChooseFolders: () -> Unit, onSkip: () -> Unit) {
+    onSkip: () -> Unit) {
     Column(Modifier.fillMaxSize().readerBackground().verticalScroll(rememberScrollState()).padding(28.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Icon(Icons.Outlined.Storage, null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
@@ -116,7 +116,6 @@ internal fun ReaderAccessScreen(access: ReaderAccessModel, onRequest: () -> Unit
         Button(onRequest, enabled = access.ready && !access.requesting, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             Text(if (access.requesting) "Opening settings…" else "Allow device access")
         }
-        OutlinedButton(onChooseFolders, Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Choose folders") }
         TextButton(onSkip, Modifier.heightIn(min = 48.dp)) { Text("Not now") }
     }
 }

@@ -21,7 +21,7 @@ import java.util.Locale
 class DocumentStore(context: Context, name: String = "documents.db", private val maxEntries: Int = MAX_ENTRIES,
     private val clock: () -> Long = System::currentTimeMillis) : Closeable {
     init { require(maxEntries in 1..MAX_ENTRIES) }
-    private val helper = object : SQLiteOpenHelper(context.applicationContext, name, null, 6,
+    private val helper = object : SQLiteOpenHelper(context.applicationContext, name, null, 8,
         DatabaseErrorHandler { throw SQLiteDatabaseCorruptException("Saved document state is damaged; the database was preserved.") }) {
         override fun onConfigure(db: SQLiteDatabase) {
             db.rawQuery("PRAGMA journal_mode=TRUNCATE", null).use { check(it.moveToFirst()) }
@@ -46,12 +46,14 @@ class DocumentStore(context: Context, name: String = "documents.db", private val
                 appearance INTEGER NOT NULL, preserve_images INTEGER NOT NULL, hide_margins INTEGER NOT NULL DEFAULT 0,
                 page_fraction REAL NOT NULL DEFAULT 0, horizontal_pages INTEGER NOT NULL DEFAULT 0, notes_visible INTEGER NOT NULL DEFAULT 0,
                 paper_roughness INTEGER NOT NULL DEFAULT 0, sheet INTEGER NOT NULL DEFAULT -1,
-                sheet_x REAL NOT NULL DEFAULT 0, sheet_y REAL NOT NULL DEFAULT 0, sheet_zoom REAL NOT NULL DEFAULT 1) WITHOUT ROWID""")
+                sheet_x REAL NOT NULL DEFAULT 0, sheet_y REAL NOT NULL DEFAULT 0, sheet_zoom REAL NOT NULL DEFAULT 1,
+                text_zoom REAL NOT NULL DEFAULT 1, text_horizontal_offset INTEGER NOT NULL DEFAULT -1,
+                text_horizontal_fraction REAL NOT NULL DEFAULT 0) WITHOUT ROWID""")
             db.execSQL("CREATE INDEX documents_recency ON documents(opened DESC,hash DESC)")
             db.execSQL("CREATE TRIGGER document_insert AFTER INSERT ON documents BEGIN UPDATE ledger SET entries=entries+1 WHERE id=1; END")
             db.execSQL("CREATE TRIGGER document_delete AFTER DELETE ON documents BEGIN UPDATE ledger SET entries=entries-1 WHERE id=1; END")
             db.execSQL("CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, bytes INTEGER NOT NULL, count INTEGER NOT NULL, tree TEXT)")
-            db.execSQL("INSERT INTO settings VALUES(1,1,268435456,1000,NULL)")
+            db.execSQL("INSERT INTO settings VALUES(1,1,268435456,1000000,NULL)")
         }
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
             if (oldVersion < 2) db.execSQL("ALTER TABLE documents ADD COLUMN hide_margins INTEGER NOT NULL DEFAULT 0")
@@ -67,6 +69,11 @@ class DocumentStore(context: Context, name: String = "documents.db", private val
                 db.execSQL("ALTER TABLE documents ADD COLUMN sheet_x REAL NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE documents ADD COLUMN sheet_y REAL NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE documents ADD COLUMN sheet_zoom REAL NOT NULL DEFAULT 1")
+            }
+            if (oldVersion < 7) db.execSQL("ALTER TABLE documents ADD COLUMN text_zoom REAL NOT NULL DEFAULT 1")
+            if (oldVersion < 8) {
+                db.execSQL("ALTER TABLE documents ADD COLUMN text_horizontal_offset INTEGER NOT NULL DEFAULT -1")
+                db.execSQL("ALTER TABLE documents ADD COLUMN text_horizontal_fraction REAL NOT NULL DEFAULT 0")
             }
         }
         override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = error("Refusing destructive document-state downgrade")
@@ -178,8 +185,7 @@ class DocumentStore(context: Context, name: String = "documents.db", private val
         check(it.moveToFirst()); CopySettings(it.getInt(0) != 0, it.getLong(1), it.getInt(2), it.nullString(3))
     }
     @Synchronized fun saveCopySettings(value: CopySettings) {
-        require(value.maxBytes in 1..MAX_COPY_BYTES && value.maxCount in 1..MAX_COPIES)
-        checkedUri(value.treeUri)
+        value.validate()
         transaction { db -> db.execSQL("UPDATE settings SET enabled=?,bytes=?,count=?,tree=? WHERE id=1",
             arrayOf<Any?>(if (value.enabled) 1 else 0, value.maxBytes, value.maxCount, value.treeUri)) }
     }
@@ -204,7 +210,7 @@ class DocumentStore(context: Context, name: String = "documents.db", private val
     private fun Cursor.document() = StoredDocument(getBlob(0).hex(),
         DocumentMetadata(getString(1), nullString(2), getLong(3), nullString(4), nullString(5)),
         DocumentState(getInt(7), ViewportState(getFloat(8), getFloat(9), getFloat(10), getInt(11)),
-            TextPosition(getInt(12), getFloat(13)), if (getInt(14) == 1) DocumentViewMode.TEXT else DocumentViewMode.PAGES,
+            TextPosition(getInt(12), getFloat(13), getFloat(26), getInt(27), getFloat(28)), if (getInt(14) == 1) DocumentViewMode.TEXT else DocumentViewMode.PAGES,
             ThemeSettings(readingMode(getInt(15)), ImageTreatment.fromCode(getInt(16)), getInt(21)), getInt(17) != 0, getFloat(18), getInt(19) != 0, getInt(20) != 0, SheetPosition(getInt(22), getDouble(23), getDouble(24), getFloat(25))).normalized(), getLong(6))
 
     private data class Key(val hex: String, val bytes: ByteArray) { val where get() = "hash=X'$hex'" }
@@ -234,6 +240,8 @@ class DocumentStore(context: Context, name: String = "documents.db", private val
         put("horizontal_pages", if (value.horizontalPages) 1 else 0); put("notes_visible", if (value.notesVisible) 1 else 0)
         put("page", value.page); put("zoom", value.viewport.zoom); put("cx", value.viewport.centerX); put("cy", value.viewport.centerY)
         put("rotation", value.viewport.rotation); put("text_offset", value.textPosition.offset); put("text_fraction", value.textPosition.fraction)
+        put("text_zoom", value.textPosition.zoom)
+        put("text_horizontal_offset", value.textPosition.horizontalOffset); put("text_horizontal_fraction", value.textPosition.horizontalFraction)
         put("view", if (value.mode == DocumentViewMode.TEXT) 1 else 0); put("appearance", readingCode(value.appearance.mode)); put("preserve_images", value.appearance.imageTreatment.code)
     }
     private fun readingCode(value: ReadingMode) = when (value) { ReadingMode.ORIGINAL -> 0; ReadingMode.ADAPTIVE -> 1; ReadingMode.SEPIA -> 2; ReadingMode.HIGH_CONTRAST -> 3; ReadingMode.INVERT -> 4; ReadingMode.ADAPTIVE_LIGHT -> 5; ReadingMode.SYSTEM -> 6 }
@@ -249,7 +257,7 @@ class DocumentStore(context: Context, name: String = "documents.db", private val
             terms.joinToString(" OR ", "(", ")") to (mime + names).toTypedArray()
         }
         const val MAX_ENTRIES = 1_000_000
-        const val MAX_COPIES = 10_000
+        const val MAX_COPIES = MAX_ENTRIES
         const val MAX_COPY_BYTES = 8L * 1024 * 1024 * 1024
     }
 }

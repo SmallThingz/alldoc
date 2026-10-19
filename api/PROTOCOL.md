@@ -127,7 +127,8 @@ files. It is not bundled into the reader APK and does not expose a network endpo
 Use `:client-test:connectedDebugAndroidTest` for the cross-UID API suite.
 
 The separate `DocumentApiTimingTest` is skipped unless instrumentation receives
-`-e profile true`. Run it only after correctness passes, with the host and device quiet.
+`-e profile true`. Run it only after correctness passes, assessing Android-device
+contention separately. `host-quiet` applies only when measuring workloads on the PC.
 It reports a single bind and first-document open separately from median/p95 warm status
 round trips and warm text streaming. Use `-e coldStart true` only when AllDoc was
 force-stopped immediately before the run. Those measurements describe that device and

@@ -35,9 +35,11 @@ branch does not silently change the reader installed on a device.
 
 Inputs are limited to 16 MiB, expanded packages to 32 MiB, output to 2,800 pixels
 on the longer edge, 8 million pixels and 1,024 pages. The reader keeps a 1,400-pixel
-base tier and requests the larger tier for detail; embedded raster images cannot
-gain detail beyond their source resolution. Further zoom enlarges the bounded raster,
-not an unlimited vector surface. Encoded page caching remains bounded
+base tier and requests the larger tier for full-page detail. The reader can also
+request a normalized source region, rasterized directly from document geometry into
+at most 4,096 pixels per axis and 8 million pixels. This visible detail surface does
+not allocate a zoomed whole page or change print/export limits. Embedded raster
+images and bitmap glyphs cannot gain detail beyond their source resolution. Encoded page caching remains bounded
 to three entries and 4 MiB. External resources, macros, active content and
 presentation playback are not executed. Font substitution and unimplemented
 format features can change appearance. Structural reading remains a separate
@@ -53,6 +55,20 @@ Native pages can also report up to 64 complete opaque rectangular image placemen
 for Auto appearance. Unsupported alpha, geometry or incomplete bounds remain
 unknown; an empty list means no raster images. These hints do not change Original
 rendering or promise object-level recovery from a flattened scan.
+
+The one-shot `--region KIND SNAPSHOT RECEIPT PAGE LEFT TOP RIGHT BOTTOM WIDTH HEIGHT`
+request maps unrotated page fractions exactly into the requested output dimensions.
+Separate axis scales account for rounded base-page geometry without clipping source
+content or allocating an intermediate enlarged bitmap. `ZFR3` receipts retain
+the existing page fields and image-region count, followed by the four requested
+float bounds before image-region data; Android binds those bounds and exact output
+dimensions before decoding. Image-preservation hints use the translated raster's
+coordinates. The original one-shot arguments and `ZFR2` full-page receipts are
+unchanged. Both paths retain the same process limits and cancellation deadline.
+Full-page rasters retain their existing rounded output dimensions and limits, while
+fitting the actual page extent exactly into that canvas. This keeps normalized base
+and detail coordinates aligned; fractional allocation padding is not treated as
+authored page margin. Transparent authored areas and page margins remain content.
 
 ## Stress qualification
 
@@ -83,6 +99,6 @@ Current executable hashes and submodule pins are emitted into
 
 Viewports reuse GridCraft cell styling, merged cells, wrapping, charts, shapes and image drawing. Gridlines follow the sheet view preference, independently of print settings. The worker uses cached values/reference ranges for charts and sparklines. Formula-only conditional formats and unsupported chart expressions are omitted; no recalculation, macros or content networking occurs. Conditional formatting statistics are sparse and reused while the active sheet remains selected.
 
-The bounded blank grid supports 16,384 rows and 512 columns, including space beyond the used range; headers receive exact variable-size/hidden-line edges. Raster output remains 2,800 pixels per axis and 8 million pixels. Scale 0.0625–32 changes which region is rendered, without creating a whole-sheet bitmap. Only one active sheet's geometry/statistics is retained. Authored frozen panes and right-to-left sheet direction are reported as metadata; content is not yet frozen or mirrored by this viewport renderer. RTL text still uses the font shaper.
+The bounded blank grid supports 16,384 rows and 512 columns, including space beyond the used range; headers receive exact variable-size/hidden-line edges. Viewport raster output is bounded to 4,096 pixels per axis and 8 million pixels. Scale 0.0625–256 changes which region is rendered, without creating a whole-sheet bitmap; the upper bound supports 32× reader zoom at up to 8 device pixels per logical pixel. Only one active sheet's geometry/statistics is retained. Authored frozen panes and right-to-left sheet direction are reported as metadata; content is not yet frozen or mirrored by this viewport renderer. RTL text still uses the font shaper.
 
 Pinned GridCraft has no ODS or legacy XLS visual importer. Those formats may expose existing saved cell coordinates as a structured grid, with their explicit style/chart/excerpt limitations; they do not have XLSX visual-grid fidelity. Apple Numbers documents remain limited to their embedded previews. Reading success is not a claim that unsupported graphs were rendered.

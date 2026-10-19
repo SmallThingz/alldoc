@@ -1,7 +1,9 @@
 package app.smallthingz.alldoc.ui
 
 import android.content.res.Configuration
+import android.animation.ValueAnimator
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -12,6 +14,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.MutatePriority
 import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.background
@@ -47,6 +50,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.Layout
@@ -58,6 +62,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -76,9 +81,17 @@ import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.smallthingz.alldoc.BuildConfig
 import app.smallthingz.alldoc.core.takeScalarSafe
+import app.smallthingz.alldoc.engine.SheetFrame
+import app.smallthingz.alldoc.engine.SheetGeometry
+import app.smallthingz.alldoc.engine.WorkbookInfo
+import app.smallthingz.alldoc.state.SheetPosition
+import app.smallthingz.alldoc.state.TextPosition
+import app.smallthingz.alldoc.state.ViewportState
 import app.smallthingz.alldoc.theme.DocumentColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
 
 @Composable
 fun ReaderScreen(
@@ -86,7 +99,7 @@ fun ReaderScreen(
     onChooseStorage: () -> Unit = {}, onPrint: (Long) -> Unit = {},
     externalDocument: Boolean = false,
     onInternalOpen: () -> Unit = {}, onFullscreen: (Boolean) -> Unit = {},
-    onLibraryAccess: () -> Unit = {}, onAddLibraryFolder: () -> Unit = {},
+    onLibraryAccess: () -> Unit = {},
     libraryAccess: ReaderAccessModel? = null,
 ) {
     var routes by rememberSaveable { mutableStateOf(
@@ -103,7 +116,6 @@ fun ReaderScreen(
     val animateReaderEntrance = remember(identity) { !restoringEntrance }
     var routedIdentity by remember { mutableLongStateOf(identity) }
     var returningHome by remember(identity) { mutableStateOf(false) }
-    var chooseFolderAfterAccess by rememberSaveable("library-access" in routes) { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if (!BuildConfig.DEBUG) routes = ArrayList(routes.filterNot { it == "examples" })
     }
@@ -175,10 +187,11 @@ fun ReaderScreen(
     LaunchedEffect(routes.lastOrNull()) { if (routes.lastOrNull() == "settings") model.refreshStorageUsage() }
     val documentAppearanceAvailable = model.readerVisible && info != null && model.documentHash != null && !model.loading
     val visibleOverlay = overlay.takeUnless {
-        (it == "details" || it == "contents" || it == "export") && info == null ||
+        it == "limits" || (it == "details" || it == "contents" || it == "export") && info == null ||
             it == "appearance" && !documentAppearanceAvailable
     }.orEmpty()
     LaunchedEffect(overlay, info, model.loading, model.error, model.openingCancelled, model.readerVisible) {
+        if (overlay == "limits") overlay = "" // A restored removed panel must not retain modal input ownership.
         if ((overlay == "details" || overlay == "contents" || overlay == "export") && info == null) overlay = ""
         // A cold owner may not have started automatic resume yet; preserve its hidden intent.
         if (overlay == "appearance" && (!model.readerVisible && info != null ||
@@ -226,12 +239,14 @@ fun ReaderScreen(
                                 onLibrarySettings = { push("settings") }, onLibraryFilter = model::setLibraryFilter,
                                 onRefresh = model::refreshLibrary, libraryScanning = model.libraryScanning,
                                 onTabSelected = model::cancelAutomaticResume, onExamples = { push("examples") },
+                                hiddenLibraryTypes = model.libraryHiddenTypes,
+                                onHiddenLibraryTypesChange = model::setLibraryHiddenTypes,
+                                libraryTypesEnabled = model.librarySettingsLoaded.collectAsStateWithLifecycle().value,
                                 coverPaper = Color(DocumentColors.palette(model.effectivePreviewSettings).background))
                         } else ReaderMotionLayer(active = active && !(route == "reader" && (externalDocument || fullscreen || textSurfaceVisible)),
                             onBack = {
                                 if (route == "library-access") {
                                     libraryAccess?.dismissIntroduction(); pop(route)
-                                    if (chooseFolderAfterAccess) { chooseFolderAfterAccess = false; onAddLibraryFolder() }
                                 } else if (route != "reader") pop(route)
                                 else if (returningHome) { returningHome = false; home() } else leaveReader()
                             },
@@ -256,19 +271,17 @@ fun ReaderScreen(
                                 }
                                 "library-access" -> libraryAccess?.let { access ->
                                     ReaderAccessScreen(access, onLibraryAccess,
-                                        onChooseFolders = { chooseFolderAfterAccess = true; back() }, onSkip = back)
+                                        onSkip = back)
                                 }
                                 "settings" -> ReaderSettingsScreen(model.copySettings, model.storageLabel, model.copyUsageBytes,
                                     model.copyUsageCount, model.storageBusy || !model.compoundSettingsReady, model.storageWarning, model::updateCopySettings,
-                                    onChooseStorage, onLimits = { overlay = "limits" }, onClear = { overlay = "clear" },
+                                    onChooseStorage, onClear = { overlay = "clear" },
                                     appearance = model.appearanceForControls,
                                     onAppearanceChange = { model.setAppearance(it, identity) }, onBack = back,
                                     appearanceEnabled = !model.loading && (model.compoundSettingsReady || model.readerVisible && model.documentHash != null),
                                     documentAppearance = model.readerVisible && model.documentHash != null,
                                     appTheme = model.appTheme, onAppThemeChange = model::updateAppTheme,
-                                    hiddenLibraryTypes = model.libraryHiddenTypes, onHiddenLibraryTypesChange = model::setLibraryHiddenTypes,
-                                    libraryTypesEnabled = model.librarySettingsLoaded.collectAsStateWithLifecycle().value,
-                                    onLibraryAccess = onLibraryAccess, onAddLibraryFolder = onAddLibraryFolder,
+                                    onLibraryAccess = onLibraryAccess,
                                     libraryAccess = libraryAccess, active = active)
                                 "examples" -> if (BuildConfig.DEBUG) ReaderExamplesScreen(onBack = back, onOpen = {
                                     onInternalOpen(); model.openExample(it)
@@ -332,6 +345,80 @@ private fun ReaderOpening(onCancel: () -> Unit, modifier: Modifier = Modifier.fi
     }
 }
 
+private data class ReaderPagesVisual(
+    val count: Int, val anchor: Int, val fraction: Float, val viewport: ViewportState, val revision: Long,
+    val images: Map<Int, ReaderPageImage>, val aspects: Map<Int, Float>,
+    val details: Map<Int, ReaderPageDetail>, val horizontal: Boolean, val failedPages: Set<Int>,
+)
+
+private data class ReaderWorksheetVisual(
+    val workbook: WorkbookInfo?, val geometry: SheetGeometry?, val position: SheetPosition,
+    val frame: SheetFrame?, val loading: Boolean, val error: String?,
+)
+
+private class ReaderTransitionVisual {
+    var pages: ReaderPagesVisual? = null
+    var worksheet: ReaderWorksheetVisual? = null
+    var text: String? = null
+    var textLoading = false
+    var textPosition = TextPosition()
+}
+
+/** A short crossfade retains pixels, while only the settled foreground accepts input. */
+@Composable
+internal fun ReaderTextTransition(
+    textMode: Boolean, destinationReady: Boolean, active: Boolean, onBack: () -> Unit,
+    backEnabled: Boolean = true, animate: Boolean = true, onSettled: (Boolean) -> Unit = {},
+    pageContent: @Composable (Boolean) -> Unit, textContent: @Composable (Boolean) -> Unit,
+) {
+    val opacity = remember { Animatable(if (textMode) 1f else 0f) }
+    var retainText by remember { mutableStateOf(textMode) }
+    val ready by rememberUpdatedState(destinationReady)
+    val settled by rememberUpdatedState(onSettled)
+    val currentBack by rememberUpdatedState(onBack)
+    val canReturn by rememberUpdatedState(active && textMode && backEnabled)
+    val motionScope = rememberCoroutineScope()
+    val backMotion = remember { ReaderMotionState(1f, motionScope) }
+    SideEffect { backMotion.onClosed = { if (canReturn) currentBack() } }
+    LaunchedEffect(textMode) { if (textMode) backMotion.reveal() }
+    PredictiveBackHandler(enabled = active && textMode && backEnabled) { events ->
+        // Preview only the current text pixels; native pages are requested after commitment.
+        backMotion.follow(events) { canReturn }
+    }
+    LaunchedEffect(textMode, animate) {
+        val motion = animate && ValueAnimator.areAnimatorsEnabled()
+        if (textMode) {
+            retainText = true
+            if (motion) opacity.animateTo(1f, tween(180)) else opacity.snapTo(1f)
+        } else if (retainText) {
+            // Native rendering cannot delay Back indefinitely. A slow destination proceeds to
+            // its normal loading/error surface after this bounded visual handoff.
+            if (motion && !ready) withTimeoutOrNull(100) { snapshotFlow { ready }.first { it } }
+            if (motion) opacity.animateTo(0f, tween(140)) else opacity.snapTo(0f)
+            retainText = false
+        }
+        settled(textMode)
+    }
+    Box(Modifier.fillMaxSize()) {
+        if (!textMode || opacity.value < 1f) {
+            val input = active && !textMode && !retainText
+            Box(Modifier.fillMaxSize().readerInput(input)) { pageContent(input) }
+        }
+        if (textMode || retainText) {
+            val input = active && textMode && !backMotion.closing && opacity.value == 1f && !opacity.isRunning
+            Box(Modifier.fillMaxSize().readerInput(input).graphicsLayer {
+                val progress = 1f - backMotion.openness.value
+                alpha = opacity.value
+                translationX = size.width * .08f * progress
+                scaleX = 1f - .03f * progress
+                scaleY = scaleX
+            }) {
+                textContent(input)
+            }
+        }
+    }
+}
+
 @Composable
 private fun ReaderDocumentScreen(
     model: ReaderModel, identity: Long, active: Boolean, searching: Boolean, query: TextFieldState, fullscreen: Boolean,
@@ -342,11 +429,30 @@ private fun ReaderDocumentScreen(
     val info = model.info
     var jumping by rememberSaveable(identity) { mutableStateOf(false) }
     var choosingView by rememberSaveable(identity) { mutableStateOf(false) }
-    var returningToPages by remember(identity) { mutableStateOf<Boolean?>(null) }
-    LaunchedEffect(model.textMode) { if (!model.textMode) returningToPages = null }
+    val textView = model.textMode && !(info?.continuous == true && searching)
     fun pageView(horizontal: Boolean) {
-        if (model.textMode && info?.continuous != true) returningToPages = horizontal
-        else model.choosePageView(horizontal, identity)
+        model.choosePageView(horizontal, identity)
+    }
+    val retained = remember(identity) { ReaderTransitionVisual() }
+    val pages = info?.let { ReaderPagesVisual(it.pageCount, model.anchorPage, model.pageFraction,
+        model.viewport, model.pagePositionRevision, model.pageImages, model.pageAspects,
+        model.pageDetails, model.horizontalPages, model.failedPages) }
+    val worksheet = if (model.sheetMode) ReaderWorksheetVisual(model.workbook, model.sheetGeometry,
+        model.sheetPosition, model.sheetFrame, model.sheetsLoading, model.sheetsError) else null
+    SideEffect {
+        if (!model.loading && info != null) {
+            if (model.textMode) {
+                retained.text = model.text
+                retained.textLoading = model.textLoading
+                retained.textPosition = model.textPosition
+            } else {
+                // Keep only the current page's published raster, never the page/detail cache.
+                retained.pages = if (worksheet == null) pages?.copy(
+                    images = model.pageImages[model.page]?.let { mapOf(model.page to it) }.orEmpty(),
+                    details = emptyMap()) else null
+                retained.worksheet = worksheet
+            }
+        }
     }
     val controls = rememberReaderControls(fullscreen,
         !active || searching || jumping || choosingView || model.exporting || model.loading || info == null)
@@ -366,61 +472,88 @@ private fun ReaderDocumentScreen(
                     info == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         TextButton(onClick = onHome) { Text("Library") }
                     }
-                    info.continuous && (!model.textMode || searching) -> ReaderTextView(
-                        model.text, model.textLoading, model.effectiveSettings, searching, query, onCloseSearch,
-                        Modifier.fillMaxSize().readingGestures(controls, active && !searching)
-                            .semantics { contentDescription = "Markdown document" },
-                        identity, model.textPosition,
-                        onPosition = { model.updateTextPosition(it, identity) }, onScrollEnd = model::flushDocumentState,
-                        active = active && !jumping && !choosingView, backEnabled = active && !jumping && !choosingView, requestSearchFocus = requestSearchFocus,
-                        onSearchFocusConsumed = onSearchFocusConsumed,
-                        contentInsets = if (fullscreen) WindowInsets.displayCutout else WindowInsets(0, 0, 0, 0),
-                        contentPadding = PaddingValues(start = 22.dp, end = 22.dp,
-                            top = if (fullscreen || searching) 20.dp else 76.dp, bottom = if (fullscreen) 20.dp else 84.dp),
-                        onScrollDirection = { if (active) controls.scroll(it) }, markdown = model.markdown)
-                    model.textMode -> ReaderMotionLayer(
-                        active = active && !searching && !jumping && !choosingView,
-                        onBack = {
-                            model.choosePageView(returningToPages ?: model.horizontalPages, identity)
-                            returningToPages = null
-                        }, visible = returningToPages == null,
-                        modifier = Modifier.fillMaxSize(), animateEntrance = !searching,
-                    ) {
-                        ReaderTextView(model.text, model.textLoading, model.effectiveSettings, searching, query, onCloseSearch,
-                            Modifier.fillMaxSize().readingGestures(controls, active && !searching),
-                            identity, model.textPosition,
-                            onPosition = { model.updateTextPosition(it, identity) }, onScrollEnd = model::flushDocumentState,
-                            active = active && !jumping && !choosingView && returningToPages == null,
-                            backEnabled = active && !jumping && !choosingView, requestSearchFocus = requestSearchFocus,
-                            onSearchFocusConsumed = onSearchFocusConsumed,
-                            contentInsets = if (fullscreen) WindowInsets.displayCutout else WindowInsets(0, 0, 0, 0),
-                            contentPadding = PaddingValues(start = 22.dp, end = 22.dp,
-                                top = if (fullscreen || searching) 20.dp else 76.dp, bottom = if (fullscreen) 20.dp else 84.dp),
-                            onScrollDirection = { if (active) controls.scroll(it) })
-                    }
-                    model.sheetMode -> ReaderWorksheet(identity, model.workbook, model.sheetGeometry,
-                        model.sheetPosition, model.sheetFrame, model.sheetsLoading, model.sheetsError,
-                        onPosition = { model.updateSheetPosition(it, identity) },
-                        onRequest = { model.requestSheetViewport(it, identity) },
-                        onViewport = { size, density -> model.updateSheetViewport(size, density, identity) },
-                        onSelectSheet = { model.selectSheet(it, identity) }, onGestureEnd = model::flushDocumentState,
-                        onRetry = { model.retrySheet(identity) }, active = active && !choosingView && !jumping,
-                        modifier = Modifier.fillMaxSize().padding(top = if (fullscreen) 0.dp else 56.dp,
-                            bottom = if (fullscreen) 0.dp else 64.dp),
-                        paper = Color(DocumentColors.palette(model.effectiveSettings).background),
-                        onScrollDirection = { if (active) controls.scroll(it) }, onTap = { if (active) controls.toggle() })
-                    else -> ReaderPages(identity, info.pageCount, model.anchorPage, model.pageFraction, model.viewport,
-                        model.pagePositionRevision, model.pageImages, model.pageAspects,
-                        onVisiblePages = { model.requestVisiblePages(it, identity) },
-                        onPosition = { page, fraction -> model.updatePagePosition(page, fraction, identity) },
-                        onCurrentPage = { model.updateCurrentPage(it, identity) },
-                        onViewportChange = { model.updateViewport(it, identity) }, onGestureEnd = model::flushDocumentState,
-                        onZoomAnimation = { model.setZoomAnimation(it, identity) }, active = active && !choosingView && !jumping,
-                        modifier = Modifier.fillMaxSize(), normalEdgePadding = if (fullscreen) 16.dp else 80.dp,
-                        paper = Color(DocumentColors.palette(model.effectiveSettings).background), horizontal = model.horizontalPages,
-                        failedPages = model.failedPages, onRetryPage = { model.retryPage(it, identity) },
-                        onReadText = if (info.textAvailable || info.reflowable) ({ action { model.chooseTextView(identity) } }) else null,
-                        onScrollDirection = { if (active) controls.scroll(it) }, onTap = { if (active) controls.toggle() })
+                    else -> ReaderTextTransition(
+                        textMode = textView,
+                        destinationReady = when {
+                            info.continuous -> model.text != null || !model.textLoading
+                            worksheet != null -> worksheet.frame != null || worksheet.error != null
+                            else -> model.page in model.pageImages || model.page in model.failedPages
+                        },
+                        active = active && !jumping && !choosingView, backEnabled = !searching,
+                        animate = !searching, onBack = { pageView(model.horizontalPages) },
+                        onSettled = { text ->
+                            if (text) { retained.pages = null; retained.worksheet = null }
+                            else retained.text = null
+                        },
+                        pageContent = { acceptingInput ->
+                            val frozen = model.textMode && !info.continuous
+                            val grid = if (frozen) retained.worksheet else worksheet
+                            val raster = if (frozen) retained.pages else pages
+                            when {
+                                info.continuous -> ReaderTextView(
+                                    model.text, model.textLoading, model.effectiveSettings, searching, query, onCloseSearch,
+                                    Modifier.fillMaxSize().readingGestures(controls, acceptingInput && !searching)
+                                        .semantics { contentDescription = "Markdown document" },
+                                    identity, model.textPosition,
+                                    onPosition = { if (!textView) model.updateTextPosition(it, identity) },
+                                    onScrollEnd = model::flushDocumentState,
+                                    active = acceptingInput, backEnabled = acceptingInput,
+                                    prepareContent = active && !jumping && !choosingView,
+                                    requestSearchFocus = requestSearchFocus, onSearchFocusConsumed = onSearchFocusConsumed,
+                                    contentInsets = if (fullscreen) WindowInsets.displayCutout else WindowInsets(0, 0, 0, 0),
+                                    contentPadding = PaddingValues(start = 22.dp, end = 22.dp,
+                                        top = if (fullscreen || searching) 20.dp else 76.dp, bottom = if (fullscreen) 20.dp else 84.dp),
+                                    onScrollDirection = { if (acceptingInput) controls.scroll(it) }, markdown = model.markdown)
+                                grid != null -> ReaderWorksheet(identity, grid.workbook, grid.geometry,
+                                    grid.position, grid.frame, grid.loading, grid.error,
+                                    onPosition = { if (!frozen) model.updateSheetPosition(it, identity) },
+                                    onRequest = { if (!frozen) model.requestSheetViewport(it, identity) },
+                                    onViewport = { size, density -> if (!frozen) model.updateSheetViewport(size, density, identity) },
+                                    onSelectSheet = { if (acceptingInput) model.selectSheet(it, identity) },
+                                    onGestureEnd = model::flushDocumentState,
+                                    onRetry = { if (acceptingInput) model.retrySheet(identity) }, active = acceptingInput,
+                                    modifier = Modifier.fillMaxSize().padding(top = if (fullscreen) 0.dp else 56.dp,
+                                        bottom = if (fullscreen) 0.dp else 64.dp),
+                                    paper = Color(DocumentColors.palette(model.effectiveSettings).background),
+                                    onScrollDirection = { if (acceptingInput) controls.scroll(it) },
+                                    onTap = { if (acceptingInput) controls.toggle() })
+                                raster != null -> ReaderPages(identity, raster.count, raster.anchor, raster.fraction,
+                                    raster.viewport, raster.revision, raster.images, raster.aspects,
+                                    onVisiblePages = { if (!frozen) model.requestVisiblePages(it, identity) },
+                                    // Covered owners still publish their final cancelled-gesture position.
+                                    onPosition = { page, fraction -> if (!frozen) model.updatePagePosition(page, fraction, identity) },
+                                    onCurrentPage = { if (!frozen) model.updateCurrentPage(it, identity) },
+                                    onViewportChange = { if (!frozen) model.updateViewport(it, identity) },
+                                    onGestureEnd = model::flushDocumentState,
+                                    onZoomAnimation = { model.setZoomAnimation(it, identity) }, active = acceptingInput,
+                                    details = raster.details,
+                                    onVisibleRegions = { if (!frozen) model.requestVisibleRegions(it, identity) },
+                                    modifier = Modifier.fillMaxSize(), normalEdgePadding = if (fullscreen) 16.dp else 80.dp,
+                                    paper = Color(DocumentColors.palette(model.effectiveSettings).background), horizontal = raster.horizontal,
+                                    failedPages = raster.failedPages, onRetryPage = { if (acceptingInput) model.retryPage(it, identity) },
+                                    onReadText = if (info.textAvailable || info.reflowable) ({
+                                        if (acceptingInput) action { model.chooseTextView(identity) }
+                                    }) else null,
+                                    onScrollDirection = { if (acceptingInput) controls.scroll(it) },
+                                    onTap = { if (acceptingInput) controls.toggle() })
+                            }
+                        },
+                        textContent = { acceptingInput ->
+                            ReaderTextView(if (model.textMode) model.text else retained.text,
+                                if (model.textMode) model.textLoading else retained.textLoading,
+                                model.effectiveSettings, searching, query, onCloseSearch,
+                                Modifier.fillMaxSize().readingGestures(controls, acceptingInput && !searching),
+                                identity, if (model.textMode) model.textPosition else retained.textPosition,
+                                onPosition = { if (textView) model.updateTextPosition(it, identity) },
+                                onScrollEnd = model::flushDocumentState,
+                                active = acceptingInput, backEnabled = acceptingInput,
+                                prepareContent = active && !jumping && !choosingView,
+                                requestSearchFocus = requestSearchFocus, onSearchFocusConsumed = onSearchFocusConsumed,
+                                contentInsets = if (fullscreen) WindowInsets.displayCutout else WindowInsets(0, 0, 0, 0),
+                                contentPadding = PaddingValues(start = 22.dp, end = 22.dp,
+                                    top = if (fullscreen || searching) 20.dp else 76.dp, bottom = if (fullscreen) 20.dp else 84.dp),
+                                onScrollDirection = { if (acceptingInput) controls.scroll(it) })
+                        })
                 }
 
                 Box(Modifier.fillMaxSize().zIndex(1f).then(if (fullscreen) Modifier.safeDrawingPadding() else Modifier)
@@ -635,14 +768,13 @@ internal fun ReaderNotesLayout(
 }
 
 @Composable
-private fun ReaderPageJump(page: Int, count: Int, onDismiss: () -> Unit, onPage: (Int) -> Unit) {
+internal fun ReaderPageJump(page: Int, count: Int, onDismiss: () -> Unit, onPage: (Int) -> Unit) {
     var entry by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         val value = (page + 1).toString()
         mutableStateOf(TextFieldValue(value, TextRange(0, value.length)))
     }
-    var focused by rememberSaveable { mutableStateOf(false) }
+    var focused by remember { mutableStateOf(false) }
     val requester = remember { FocusRequester() }
-    val keyboard = LocalSoftwareKeyboardController.current
     val number = entry.text.toIntOrNull()?.takeIf { it in 1..count }
     fun go(dismiss: () -> Unit) { number?.let { onPage(it - 1); dismiss() } }
     ReaderSheet("Jump to page", onDismiss,
@@ -656,10 +788,17 @@ private fun ReaderPageJump(page: Int, count: Int, onDismiss: () -> Unit, onPage:
             label = { Text("Page") }, suffix = { Text("/ $count") }, isError = entry.text.isNotEmpty() && number == null,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Go),
             keyboardActions = KeyboardActions(onGo = { go(dismiss) }))
-        LaunchedEffect(Unit) {
-            if (!focused) {
+        val inputAllowed = LocalReaderInputAllowed.current
+        val window = LocalWindowInfo.current
+        val keyboard = LocalSoftwareKeyboardController.current
+        val ready = inputAllowed() && window.isWindowFocused
+        LaunchedEffect(ready) {
+            if (ready && !focused) {
                 withFrameNanos { }
-                if (requester.requestFocus()) { focused = true; keyboard?.show() }
+                if (inputAllowed() && window.isWindowFocused && requester.requestFocus()) {
+                    focused = true
+                    keyboard?.show()
+                }
             }
         }
     }

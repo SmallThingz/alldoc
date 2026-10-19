@@ -36,7 +36,6 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.smallthingz.alldoc.state.AppTheme
-import app.smallthingz.alldoc.state.LibraryCategory
 import app.smallthingz.alldoc.state.CopySettings
 import app.smallthingz.alldoc.theme.DocumentColors
 import app.smallthingz.alldoc.theme.ImageTreatment
@@ -44,79 +43,63 @@ import app.smallthingz.alldoc.theme.ReadingPalette
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @Composable
 internal fun ReaderSettingsScreen(
     settings: CopySettings, location: String, usedBytes: Long, count: Int, busy: Boolean, warning: String?,
-    onChange: (CopySettings) -> Unit, onChooseStorage: () -> Unit, onLimits: () -> Unit,
+    onChange: (CopySettings) -> Unit, onChooseStorage: () -> Unit,
     onClear: () -> Unit, appearance: ThemeSettings, onAppearanceChange: (ThemeSettings) -> Unit, onBack: () -> Unit,
     appearanceEnabled: Boolean = true, documentAppearance: Boolean = false,
     appTheme: AppTheme = AppTheme.SYSTEM, onAppThemeChange: (AppTheme) -> Unit = {},
-    hiddenLibraryTypes: Set<LibraryCategory> = emptySet(),
-    onHiddenLibraryTypesChange: (Set<LibraryCategory>) -> Unit = {},
-    onLibraryAccess: (() -> Unit)? = null, onAddLibraryFolder: (() -> Unit)? = null,
-    libraryAccess: ReaderAccessModel? = null, active: Boolean = true, libraryTypesEnabled: Boolean = true,
+    onLibraryAccess: (() -> Unit)? = null,
+    libraryAccess: ReaderAccessModel? = null, active: Boolean = true,
 ) {
+    val inputActive = active && LocalReaderInputAllowed.current()
     val scroll = rememberScrollState()
-    LaunchedEffect(scroll, active) { if (!active) scroll.stopScroll(MutatePriority.PreventUserInput) }
+    LaunchedEffect(scroll, inputActive) { if (!inputActive) scroll.stopScroll(MutatePriority.PreventUserInput) }
     Column(Modifier.fillMaxSize().readerBackground()) {
         ReaderHeader("Settings", onBack = onBack)
-        Column(Modifier.weight(1f).verticalScroll(scroll, enabled = active).padding(horizontal = 20.dp, vertical = 12.dp),
+        Column(Modifier.weight(1f).verticalScroll(scroll, enabled = inputActive).padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
             if (libraryAccess != null && onLibraryAccess != null) LibraryAccessSetting(libraryAccess, onLibraryAccess)
             SettingsSection("App theme")
             SettingsChoices(AppTheme.entries, { it == appTheme }, onAppThemeChange,
-                enabled = active, label = { it.label() }, icon = { when (it) {
+                enabled = inputActive, label = { it.label() }, icon = { when (it) {
                     AppTheme.SYSTEM -> Icons.Outlined.BrightnessAuto; AppTheme.LIGHT -> Icons.Outlined.LightMode
                     AppTheme.DARK -> Icons.Outlined.DarkMode; AppTheme.AMOLED -> Icons.Outlined.Contrast
                 } }, description = { "App theme: ${it.label()}" })
             SettingsSection(if (documentAppearance) "This document" else "Document defaults")
-            ReadingAppearanceContent(appearance, appearanceEnabled && active, onChange = onAppearanceChange)
-            SettingsSection("Library")
-            onAddLibraryFolder?.let {
-                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-                    SettingsLink(Icons.Outlined.CreateNewFolder, "Add folder", "", it)
-                }
-            }
-            SettingsChoices(LibraryCategory.available, { it !in hiddenLibraryTypes }, { category ->
-                onHiddenLibraryTypesChange(if (category in hiddenLibraryTypes) hiddenLibraryTypes - category else hiddenLibraryTypes + category)
-            }, label = { when (it) {
-                LibraryCategory.DOCUMENTS -> "Docs"; LibraryCategory.PRESENTATIONS -> "Slides"
-                LibraryCategory.SPREADSHEETS -> "Sheets"; else -> "Books"
-            } }, icon = { when (it) {
-                LibraryCategory.DOCUMENTS -> Icons.Outlined.Description; LibraryCategory.PRESENTATIONS -> Icons.Outlined.Slideshow
-                LibraryCategory.SPREADSHEETS -> Icons.Outlined.TableChart; else -> Icons.Outlined.MenuBook
-            } }, description = { "Library: ${it.label}" }, multiple = true, enabled = active && libraryTypesEnabled)
+            ReadingAppearanceContent(appearance, appearanceEnabled && inputActive, onChange = onAppearanceChange)
             SettingsSection("Storage")
             Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column {
-                    Row(Modifier.fillMaxWidth().toggleable(settings.enabled, enabled = !busy, role = Role.Switch,
-                        onValueChange = { onChange(settings.copy(enabled = it)) }).heightIn(min = 56.dp)
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Keep temporary files", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-                        Switch(settings.enabled, onCheckedChange = null, enabled = !busy)
-                    }
+                    CopyLimitControl(settings, onChange, enabled = inputActive && !busy,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp))
                     SettingsDivider()
-                    SettingsLink(Icons.Outlined.FolderOpen, "Location", location, onChooseStorage, !busy)
-                    if (settings.treeUri != null) TextButton(onClick = { onChange(settings.copy(treeUri = null)) }, enabled = !busy,
+                    SettingsLink(Icons.Outlined.FolderOpen, "Location", location, onChooseStorage, inputActive && !busy)
+                    if (settings.treeUri != null) TextButton(onClick = { onChange(settings.copy(treeUri = null)) }, enabled = inputActive && !busy,
                         modifier = Modifier.padding(start = 44.dp).heightIn(min = 48.dp)
                             .semantics { contentDescription = "Use default location" }) { Text("Use default") }
                     SettingsDivider()
-                    SettingsLink(Icons.Outlined.Storage, "Storage limit", "${settings.maxBytes / (1024 * 1024)} MB", onLimits, !busy)
                     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (busy) CircularProgressIndicator(Modifier.size(16.dp).semantics { contentDescription = "Updating storage" }, strokeWidth = 2.dp)
                             Text("${readerBytes(usedBytes)} · $count ${if (count == 1) "copy" else "copies"}", Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            TextButton(onClick = onClear, enabled = !busy && count > 0,
+                            TextButton(onClick = onClear, enabled = inputActive && !busy && count > 0,
                                 modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Clear copies" }) { Text("Clear") }
                         }
-                        LinearProgressIndicator(progress = { (usedBytes.toDouble() / settings.maxBytes.coerceAtLeast(1)).toFloat().coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth().height(3.dp))
-                        Text("Older copies are removed at the limit.",
+                        if (settings.enabled && settings.maxBytes in 1 until Long.MAX_VALUE)
+                            LinearProgressIndicator(progress = { (usedBytes.toDouble() / settings.maxBytes).toFloat().coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth().height(3.dp))
+                        Text(when {
+                            !settings.enabled || settings.maxBytes == 0L -> "New temporary files aren't kept. Existing copies stay until cleared."
+                            settings.maxBytes == Long.MAX_VALUE -> "No storage limit. Clear copies to free space."
+                            else -> "Older copies are removed at the limit."
+                        },
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         warning?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                     }
@@ -159,24 +142,53 @@ internal fun readerBytes(bytes: Long): String = when {
     else -> "$bytes B"
 }
 
+internal val copyLimitOptions: List<Long> = listOf<Long>(0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768,
+    1024, 1280, 1536, 1792, 2048, 2560, 3072, 3584, 4096).map { it * 1024 * 1024 } + Long.MAX_VALUE
+
+internal fun copyLimitIndex(settings: CopySettings): Int = when {
+    !settings.enabled || settings.maxBytes == 0L -> 0
+    settings.maxBytes == Long.MAX_VALUE -> copyLimitOptions.lastIndex
+    else -> (1 until copyLimitOptions.lastIndex).minBy { abs(copyLimitOptions[it] - settings.maxBytes) }
+}
+
+internal fun copyLimitLabel(bytes: Long): String = when (bytes) {
+    0L -> "Off"
+    Long.MAX_VALUE -> "Unlimited"
+    else -> "${bytes / (1024 * 1024)} MB"
+}
+
+internal fun copyLimitSelection(settings: CopySettings, index: Int): CopySettings {
+    val bytes = copyLimitOptions[index.coerceIn(copyLimitOptions.indices)]
+    return settings.copy(enabled = bytes != 0L, maxBytes = bytes, maxCount = 1_000_000)
+}
+
 @Composable
-internal fun CopyLimitsDialog(settings: CopySettings, onChange: (CopySettings) -> Unit, onDismiss: () -> Unit,
-    enabled: Boolean = true,
+internal fun CopyLimitControl(settings: CopySettings, onChange: (CopySettings) -> Unit,
+    enabled: Boolean = true, modifier: Modifier = Modifier,
 ) {
-    var megabytes by remember(settings.maxBytes) { mutableFloatStateOf((settings.maxBytes / (1024 * 1024)).coerceIn(1, 8192).toFloat()) }
-    ReaderSheet("Storage limit", onDismiss) {
-        Column {
-            Text("${megabytes.roundToInt()} MB", style = MaterialTheme.typography.titleMedium)
-            Slider(value = megabytes, onValueChange = { megabytes = it }, valueRange = 1f..8192f, enabled = enabled,
-                onValueChangeFinished = {
-                    val bytes = megabytes.roundToInt().toLong() * 1024 * 1024
-                    if (enabled && bytes != settings.maxBytes) onChange(settings.copy(maxBytes = bytes))
-                },
-                modifier = Modifier.fillMaxWidth().semantics {
-                    contentDescription = "Storage limit"; stateDescription = "${megabytes.roundToInt()} MB"
-                })
-            Text("Older copies are removed at the limit.", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val inputAllowed = LocalReaderInputAllowed.current
+    val inputEnabled = enabled && inputAllowed()
+    val initial = copyLimitIndex(settings)
+    var position by remember(settings.enabled, settings.maxBytes, inputEnabled) { mutableFloatStateOf(initial.toFloat()) }
+    var editing by remember(settings.enabled, settings.maxBytes, inputEnabled) { mutableStateOf(false) }
+    val bytes = if (editing) copyLimitOptions[position.roundToInt()] else if (settings.enabled) settings.maxBytes else 0L
+    val label = copyLimitLabel(bytes)
+    Column(modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Storage limit", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+            Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        }
+        Slider(value = position, onValueChange = { if (enabled && inputAllowed()) { position = it.roundToInt().toFloat(); editing = true } },
+            valueRange = 0f..copyLimitOptions.lastIndex.toFloat(), steps = copyLimitOptions.size - 2, enabled = inputEnabled,
+            onValueChangeFinished = {
+                if (enabled && inputAllowed()) copyLimitSelection(settings, position.roundToInt()).let { if (it != settings) onChange(it) }
+                editing = false
+            }, modifier = Modifier.fillMaxWidth().semantics {
+                contentDescription = "Storage limit"; stateDescription = label
+            })
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Off", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Unlimited", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -185,6 +197,8 @@ internal fun CopyLimitsDialog(settings: CopySettings, onChange: (CopySettings) -
 internal fun ReadingAppearanceContent(
     settings: ThemeSettings, enabled: Boolean = true, showImageTreatment: Boolean = true, onChange: (ThemeSettings) -> Unit,
 ) {
+    val inputAllowed = LocalReaderInputAllowed.current
+    val inputEnabled = enabled && inputAllowed()
     val modes = remember { listOf(
         ReadingMode.SYSTEM to "System", ReadingMode.ADAPTIVE_LIGHT to "Light", ReadingMode.ADAPTIVE to "Dark",
         ReadingMode.SEPIA to "Paper", ReadingMode.ORIGINAL to "Original", ReadingMode.HIGH_CONTRAST to "Contrast",
@@ -192,14 +206,19 @@ internal fun ReadingAppearanceContent(
     ) }
     val dark = isSystemInDarkTheme()
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        AppearanceChoices(modes, settings.mode, enabled, { onChange(settings.copy(mode = it)) },
+        AppearanceChoices(modes, settings.mode, inputEnabled, { onChange(settings.copy(mode = it)) },
             { DocumentColors.palette(ThemeSettings(it).resolved(dark)) })
         if (settings.mode == ReadingMode.SEPIA) {
-            var roughness by remember(settings.paperRoughness) { mutableFloatStateOf(settings.paperRoughness.coerceIn(0, 100).toFloat()) }
+            var roughness by remember(settings.paperRoughness, inputEnabled) { mutableFloatStateOf(settings.paperRoughness.coerceIn(0, 100).toFloat()) }
             Column(Modifier.fillMaxWidth()) {
                 Text("Paper roughness", style = MaterialTheme.typography.labelLarge)
-                Slider(value = roughness, onValueChange = { roughness = it }, valueRange = 0f..100f, enabled = enabled,
-                    onValueChangeFinished = { onChange(settings.copy(paperRoughness = roughness.toInt())) },
+                Slider(value = roughness, onValueChange = { if (enabled && inputAllowed()) roughness = it },
+                    valueRange = 0f..100f, enabled = inputEnabled,
+                    onValueChangeFinished = {
+                        if (enabled && inputAllowed()) settings.copy(paperRoughness = roughness.toInt()).let {
+                            if (it != settings) onChange(it)
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth().semantics {
                         contentDescription = "Paper roughness"; stateDescription = "${roughness.toInt()}%"
                     })
@@ -208,7 +227,7 @@ internal fun ReadingAppearanceContent(
         if (showImageTreatment && settings.mode != ReadingMode.ORIGINAL && settings.mode != ReadingMode.INVERT) {
             Text("Images", style = MaterialTheme.typography.labelLarge)
             SettingsChoices(ImageTreatment.entries, { it == settings.imageTreatment },
-                { onChange(settings.copy(imageTreatment = it)) }, enabled = enabled,
+                { onChange(settings.copy(imageTreatment = it)) }, enabled = inputEnabled,
                 label = { when (it) {
                     ImageTreatment.AUTO -> "Auto"; ImageTreatment.KEEP -> "Keep"
                     ImageTreatment.DIM -> "Dim"; ImageTreatment.RECOLOR -> "Recolor"
@@ -226,7 +245,7 @@ private fun AppTheme.label() = when (this) {
 
 /** Reverb-style segmented choices; narrow layouts keep icons and full accessible names. */
 @Composable
-private fun <T> SettingsChoices(items: List<T>, selected: (T) -> Boolean, onSelect: (T) -> Unit,
+internal fun <T> SettingsChoices(items: List<T>, selected: (T) -> Boolean, onSelect: (T) -> Unit,
     label: (T) -> String, icon: (T) -> ImageVector, enabled: Boolean = true,
     description: (T) -> String = label, multiple: Boolean = false,
 ) {
@@ -240,7 +259,7 @@ private fun <T> SettingsChoices(items: List<T>, selected: (T) -> Boolean, onSele
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val rowWidth = maxOf(maxWidth, (items.size * 48 + 8).dp)
         val showLabels = widest <= with(density) { ((rowWidth - 8.dp) / items.size - 12.dp).roundToPx() }
-        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(30.dp), color = colors.surfaceContainerLow,
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(percent = 50), color = colors.surfaceContainerLow,
             border = BorderStroke(1.dp, colors.outlineVariant)) {
             Row(Modifier.horizontalScroll(scroll, enabled = enabled).width(rowWidth).padding(4.dp)
                 .then(if (multiple) Modifier else Modifier.selectableGroup())) {
@@ -252,7 +271,7 @@ private fun <T> SettingsChoices(items: List<T>, selected: (T) -> Boolean, onSele
                     ReaderTooltip(description(value), Modifier.weight(1f), enabled = enabled) {
                         val action = if (multiple) Modifier.toggleable(chosen, enabled, Role.Checkbox) { onSelect(value) }
                         else Modifier.selectable(chosen, enabled, Role.RadioButton) { if (!chosen) onSelect(value) }
-                        Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(22.dp)).background(fill)
+                        Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(percent = 50)).background(fill)
                             .then(action).semantics { contentDescription = description(value) }
                             .padding(horizontal = 6.dp, vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically)) {

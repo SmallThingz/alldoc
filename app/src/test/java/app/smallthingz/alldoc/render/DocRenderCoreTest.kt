@@ -1,5 +1,6 @@
 package app.smallthingz.alldoc.render
 
+import app.smallthingz.alldoc.engine.PageRegion
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.nio.ByteBuffer
@@ -98,6 +99,49 @@ class DocRenderCoreTest {
         assertEquals(2800, page.height)
         ByteBuffer.wrap(wire).order(ByteOrder.LITTLE_ENDIAN).putInt(8, 2801)
         assertThrows(IOException::class.java) { DocRenderCore.decode(wire, state) }
+    }
+
+    private fun regionReceipt(region: PageRegion, format: Int = 1, note: String = ""): ByteArray {
+        val text = note.toByteArray(Charsets.UTF_8)
+        val png = if (format == 0) byteArrayOf() else ByteBuffer.allocate(24).order(ByteOrder.BIG_ENDIAN).apply {
+            put(byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10))
+            putInt(16, region.width); putInt(20, region.height)
+        }.array()
+        return ByteBuffer.allocate(52 + text.size + png.size).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put(byteArrayOf(90, 70, 82, 51))
+            for (value in intArrayOf(format, region.width, region.height, 0, 1, text.size, png.size, 0)) putInt(value)
+            for (value in floatArrayOf(region.left, region.top, region.right, region.bottom)) putFloat(value)
+            put(text); put(png)
+        }.array()
+    }
+
+    @Test fun regionReceiptsBindTheExactViewportAndKeepFullPageLimitsSeparate() {
+        val region = PageRegion(.25f, .1f, .5f, .9f, 1600, 4096)
+        val wire = regionReceipt(region)
+        val page = DocRenderCore.decodeRegion(wire, state, region)
+        assertEquals(1600, page.width)
+        assertEquals(4096, page.height)
+        assertEquals(emptyList<Any>(), page.rasterRegions)
+        assertThrows(IOException::class.java) { DocRenderCore.decode(wire, state) }
+        assertThrows(IOException::class.java) { DocRenderCore.decodeRegion(receipt(0, note = "legacy"), state, region) }
+        assertThrows(IOException::class.java) { DocRenderCore.decodeRegion(wire, state, region.copy(left = .2f)) }
+        assertThrows(IOException::class.java) { DocRenderCore.decodeRegion(wire, state, region.copy(width = 1599)) }
+        val malformed = wire.clone()
+        ByteBuffer.wrap(malformed).order(ByteOrder.LITTLE_ENDIAN).putInt(8, 4096)
+        assertThrows(IOException::class.java) { DocRenderCore.decodeRegion(malformed, state, region) }
+        ByteBuffer.wrap(malformed).order(ByteOrder.LITTLE_ENDIAN).putInt(8, 1600).putInt(12, 4097)
+        assertThrows(IOException::class.java) { DocRenderCore.decodeRegion(malformed, state, region) }
+        assertThrows(IOException::class.java) { DocRenderCore.decodeRegion(wire.copyOf(51), state, region) }
+    }
+
+    @Test fun regionCancellationRetainsItsMeaningAndCannotBecomeAnEmptyPage() {
+        val region = PageRegion(0f, 0f, .25f, .25f, 800, 1000)
+        assertThrows(InterruptedIOException::class.java) {
+            DocRenderCore.decodeRegion(regionReceipt(region, 0, "CANCELLED"), state, region)
+        }
+        assertThrows(IOException::class.java) {
+            DocRenderCore.decodeRegion(regionReceipt(region, 0, "Invalid visual page region"), state, region)
+        }
     }
 
     @Test fun unknownFilenameDoesNotClaimAVisualEngine() {

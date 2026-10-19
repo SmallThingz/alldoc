@@ -1,6 +1,13 @@
 package app.smallthingz.alldoc.ui
 
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.MutatePriority
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -26,6 +33,15 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -35,6 +51,9 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -53,8 +72,19 @@ import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.ln
+import kotlin.math.pow
+import kotlin.math.sqrt
+
+private class ReaderTextHorizontalState(position: TextPosition) {
+    var anchor = position.horizontalOffset.takeIf { it >= 0 }?.let { ReaderHorizontalAnchor(it, position.horizontalFraction) }
+}
 
 @Composable
 internal fun ReaderTextView(
@@ -67,6 +97,7 @@ internal fun ReaderTextView(
     contentPadding: PaddingValues = PaddingValues(horizontal = 22.dp, vertical = 20.dp),
     markdown: MarkdownDocument? = null,
     active: Boolean = true,
+    prepareContent: Boolean = active,
 ) {
     val query = queryState.text.toString()
     val colors = DocumentColors.palette(settings)
@@ -95,55 +126,105 @@ internal fun ReaderTextView(
             }
         } }
         val stackedSearch = maxWidth < 320.dp * density.fontScale.coerceAtLeast(1f)
-        val layoutKey = remember(constraints.maxWidth, density.density, density.fontScale) {
-            Triple(constraints.maxWidth, density.density, density.fontScale)
-        }
         val hasViewport = constraints.maxWidth > 0 && constraints.maxHeight > 0
         var showSearch by remember(documentKey) { mutableStateOf(searching) }
         LaunchedEffect(searching) { if (searching) showSearch = true }
         val listState = rememberLazyListState()
-        val chunks by produceState<List<String>>(emptyList(), text, markdown) {
-            value = withContext(Dispatchers.Default) {
-                if (markdown == null) splitText(text.orEmpty()) { ensureActive() }
-                else markdown.blocks.mapIndexed { index, block ->
-                    ensureActive()
-                    markdown.plainText.substring(block.start, markdown.blocks.getOrNull(index + 1)?.start ?: markdown.plainText.length)
+        val requestedZoom = position.normalized().zoom
+        val zoomTier = 2f.pow(ceil(ln((requestedZoom * density.fontScale).coerceAtLeast(1f)) / ln(2f)))
+        val chunkTarget = (2400 / (zoomTier * zoomTier)).toInt().coerceIn(8, 2400)
+        val prepared by key(documentKey, text, markdown) {
+            produceState(2400 to emptyList<ReaderTextChunk>(), chunkTarget) {
+                value = chunkTarget to withContext(Dispatchers.Default) {
+                    readerTextChunks(text.orEmpty(), markdown, chunkTarget) { ensureActive() }
                 }
             }
+        }
+        val chunks = prepared.second
+        // Do not enlarge stale large blocks while smaller off-thread layout units are being prepared.
+        val zoom = minOf(requestedZoom, sqrt(2400f / prepared.first) / density.fontScale.coerceAtLeast(1f))
+        val layoutKey = remember(constraints.maxWidth, density.density, density.fontScale, zoom) {
+            Triple(constraints.maxWidth, density.density, density.fontScale to zoom)
         }
         val request = remember(text, query) { TextSearchRequest(text.orEmpty(), query) }
         val result by produceState<TextSearchResult?>(null, request) {
             value = withContext(Dispatchers.Default) { request.evaluate { ensureActive() } }
         }
         val matches = result?.forRequest(request) ?: NoTextMatches
-        val starts = remember(chunks, markdown) {
-            var offset = 0
-            IntArray(chunks.size) { index -> markdown?.blocks?.getOrNull(index)?.start ?: offset.also { offset += chunks[index].length } }
-        }
+        val starts = remember(chunks) { IntArray(chunks.size) { chunks[it].start } }
         // Reflow may clamp the visible range; only an actual scroll replaces the saved character anchor.
         val initialPosition = remember(documentKey, chunks, layoutKey, showSearch, contentPadding) { position }
         var restored by remember(documentKey, chunks, layoutKey, showSearch, contentPadding) { mutableStateOf(false) }
+        var shown by remember(documentKey, text, markdown) { mutableStateOf(false) }
         val layouts = remember(chunks, layoutKey) { HashMap<Int, TextLayoutResult>() }
         val layoutReady = remember(chunks, layoutKey) { HashMap<Int, CompletableDeferred<TextLayoutResult>>() }
         val currentOnPosition by rememberUpdatedState(onPosition)
         val currentOnScrollEnd by rememberUpdatedState(onScrollEnd)
-        fun capturePosition() {
-            if (!restored || starts.isEmpty()) return
+        val currentPosition by rememberUpdatedState(position)
+        val currentDocumentKey by rememberUpdatedState(documentKey)
+        val currentChunks by remember { mutableStateOf(chunks, referentialEqualityPolicy()) }.apply { value = chunks }
+        val currentLayoutKey by rememberUpdatedState(layoutKey)
+        val horizontal = remember(documentKey, text, markdown) { ReaderTextHorizontalState(position) }
+        fun visiblePosition(preserveHorizontal: Boolean = false): TextPosition? {
+            if (!restored || starts.isEmpty()) return null
             val viewport = listState.layoutInfo
-            val row = viewport.visibleItemsInfo.firstOrNull { it.offset + it.size > viewport.viewportStartOffset } ?: return
+            val row = viewport.visibleItemsInfo.firstOrNull { it.offset + it.size > viewport.viewportStartOffset } ?: return null
             val index = row.index.coerceIn(starts.indices)
-            val layout = layouts[index] ?: return
+            val layout = layouts[index] ?: return null
             val y = (viewport.viewportStartOffset - row.offset).coerceAtLeast(0).toFloat()
             val line = layout.getLineForVerticalPosition(y)
             val top = layout.getLineTop(line)
             val height = (layout.getLineBottom(line) - top).coerceAtLeast(1f)
-            currentOnPosition(TextPosition(starts[index] + layout.getLineStart(line), ((y - top) / height).coerceIn(0f, 1f)))
+            val start = starts[index] + layout.getLineStart(line)
+            val end = starts[index] + layout.getLineEnd(line, visibleEnd = true)
+            var offset: Int? = null
+            val kind = chunks[index].block?.kind
+            if (preserveHorizontal && start < end && (kind == MarkdownKind.CODE || kind == MarkdownKind.TABLE)) horizontal.anchor?.let { previous ->
+                val local = previous.offset - starts[index]
+                if (local in 0 until layout.layoutInput.text.length) {
+                    // Vertical reading changes the line, while this row keeps its horizontal scroll.
+                    val oldGlyph = layout.getBoundingBox(local)
+                    val x = (oldGlyph.left + previous.fraction * oldGlyph.width.coerceAtLeast(1f))
+                        .coerceIn(-layout.size.width.toFloat(), layout.size.width.toFloat()).let { if (it.isFinite()) it else 0f }
+                    val current = layout.getOffsetForPosition(Offset(x, top + height / 2f))
+                        .coerceIn(start - starts[index], end - starts[index] - 1)
+                    val glyph = layout.getBoundingBox(current)
+                    val absolute = starts[index] + current
+                    horizontal.anchor = ReaderHorizontalAnchor(absolute, (x - glyph.left) / glyph.width.coerceAtLeast(1f))
+                    offset = absolute
+                }
+            }
+            return TextPosition(offset ?: start, ((y - top) / height).coerceIn(0f, 1f), currentPosition.zoom,
+                horizontal.anchor?.offset ?: -1, horizontal.anchor?.fraction ?: 0f)
         }
-        LaunchedEffect(chunks, documentKey, layoutKey, showSearch, contentPadding, hasViewport, active) {
-            if (!active || restored || chunks.isEmpty() || !hasViewport) return@LaunchedEffect
+        fun capturePosition() { visiblePosition()?.let(currentOnPosition) }
+        val scope = rememberCoroutineScope()
+        var zoomJob by remember(documentKey) { mutableStateOf<Job?>(null) }
+        val focus = remember(documentKey) { FocusRequester() }
+        fun changeZoom(target: Float, animated: Boolean) {
+            if (!active || searching || !target.isFinite()) return
+            val next = target.coerceIn(TextPosition.MIN_ZOOM, TextPosition.MAX_ZOOM)
+            if (next == currentPosition.zoom) return
+            focus.requestFocus()
+            zoomJob?.cancel()
+            val anchor = visiblePosition(preserveHorizontal = true) ?: currentPosition
+            if (!animated) currentOnPosition(anchor.copy(zoom = next))
+            else zoomJob = scope.launch {
+                try { animate(anchor.zoom, next, animationSpec = tween(180)) { value, _ ->
+                    currentOnPosition(anchor.copy(zoom = value))
+                } } finally { currentOnScrollEnd() }
+            }
+        }
+        val changeZoomNow by rememberUpdatedState<(Float, Boolean) -> Unit>(newValue = { target, animated -> changeZoom(target, animated) })
+        DisposableEffect(documentKey) { onDispose { zoomJob?.cancel() } }
+        LaunchedEffect(active, searching) { if (!active || searching) zoomJob?.cancel() }
+        // An incoming crossfade prepares its saved anchor before it owns any input.
+        LaunchedEffect(chunks, documentKey, layoutKey, showSearch, contentPadding, hasViewport, prepareContent) {
+            if (!prepareContent || restored || chunks.isEmpty() || !hasViewport) return@LaunchedEffect
             val index = chunkIndex(starts, initialPosition.offset.coerceAtMost(text.orEmpty().length))
             val ready = layoutReady.getOrPut(index) { CompletableDeferred() }
-            listState.scrollToItem(index)
+            // Already visible text can reflow in place; do not flash its block's beginning on every zoom frame.
+            if (listState.layoutInfo.visibleItemsInfo.none { it.index == index }) listState.scrollToItem(index)
             val layout = layouts[index] ?: ready.await()
             val local = (initialPosition.offset - starts[index]).coerceIn(0, layout.layoutInput.text.length)
             val line = layout.getLineForOffset(local)
@@ -152,6 +233,7 @@ internal fun ReaderTextView(
                 else listState.layoutInfo.beforeContentPadding
             listState.scrollToItem(index, y.toInt().coerceAtLeast(0) + padding)
             restored = true
+            shown = true
         }
         LaunchedEffect(listState, documentKey, active) {
             if (active) return@LaunchedEffect
@@ -251,10 +333,53 @@ internal fun ReaderTextView(
                     Text(if (text == null) "Text is unavailable." else "No extractable text.", color = Color(colors.foreground))
                 }
                 else -> SelectionContainer {
-                    LazyColumn(state = listState, userScrollEnabled = active, modifier = Modifier.fillMaxSize().nestedScroll(scrollObserver).graphicsLayer { alpha = if (restored) 1f else 0f },
+                    LazyColumn(state = listState, userScrollEnabled = active, modifier = Modifier.fillMaxSize().nestedScroll(scrollObserver)
+                        .semantics {
+                            stateDescription = "Text size ${(requestedZoom * 100).toInt()}%"
+                            if (active && !searching) customActions = listOf(
+                                CustomAccessibilityAction("Zoom in") { changeZoom(currentPosition.zoom * 1.25f, true); true },
+                                CustomAccessibilityAction("Zoom out") { changeZoom(currentPosition.zoom / 1.25f, true); true },
+                                CustomAccessibilityAction("Reset text size") { changeZoom(1f, true); true })
+                        }.onPreviewKeyEvent { event ->
+                            if (!active || searching || event.type != KeyEventType.KeyDown || !event.isCtrlPressed) false
+                            else when (event.key) {
+                                Key.Equals, Key.Plus -> { changeZoom(currentPosition.zoom * 1.25f, true); true }
+                                Key.Minus -> { changeZoom(currentPosition.zoom / 1.25f, true); true }
+                                Key.Zero -> { changeZoom(1f, true); true }
+                                else -> false
+                            }
+                        }.focusRequester(focus).focusable(active && !searching)
+                        .pointerInput(documentKey, active, searching) {
+                            if (!active || searching) return@pointerInput
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                focus.requestFocus()
+                                zoomJob?.cancel()
+                                var motion = 1f
+                                var owns = false
+                                var target = currentPosition.zoom
+                                try {
+                                    do {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        val multiple = event.changes.count { it.pressed } > 1
+                                        val factor = event.calculateZoom()
+                                        motion *= factor
+                                        if (!owns) owns = multiple && abs(1f - motion) * event.calculateCentroidSize(useCurrent = false) > viewConfiguration.touchSlop
+                                        if (owns) {
+                                            if (multiple) {
+                                                target = (target * factor).coerceIn(TextPosition.MIN_ZOOM, TextPosition.MAX_ZOOM)
+                                                changeZoomNow(target, false)
+                                            }
+                                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                        }
+                                    } while (event.changes.any { it.pressed })
+                                } finally { if (owns) currentOnScrollEnd() }
+                            }
+                        }.graphicsLayer { alpha = if (restored || shown) 1f else 0f },
                         contentPadding = contentPadding) {
-                        itemsIndexed(chunks) { index, chunk ->
-                            val block = markdown?.blocks?.getOrNull(index)
+                        itemsIndexed(chunks) { index, item ->
+                            val chunk = item.text
+                            val block = item.block
                             key(documentKey, block) {
                             DisposableEffect(index, chunks, layoutKey) { onDispose { layouts.remove(index); layoutReady.remove(index) } }
                             val highlight = MaterialTheme.colorScheme.primaryContainer
@@ -287,10 +412,22 @@ internal fun ReaderTextView(
                                 searchVisit to TextRange(activeStart - offset, minOf(visible.length, activeStart + query.length - offset)) else null
                             if (block?.kind == MarkdownKind.CODE || block?.kind == MarkdownKind.TABLE)
                                 ReaderMarkdownView(block, marked, Color(colors.foreground), onLayout, active = active,
-                                    searchMatch = searchMatch, layoutKey = layoutKey)
+                                    searchMatch = searchMatch, layoutKey = layoutKey, zoom = zoom,
+                                    horizontalAnchor = horizontal.anchor, visibleOffset = position.offset,
+                                    onHorizontalAnchor = { anchor, closing ->
+                                        if (currentDocumentKey == documentKey && currentChunks === chunks && currentLayoutKey == layoutKey &&
+                                            (!closing || horizontal.anchor?.offset?.let { it in offset until offset + visible.length } == true)) {
+                                            horizontal.anchor = anchor
+                                            currentOnPosition(currentPosition.copy(horizontalOffset = anchor.offset, horizontalFraction = anchor.fraction))
+                                        }
+                                    }, onHorizontalScrollEnd = {
+                                        if (currentDocumentKey == documentKey && currentChunks === chunks && currentLayoutKey == layoutKey) currentOnScrollEnd()
+                                    })
                             else key(layoutKey) {
-                                if (block == null) Text(marked, color = Color(colors.foreground), style = MaterialTheme.typography.bodyLarge, onTextLayout = onLayout)
-                                else ReaderMarkdownView(block, marked, Color(colors.foreground), onLayout, active = active)
+                                if (block == null) Text(marked, color = Color(colors.foreground), style = MaterialTheme.typography.bodyLarge.let {
+                                    it.copy(fontSize = it.fontSize * zoom, lineHeight = it.lineHeight * zoom)
+                                }, onTextLayout = onLayout)
+                                else ReaderMarkdownView(block, marked, Color(colors.foreground), onLayout, active = active, zoom = zoom)
                             }
                             }
                         }

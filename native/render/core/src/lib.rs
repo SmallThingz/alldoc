@@ -11,6 +11,58 @@ pub const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 pub const MAX_PAGES: usize = 1024;
 pub const MAX_SIDE: u32 = 2800;
 pub const OUTPUT_PIXELS: u64 = 8_000_000;
+pub const REGION_MAX_SIDE: u32 = 4096;
+
+/// Original, unrotated page fractions; output allocation is independent of zoom.
+#[derive(Clone, Copy, Debug)]
+pub struct Region {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Copy)]
+struct RasterView { scale_x: f64, scale_y: f64, x: f64, y: f64, width: u32, height: u32 }
+impl RasterView {
+    fn affine(self) -> deckcraft_geom::Affine {
+        deckcraft_geom::Affine::new([self.scale_x, 0.0, 0.0, self.scale_y, self.x, self.y])
+    }
+    fn full_page(page_width: f64, page_height: f64, width: u32, height: u32) -> Result<Self, String> {
+        // The encoded canvas is the normalized page frame. Fit its rounded dimensions
+        // exactly so a source fraction names the same content in a base page and a region.
+        Region { left: 0.0, top: 0.0, right: 1.0, bottom: 1.0, width, height }.view(page_width, page_height)
+    }
+}
+impl Region {
+    fn checked(self) -> Result<Self, String> {
+        if ![self.left, self.top, self.right, self.bottom].iter().all(|v| v.is_finite())
+            || self.left < 0.0 || self.top < 0.0 || self.right > 1.0 || self.bottom > 1.0
+            || self.right <= self.left || self.bottom <= self.top
+            || self.width == 0 || self.height == 0 || self.width > REGION_MAX_SIDE || self.height > REGION_MAX_SIDE
+            || u64::from(self.width) * u64::from(self.height) > OUTPUT_PIXELS {
+            return Err("Invalid visual page region".into());
+        }
+        Ok(self)
+    }
+    fn view(self, page_width: f64, page_height: f64) -> Result<RasterView, String> {
+        self.checked()?;
+        // Reuse page-dimension admission, without the whole-page raster scale cap.
+        fit(page_width, page_height, 128)?;
+        let scale_x = f64::from(self.width) / (page_width * (self.right - self.left));
+        let scale_y = f64::from(self.height) / (page_height * (self.bottom - self.top));
+        let x = -self.left * page_width * scale_x;
+        let y = -self.top * page_height * scale_y;
+        // Keep transforms representable by the raster backend even for subnormal bounds.
+        if ![scale_x, scale_y, x, y].iter().all(|v| v.is_finite()) || scale_x <= 0.0 || scale_y <= 0.0
+            || scale_x > 1e6 || scale_y > 1e6 || x.abs() > 1e9 || y.abs() > 1e9 {
+            return Err("Visual region geometry exceeds the raster bounds".into());
+        }
+        Ok(RasterView { scale_x, scale_y, x, y, width: self.width, height: self.height })
+    }
+}
 
 #[derive(Debug)]
 pub struct Page {
@@ -335,8 +387,18 @@ pub fn render(
     kind: u32,
     page: u32,
     side: u32,
-    mut cancel: impl FnMut() -> bool,
+    cancel: impl FnMut() -> bool,
 ) -> Result<Page, String> {
+    render_target(bytes, kind, page, side, None, cancel)
+}
+
+pub fn render_region(bytes: &[u8], kind: u32, page: u32, region: Region,
+    cancel: impl FnMut() -> bool) -> Result<Page, String> {
+    render_target(bytes, kind, page, 0, Some(region), cancel)
+}
+
+fn render_target(bytes: &[u8], kind: u32, page: u32, side: u32, region: Option<Region>,
+    mut cancel: impl FnMut() -> bool) -> Result<Page, String> {
     let start = Instant::now();
     let mut check = || {
         if cancel() {
@@ -351,7 +413,8 @@ pub fn render(
     if bytes.is_empty() || bytes.len() > INPUT_LIMIT {
         return Err("Visual reader input limit is 16 MiB".into());
     }
-    if !(128..=MAX_SIDE).contains(&side) {
+    if let Some(region) = region { region.checked()?; }
+    else if !(128..=MAX_SIDE).contains(&side) {
         return Err("Output side must be 128 through 2800".into());
     }
     let _guard = loop {
@@ -391,21 +454,20 @@ pub fn render(
             }
             let index = page as usize;
             let p = &layout.pages[index];
-            let (k, _, _) = fit(p.w as f64, p.h as f64, side)?;
-            // WordCraft rasterizes in f32; predicting with f64 can differ by one pixel.
-            let scale = (k as f32).next_down();
-            let w = (p.w * scale).ceil().max(1.0) as u32;
-            let h = (p.h * scale).ceil().max(1.0) as u32;
-            if w > side || h > side {
-                return Err("DOCX output dimensions exceed the preview size".into());
-            }
-            let raster_regions = image_regions::word(&doc, p, scale, w, h, &mut check)?;
-            let output = wordcraft_render::render_page(
-                &doc,
-                p,
-                scale,
-                &wordcraft_render::RenderOptions::default(),
-            );
+            let view = if let Some(region) = region { region.view(p.w as f64, p.h as f64)? }
+            else {
+                let (k, _, _) = fit(p.w as f64, p.h as f64, side)?;
+                // Preserve the whole-page f32 output-dimension contract.
+                let scale = (k as f32).next_down();
+                let w = (p.w * scale).ceil().max(1.0) as u32;
+                let h = (p.h * scale).ceil().max(1.0) as u32;
+                if w > side || h > side { return Err("DOCX output dimensions exceed the preview size".into()); }
+                RasterView::full_page(p.w as f64, p.h as f64, w, h)?
+            };
+            let (w, h) = (view.width, view.height);
+            let raster_regions = image_regions::word_view(&doc, p, view.affine(), w, h, &mut check)?;
+            let output = wordcraft_render::render_region(&doc, p, w, h, view.affine(),
+                &wordcraft_render::RenderOptions::default());
             check()?;
             if output.width != w
                 || output.height != h
@@ -436,15 +498,22 @@ pub fn render(
                 return Err("Requested slide is outside this presentation".into());
             }
             let index = page as usize;
-            let (k, w, h) = fit(pres.slide_size.width, pres.slide_size.height, side)?;
+            let view = if let Some(region) = region { region.view(pres.slide_size.width, pres.slide_size.height)? }
+            else {
+                let (_, width, height) = fit(pres.slide_size.width, pres.slide_size.height, side)?;
+                RasterView::full_page(pres.slide_size.width, pres.slide_size.height, width, height)?
+            };
+            let (w, h) = (view.width, view.height);
             let mut opts = deckcraft_render::RenderOpts {
-                scale: k,
+                scale: view.scale_x,
+                offset: (view.x, view.y),
+                view: Some(view.affine()),
                 size: Some((w, h)),
                 threads: 0,
                 ..Default::default()
             };
             clear_opaque_slide_paper(&pres, index, &mut opts);
-            let raster_regions = image_regions::slide(&pres, index, k, w, h, &mut check)?;
+            let raster_regions = image_regions::slide_view(&pres, index, view.affine(), w, h, &mut check)?;
             let output = deckcraft_render::render_slide(&pres, index, &opts);
             check()?;
             if output.width != w
@@ -495,18 +564,15 @@ pub fn render(
                 offset += l.pages.len();
             }
             let chosen = chosen.ok_or("Worksheet print page unavailable")?;
-            let (scale, w, h) = fit(chosen.page_w as f64, chosen.page_h as f64, side)?;
-            let raster_regions = image_regions::sheet(&wb, &chosen, scale, w, h, &mut check)?;
-            let output = gridcraft_engine::cmd::print::render_raster(
-                &wb,
-                &[chosen],
-                "Document",
-                "",
-                w,
-                h,
-                scale,
-                index + 1,
-                total,
+            let view = if let Some(region) = region { region.view(chosen.page_w as f64, chosen.page_h as f64)? }
+            else {
+                let (_, width, height) = fit(chosen.page_w as f64, chosen.page_h as f64, side)?;
+                RasterView::full_page(chosen.page_w as f64, chosen.page_h as f64, width, height)?
+            };
+            let (w, h) = (view.width, view.height);
+            let raster_regions = image_regions::sheet_view(&wb, &chosen, view.affine(), w, h, &mut check)?;
+            let output = gridcraft_engine::cmd::print::render_raster_region(
+                &wb, &[chosen], "Document", "", w, h, view.scale_x, view.scale_y, view.x, view.y, index + 1, total,
             )?;
             check()?;
             if output.width != w || output.height != h {
@@ -535,7 +601,13 @@ pub fn render(
     Ok(result)
 }
 pub fn wire(result: Result<Page, String>) -> Vec<u8> {
-    let mut out = b"ZFR2".to_vec();
+    wire_target(result, None)
+}
+pub fn wire_region(result: Result<Page, String>, region: Region) -> Vec<u8> {
+    wire_target(result, Some(region))
+}
+fn wire_target(result: Result<Page, String>, region: Option<Region>) -> Vec<u8> {
+    let mut out = if region.is_some() { b"ZFR3" } else { b"ZFR2" }.to_vec();
     match result {
         Ok(p) => {
             for n in [
@@ -550,6 +622,11 @@ pub fn wire(result: Result<Page, String>) -> Vec<u8> {
                 out.extend_from_slice(&n.to_le_bytes())
             }
             out.extend_from_slice(&p.raster_regions.as_ref().map_or(u32::MAX, |r| r.len() as u32).to_le_bytes());
+            if let Some(region) = region {
+                for value in [region.left, region.top, region.right, region.bottom] {
+                    out.extend_from_slice(&(value as f32).to_le_bytes());
+                }
+            }
             if let Some(regions) = p.raster_regions {
                 for region in regions { for value in region { out.extend_from_slice(&value.to_le_bytes()); } }
             }
@@ -562,6 +639,11 @@ pub fn wire(result: Result<Page, String>) -> Vec<u8> {
                 out.extend_from_slice(&n.to_le_bytes())
             }
             out.extend_from_slice(&u32::MAX.to_le_bytes());
+            if let Some(region) = region {
+                for value in [region.left, region.top, region.right, region.bottom] {
+                    out.extend_from_slice(&(value as f32).to_le_bytes());
+                }
+            }
             out.extend_from_slice(e.as_bytes());
         }
     }

@@ -23,6 +23,7 @@ import java.util.concurrent.TimeUnit
 import app.smallthingz.alldoc.engine.DocumentOutlineEntry
 import app.smallthingz.alldoc.engine.DocumentNote
 import app.smallthingz.alldoc.engine.DocumentNotes
+import app.smallthingz.alldoc.engine.PageRegion
 import app.smallthingz.alldoc.theme.RasterRegion
 
 class PdfTextUnavailableException : IOException("PDF text extraction module is unavailable. Image pages remain available; OCR is not included.")
@@ -69,6 +70,37 @@ class PdfDocument private constructor(
 
     @Synchronized
     fun renderPrintPage(index: Int, width: Int, signal: CancellationSignal): Bitmap = render(index, width, signal, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
+
+    /** Rasterize source vectors directly into the visible region, without a whole-page intermediate. */
+    @Synchronized
+    fun renderRegion(index: Int, region: PageRegion, signal: CancellationSignal): Bitmap {
+        ready(signal)
+        require(index in 0 until pageCount) { "PDF page is out of range" }
+        return renderer.openPage(index).use { page ->
+            signal.throwIfCanceled()
+            require(page.width > 0 && page.height > 0) { "Invalid PDF page dimensions" }
+            val scaleX = (region.width.toDouble() / page.width / region.widthFraction).toFloat()
+            val scaleY = (region.height.toDouble() / page.height / region.heightFraction).toFloat()
+            val offsetX = (-region.left.toDouble() * region.width / region.widthFraction).toFloat()
+            val offsetY = (-region.top.toDouble() * region.height / region.heightFraction).toFloat()
+            require(scaleX.isFinite() && scaleY.isFinite() && offsetX.isFinite() && offsetY.isFinite()) {
+                "PDF region transform exceeds its coordinate limit"
+            }
+            val bitmap = Bitmap.createBitmap(region.width, region.height, Bitmap.Config.ARGB_8888)
+            try {
+                bitmap.eraseColor(Color.WHITE)
+                val matrix = Matrix().apply {
+                    setValues(floatArrayOf(scaleX, 0f, offsetX, 0f, scaleY, offsetY, 0f, 0f, 1f))
+                }
+                page.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                signal.throwIfCanceled()
+                bitmap
+            } catch (failure: Throwable) {
+                bitmap.recycle()
+                throw failure
+            }
+        }
+    }
 
     private fun render(index: Int, width: Int, signal: CancellationSignal, mode: Int): Bitmap {
         ready(signal)

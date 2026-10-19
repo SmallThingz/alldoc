@@ -474,3 +474,233 @@ fn stress_pinned_layered_presentation_renders_first_and_last() {
         assert_eq!(regions.is_empty(), index != 0);
     }
 }
+
+fn first_page_extent(input: &[u8], kind: u32) -> (f64, f64) {
+    match kind {
+        1 => {
+            let doc = wordcraft_docx::read(input).unwrap();
+            let layout = wordcraft_layout::layout(&doc, &mut wordcraft_layout::LayoutCache::new(),
+                &wordcraft_layout::LayoutOptions::default());
+            (layout.pages[0].w as f64, layout.pages[0].h as f64)
+        }
+        2 => {
+            let pres = deckcraft_pptx::import(input).unwrap();
+            (pres.slide_size.width, pres.slide_size.height)
+        }
+        3 => {
+            let (wb, _) = gridcraft_xlsx::read_xlsx(input).unwrap();
+            let layouts = gridcraft_engine::cmd::print::layouts(&wb,
+                &gridcraft_engine::cmd::print::PrintOptions { all_sheets: true, ..Default::default() });
+            let first = layouts.iter().find(|l| !l.pages.is_empty()).unwrap();
+            (first.page_w as f64, first.page_h as f64)
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn office_regions_match_off_center_crops_and_rasterize_new_deep_detail() {
+    for (input, kind) in [
+        (&include_bytes!("../../../../app/src/androidTest/assets/office/sample.docx")[..], 1),
+        (BASE, 2),
+        (&include_bytes!("../../../../app/src/androidTest/assets/office/sample.xlsx")[..], 3),
+    ] {
+        let (pw, ph) = first_page_extent(input, kind);
+        let full = render(input, kind, 0, 1400, || false).unwrap();
+        let (x, y) = (full.width / 10, full.height / 10);
+        let (width, height) = (full.width / 2, full.height / 2);
+        let region = Region { left: x as f64 / full.width as f64, top: y as f64 / full.height as f64,
+            right: (x + width) as f64 / full.width as f64, bottom: (y + height) as f64 / full.height as f64, width, height };
+        let detail = render_region(input, kind, 0, region, || false).unwrap();
+        assert_eq!((detail.width, detail.height, detail.page, detail.pages), (width, height, full.page, full.pages));
+        let full_pixels = image::load_from_memory(&full.data).unwrap().into_rgba8();
+        let expected = image::imageops::crop_imm(&full_pixels, x, y, width, height).to_image();
+        let actual = image::load_from_memory(&detail.data).unwrap().into_rgba8();
+        let error: u64 = expected.as_raw().iter().zip(actual.as_raw()).map(|(a, b)| a.abs_diff(*b) as u64).sum();
+        assert!(error as f64 / (expected.as_raw().len() as f64) < 1.0,
+            "kind {kind}: a translated native region must retain page content and glyph positions");
+        let low = Region { left: 0.05, top: 0.05, right: 0.30, bottom: 0.30,
+            width: 240, height: (240.0 * ph / pw).round() as u32 };
+        let high = Region { width: 1200, height: (1200.0 * ph / pw).round() as u32, ..low };
+        assert!(high.view(pw, ph).unwrap().scale_x > 4.0);
+        let low = render_region(input, kind, 0, low, || false).unwrap();
+        let high = render_region(input, kind, 0, high, || false).unwrap();
+        let low = image::load_from_memory(&low.data).unwrap().into_rgba8();
+        let high_pixels = image::load_from_memory(&high.data).unwrap().into_rgba8();
+        assert!(high_pixels.pixels().filter(|p| p.0[..3].iter().any(|c| *c < 160)).count() > 50);
+        let enlarged = image::imageops::resize(&low, high.width, high.height, image::imageops::FilterType::Triangle);
+        assert_ne!(high_pixels.as_raw(), enlarged.as_raw(), "kind {kind}: deep detail must rasterize source glyphs");
+        assert_eq!(high.raster_regions, Some(vec![]));
+    }
+}
+
+#[test]
+fn docx_deep_region_keeps_large_glyph_ink_when_its_origin_is_outside() {
+    let input = rewrite_parts(include_bytes!("../../../../app/src/androidTest/assets/office/sample.docx"), |name, data| {
+        if name == "word/document.xml" {
+            // 600 half-points is a valid 300pt authored run, using the existing open font.
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr><w:r><w:rPr>
+<w:rFonts w:ascii="Source Sans 3" w:hAnsi="Source Sans 3"/><w:b w:val="0"/><w:i w:val="0"/>
+<w:color w:val="000000"/><w:sz w:val="600"/><w:szCs w:val="600"/>
+</w:rPr><w:t>W</w:t></w:r></w:p>
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>
+</w:body></w:document>"#.to_vec()
+        } else { data }
+    });
+    let doc = wordcraft_docx::read(&input).unwrap();
+    let layout = wordcraft_layout::layout(&doc, &mut wordcraft_layout::LayoutCache::new(),
+        &wordcraft_layout::LayoutOptions::default());
+    assert_eq!(layout.pages.len(), 1);
+    let page = &layout.pages[0];
+    assert_eq!((page.w, page.h), (612.0, 792.0));
+    let items = wordcraft_layout::display::page_display(&doc, page, &Default::default());
+    let origins: Vec<_> = items.iter().filter_map(|item| match item {
+        wordcraft_layout::display::Draw::Glyphs { size, glyphs, text, .. } if text == "W" => {
+            assert_eq!(*size, 300.0);
+            assert_eq!(glyphs.len(), 1);
+            Some(glyphs[0].1 as f64)
+        }
+        _ => None,
+    }).collect();
+    assert_eq!(origins, vec![72.0]);
+
+    // The whole page is rendered independently at one pixel per source point.
+    let full = render(&input, 1, 0, 792, || false).unwrap();
+    assert_eq!((full.width, full.height, full.pages), (612, 792, 1));
+    let full_pixels = image::load_from_memory(&full.data).unwrap().into_rgb8();
+    let (x, width, height, scale) = (232, 96, 128, 16);
+    // This exercises the old origin-only cull, including its 40pt viewport inflation
+    // and 100pt left allowance. Actual raster ink below, not this predicate, is the oracle.
+    assert!(origins[0] < x as f64 - 40.0 - 100.0);
+    assert!(full_pixels.enumerate_pixels().filter(|(px, _, p)| *px < x && p.0 == [0, 0, 0]).count() > 256,
+        "The crop must include only part of the authored glyph");
+    let ink_top = (0..full.height).find(|y| (x..x + width)
+        .any(|px| full_pixels.get_pixel(px, *y).0.iter().any(|c| *c < 32)))
+        .expect("The whole-page glyph must visibly overlap the off-origin crop");
+    let y = ink_top + 16;
+    assert!(y + height < full.height);
+    let expected = image::imageops::crop_imm(&full_pixels, x, y, width, height).to_image();
+    let region = Region { left: x as f64 / full.width as f64, top: y as f64 / full.height as f64,
+        right: (x + width) as f64 / full.width as f64, bottom: (y + height) as f64 / full.height as f64,
+        width: width * scale, height: height * scale };
+    assert!(region.view(page.w as f64, page.h as f64).unwrap().scale_x > 15.0);
+    let detail = render_region(&input, 1, 0, region, || false).unwrap();
+    assert_eq!((detail.width, detail.height, detail.page, detail.pages), (1536, 2048, 0, 1));
+    assert_eq!(detail.raster_regions, Some(vec![]));
+    let actual = image::load_from_memory(&detail.data).unwrap().into_rgb8();
+    let (mut ink_samples, mut paper_samples) = (0, 0);
+    for py in 1..height - 1 {
+        for px in 1..width - 1 {
+            let color = expected.get_pixel(px, py).0;
+            if color != [0, 0, 0] && color != [255, 255, 255] { continue; }
+            // Compare strict interior pixels, leaving only scale-dependent antialiasing out.
+            if !(py - 1..=py + 1).all(|ny| (px - 1..=px + 1)
+                .all(|nx| expected.get_pixel(nx, ny).0 == color)) { continue; }
+            assert_eq!(actual.get_pixel(px * scale + scale / 2, py * scale + scale / 2).0, color,
+                "Deep DOCX crop lost whole-page ink/paper at source ({}, {})", x + px, y + py);
+            if color == [0, 0, 0] { ink_samples += 1; } else { paper_samples += 1; }
+        }
+    }
+    assert!(ink_samples > 256, "The whole-page oracle must contain substantial visible glyph ink");
+    assert!(paper_samples > 256, "The crop must also preserve surrounding page paper");
+}
+
+#[test]
+fn region_bounds_keep_tall_outputs_bounded_and_receipts_identify_the_viewport() {
+    let region = Region { left: 0.1, top: 0.1, right: 0.2, bottom: 0.3, width: 1600, height: 3200 };
+    assert!(region.view(100.0, 100.0).is_ok());
+    for bad in [Region { left: f64::NAN, ..region }, Region { right: 0.1, ..region },
+        Region { bottom: 1.1, ..region }, Region { width: 4097, ..region },
+        Region { width: 4096, height: 4096, ..region }] {
+        assert!(bad.checked().is_err());
+    }
+    let anisotropic = Region { height: 3100, ..region }.view(100.0, 100.0).unwrap();
+    assert_ne!(anisotropic.scale_x, anisotropic.scale_y);
+    let (pw, ph) = first_page_extent(BASE, 2);
+    let tall = Region { left: 0.0, top: 0.0, right: 0.01,
+        bottom: 3000.0 * pw * 0.01 / (256.0 * ph), width: 256, height: 3000 };
+    let page = render_region(BASE, 2, 0, tall, || false).unwrap();
+    assert_eq!((page.width, page.height), (256, 3000));
+    let wire = wire_region(Ok(page), tall);
+    assert_eq!(&wire[..4], b"ZFR3");
+    assert_eq!(f32::from_le_bytes(wire[44..48].try_into().unwrap()), tall.right as f32);
+    assert_eq!(render_region(BASE, 2, 0, tall, || true).unwrap_err(), "CANCELLED");
+    assert!(render(BASE, 2, 0, 3000, || false).is_err(), "full-page export retains its old side budget");
+}
+
+#[test]
+fn translated_picture_regions_enclose_the_actual_detail_pixels() {
+    let input = presentation(AUDIO, &opaque_picture_bytes());
+    let (pw, ph) = first_page_extent(&input, 2);
+    // The authored poster occupies [72,288]..[144,360] points.
+    let region = Region { left: 60.0 / pw, top: 280.0 / ph, right: 160.0 / pw, bottom: 380.0 / ph,
+        width: 800, height: 773 };
+    let page = render_region(&input, 2, 0, region, || false).unwrap();
+    let bounds = page.raster_regions.unwrap();
+    assert!(!bounds.is_empty());
+    let pixels = image::load_from_memory(&page.data).unwrap().into_rgba8();
+    let mut count = 0;
+    for (x, y, _) in pixels.enumerate_pixels().filter(|(_, _, p)| p.0 == [217, 17, 191, 255]) {
+        count += 1;
+        let (x, y) = ((x as f32 + 0.5) / region.width as f32, (y as f32 + 0.5) / region.height as f32);
+        assert!(bounds.iter().any(|r| x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3]));
+    }
+    assert!(count > 1000);
+}
+
+#[test]
+fn region_affines_map_all_four_requested_corners_without_base_rounding_loss() {
+    for (pw, ph) in [(39.0, 11.0), (39.3, 11.2), (612.35, 792.1), (720.0, 540.0)] {
+        let region = Region { left: 0.17, top: 0.23, right: 0.83, bottom: 0.91, width: 731, height: 2003 };
+        let view = region.view(pw, ph).unwrap();
+        for (x, y, ox, oy) in [(region.left, region.top, 0.0, 0.0),
+            (region.right, region.top, region.width as f64, 0.0),
+            (region.left, region.bottom, 0.0, region.height as f64),
+            (region.right, region.bottom, region.width as f64, region.height as f64)] {
+            let mapped = view.affine() * deckcraft_geom::Point::new(x * pw, y * ph);
+            assert!((mapped.x - ox).abs() < 1e-8 && (mapped.y - oy).abs() < 1e-8);
+        }
+    }
+}
+
+#[test]
+fn odd_slide_aspect_keeps_both_bottom_corners_at_base_rounded_detail_dimensions() {
+    let (cx, cy) = (499_110, 142_240); // 39.3 x 11.2 points; base ceil dimensions are79x23.
+    let colors = ["E02030", "20B040", "3040D0", "D0A020"];
+    let mut shapes = String::new();
+    for (i, color) in colors.iter().enumerate() {
+        let (x, y) = ((i % 2) as i32 * cx / 2, (i / 2) as i32 * cy / 2);
+        shapes.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{}" name="Corner"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{}" cy="{}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="{color}"/></a:solidFill><a:ln><a:noFill/></a:ln></p:spPr></p:sp>"#, 100 + i, cx / 2, cy / 2));
+    }
+    let input = rewrite_parts(BASE, |name, data| {
+        if name == "ppt/presentation.xml" {
+            String::from_utf8(data).unwrap().replace(
+                r#"<p:sldSz cx="9144000" cy="6858000" type="screen4x3"/>"#,
+                &format!(r#"<p:sldSz cx="{cx}" cy="{cy}" type="custom"/>"#)).into_bytes()
+        } else if name == "ppt/slides/slide1.xml" {
+            String::from_utf8(data).unwrap().replace("</p:spTree>", &format!("{shapes}</p:spTree>")).into_bytes()
+        } else { data }
+    });
+    let base = render(&input, 2, 0, 1400, || false).unwrap();
+    assert_eq!((base.width, base.height), (79, 23));
+    let crop = Region { left: 10.0 / base.width as f64, top: 3.0 / base.height as f64,
+        right: 69.0 / base.width as f64, bottom: 20.0 / base.height as f64, width: 59, height: 17 };
+    let cropped = render_region(&input, 2, 0, crop, || false).unwrap();
+    let base_pixels = image::load_from_memory(&base.data).unwrap().into_rgb8();
+    let expected = image::imageops::crop_imm(&base_pixels, 10, 3, 59, 17).to_image();
+    let actual = image::load_from_memory(&cropped.data).unwrap().into_rgb8();
+    let error: u64 = expected.as_raw().iter().zip(actual.as_raw()).map(|(a, b)| a.abs_diff(*b) as u64).sum();
+    assert!(error as f64 / (expected.as_raw().len() as f64) < 1.0,
+        "Ceil-sized base canvas and normalized detail must place the same source edges identically");
+    let region = Region { left: 0.0, top: 0.0, right: 1.0, bottom: 1.0,
+        width: 1600, height: (1600.0 * base.height as f64 / base.width as f64).round() as u32 };
+    let page = render_region(&input, 2, 0, region, || false).unwrap();
+    let image = image::load_from_memory(&page.data).unwrap().into_rgb8();
+    for (x, y, color) in [(10, 10, [224, 32, 48]), (region.width - 11, 10, [32, 176, 64]),
+        (10, region.height - 11, [48, 64, 208]), (region.width - 11, region.height - 11, [208, 160, 32])] {
+        assert_eq!(image.get_pixel(x, y).0, color, "Requested corners must not lose source pixels");
+    }
+    assert_eq!(page.raster_regions, Some(vec![]));
+}

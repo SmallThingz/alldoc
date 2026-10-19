@@ -241,7 +241,7 @@
      match it {
          Draw::Fill { rect, color: c, alpha } => {
              let r = kurbo::Rect::new(rect.x as f64, rect.y as f64, rect.right() as f64, rect.bottom() as f64);
-@@ -277,28 +256,37 @@
+@@ -277,28 +256,35 @@
              line(ctx, 0.0);
          }
          Draw::Glyphs { face, size, glyphs, color: c, alpha, synth_bold, synth_italic, .. } => {
@@ -252,10 +252,8 @@
 +                peniko::FontData::new(peniko::Blob::new(face.shared_data()), face.index()));
 +            let coords: Vec<i16> = face.location().coords().iter().map(|c| c.to_bits()).collect();
              let skew = if *synth_italic { Affine::new([1.0, 0.0, -0.21, 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
-+            let visible_glyphs = glyphs.iter().filter(|(_, x, y)| {
-+                let (x, y) = (*x as f64, *y as f64);
-+                x >= visible.x0 - 100.0 && x <= visible.x1 && y >= visible.y0 && y <= visible.y1 + 200.0
-+            });
++            // Glyph origins can lie outside a region while their ink overlaps it.
++            // Vello clips glyph paths and synthetic-bold strokes to the viewport.
 +            let opacity = alpha.clamp(0.0, 1.0);
 +            if opacity <= 0.0 { return; }
 +            ctx.set_transform(view);
@@ -265,7 +263,7 @@
 +            ctx.set_paint(color(*c, 1.0));
 +            ctx.glyph_run(resources, font).font_size(*size).hint(false)
 +                .normalized_coords(&coords).glyph_transform(skew).atlas_cache(false)
-+                .fill_glyphs(visible_glyphs.clone().map(|(id, x, y)|
++                .fill_glyphs(glyphs.iter().map(|(id, x, y)|
 +                    vello_cpu::Glyph { id: *id, x: *x, y: *y }));
 +            // Retain the existing synthetic-bold outline width. Color bitmap
 +            // glyphs have no outline and keep their native artwork.
@@ -277,7 +275,7 @@
 -                let (gx, gy) = (*x as f64, *y as f64);
 -                if gx < visible.x0 - 100.0 || gx > visible.x1 || gy < visible.y0 || gy > visible.y1 + 200.0 {
 -                    continue;
-+                for (id, x, y) in visible_glyphs {
++                for (id, x, y) in glyphs {
 +                    let outline = FontDb::global().outline(face, *id);
 +                    ctx.set_transform(view * Affine::translate((*x as f64, *y as f64)) * skew * Affine::scale(k));
 +                    ctx.stroke_path(&outline);

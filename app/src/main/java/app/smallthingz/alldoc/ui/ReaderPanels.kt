@@ -91,15 +91,20 @@ internal fun ReaderSheet(
         modifier = Modifier.semantics { paneTitle = title },
         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh) {
         ReaderModalWindow()
-        val acceptingInput = !dismissing && !(state.isAnimationRunning && state.targetValue == SheetValue.Hidden)
-        ReaderDialogContent(title, dismiss, Modifier.fillMaxWidth().readerInput(acceptingInput)
-            .onPreviewKeyEvent { event ->
-                if (dismissing || state.targetValue == SheetValue.Hidden) true
-                else if (event.key != Key.Escape) false else {
-                    if (event.type == KeyEventType.KeyUp) dismiss()
-                    true
-                }
-            }, buttons, showTitle, content)
+        val parentInputAllowed = LocalReaderInputAllowed.current
+        val inputAllowed = remember(parentInputAllowed, state) {
+            { parentInputAllowed() && !dismissing && state.targetValue != SheetValue.Hidden }
+        }
+        CompositionLocalProvider(LocalReaderInputAllowed provides inputAllowed) {
+            ReaderDialogContent(title, dismiss, Modifier.fillMaxWidth().readerInput(inputAllowed())
+                .onPreviewKeyEvent { event ->
+                    if (dismissing || state.targetValue == SheetValue.Hidden) true
+                    else if (event.key != Key.Escape) false else {
+                        if (event.type == KeyEventType.KeyUp) dismiss()
+                        true
+                    }
+                }, buttons, showTitle, content)
+        }
     }
 }
 
@@ -250,8 +255,6 @@ internal fun ReaderPanels(
                 }
             }
         }
-        "limits" -> CopyLimitsDialog(model.copySettings, model::updateCopySettings, onDismiss = { onDismiss(panel) },
-            enabled = model.compoundSettingsReady && !model.storageBusy)
         "about" -> ReaderTopPanel("AllDoc", { onDismiss(panel) }, showTitle = false) {
             Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {

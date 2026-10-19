@@ -6,6 +6,7 @@ import app.smallthingz.alldoc.core.MarkdownDocument
 import app.smallthingz.alldoc.theme.RasterRegion
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
+import app.smallthingz.alldoc.theme.RegionThemeContext
 import java.io.Closeable
 
 data class DocumentInfo(
@@ -59,6 +60,20 @@ interface DocumentSession : Closeable {
     fun text(signal: CancellationSignal): String
     fun json(signal: CancellationSignal): String
     fun renderPage(index: Int, width: Int, settings: ThemeSettings, signal: CancellationSignal): Bitmap
+    /** Themes a caller-owned full page after margin detection, using the same policy as native detail. */
+    fun themePage(index: Int, bitmap: Bitmap, settings: ThemeSettings, signal: CancellationSignal): Bitmap =
+        themed(bitmap, settings, signal, rasterRegionsFor(index, settings, signal))
+    /** Snapshot the just-themed page's policy without rendering or rebuilding it. */
+    fun pageThemeContext(index: Int, settings: ThemeSettings, signal: CancellationSignal): RegionThemeContext? {
+        signal.throwIfCanceled(); return null
+    }
+    /** Optional native-detail viewport. Null means this source has no region renderer. */
+    fun renderRegion(index: Int, region: PageRegion, settings: ThemeSettings, signal: CancellationSignal): Bitmap? {
+        signal.throwIfCanceled(); return null
+    }
+    /** A retained base page supplies its exact policy even after an engine's one-entry cache changes. */
+    fun renderRegionWithContext(index: Int, region: PageRegion, settings: ThemeSettings, signal: CancellationSignal,
+        context: RegionThemeContext?): Bitmap? = renderRegion(index, region, settings, signal)
     /** Optional original-color top viewport for a continuous document; never a cropped export. */
     fun renderCover(index: Int, width: Int, height: Int, signal: CancellationSignal): Bitmap? { signal.throwIfCanceled(); return null }
     fun renderPrintPage(index: Int, width: Int, signal: CancellationSignal): Bitmap =

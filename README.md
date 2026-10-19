@@ -10,13 +10,13 @@ Offline document reader for Android. Open documents, keep your place, and share 
 
 - **Reading views.** Scroll documents vertically or pan spreadsheet grids in Normal; move one page at a time in Present. Markdown has one continuous formatted reading view, with a Text alternative. Extractable documents also offer a Text view.
 - **Your place, remembered.** Position, zoom, rotation, reading view and appearance follow the document's SHA-256 hash, even when its name or source changes.
-- **Recents and Library.** Six recent documents, a three-column cover grid, incremental content-aware indexing, type groups and fuzzy filename filtering. Open individual files or grant access to storage and selected folders.
+- **Recents and Library.** Six recent documents, a three-column cover grid, incremental content-aware indexing, type groups and fuzzy filename filtering. Open individual files or grant shared-storage access. Library keeps its own document-type filters.
 - **Document colors.** System, Light, Dark, Paper, Original, Contrast and Invert, with separate image handling. Paper roughness is adjustable; System, Light, Dark and AMOLED app themes are independent of document colors.
 - **Notes and navigation.** Search, PDF contents, and supported speaker notes/comments below the page in portrait or alongside it in landscape.
 - **Export and integration.** Text, hierarchical JSON, page images and Print to PDF. Descriptor-based previews for Android apps; OACP capabilities for assistants.
 - **Debug examples.** Debug builds include 46 small offline documents, one per supported extension. Release builds omit them.
 
-Temporary shares can be retained as deduplicated copies in **Documents/AllDoc**, with a configurable storage limit and a bounded file count. Source files remain separate from the reader's working cache. [Reading state and storage](docs/STATE.md).
+Temporary shares can be retained as deduplicated copies in **Documents/AllDoc**, with an inline storage slider from Off through 4096 MB, plus Unlimited. A separate safety cap bounds the copy index. Source files remain separate from the reader's working cache. [Reading state and storage](docs/STATE.md).
 
 **Android 9+ · `app.smallthingz.alldoc` · arm64 and x86-64**
 

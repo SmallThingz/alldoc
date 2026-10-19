@@ -15,6 +15,9 @@ import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import app.smallthingz.alldoc.core.takeScalarSafe
 import app.smallthingz.alldoc.core.DocumentFormats
@@ -227,12 +230,45 @@ internal class ImportCopies(private val context: Context) {
     }
 
     fun retain(snapshot: File, hash: String, name: String, mime: String?, source: Uri?, recoverable: Boolean,
-        settings: CopySettings, signal: CancellationSignal): Result = synchronized(lock) {
+        settings: CopySettings, signal: CancellationSignal): Result {
+        val evicted = mutableListOf<String>()
+        val warnings = linkedSetOf<String>()
+        while (true) {
+            try {
+                return synchronized(lock) {
+                    retainLocked(snapshot, hash, name, mime, source, recoverable, settings, signal, evicted)
+                }.let { result ->
+                    result.warning?.let(warnings::add)
+                    result.copy(warning = warnings.takeIf { it.isNotEmpty() }?.joinToString(" "))
+                }
+            } catch (room: RoomNeeded) {
+                room.warning?.let(warnings::add)
+                val ready = try { makeRoom(settings, room.bytes, evicted, room.adding, signal) }
+                catch (failure: Exception) {
+                    signal.throwIfCanceled()
+                    Log.w("AllDoc", "Cannot free saved-copy storage", failure)
+                    false
+                }
+                if (!ready) return synchronized(lock) {
+                    val retained = find("hash=? AND pending=0", arrayOf(hash))?.uri
+                        ?.takeIf { it == room.verifiedUri }?.let(Uri::parse)
+                    warnings += if (retained != null) "Saved-copy cleanup is pending."
+                        else "Could not save a copy. Saved-copy cleanup is pending."
+                    Result(retained, room.ownSource, evicted, warnings.joinToString(" "), verified = retained != null)
+                }
+            }
+        }
+    }
+
+    private class RoomNeeded(val bytes: Long, val adding: Boolean, val ownSource: Boolean,
+        val verifiedUri: String?, val warning: String?) : Exception()
+
+    private fun retainLocked(snapshot: File, hash: String, name: String, mime: String?, source: Uri?, recoverable: Boolean,
+        settings: CopySettings, signal: CancellationSignal, evicted: MutableList<String>): Result {
         validate(settings)
         evictionCount = null
         signal.throwIfCanceled()
         var warning = recover(signal)
-        val evicted = mutableListOf<String>()
         var existing = find("hash=?", arrayOf(hash))
         var origin = source?.let { uri ->
             (claimedEntry(uri, hash, name, signal) ?: physicalEntry(uri, hash, name, signal))?.takeIf { it.pending == 0 }
@@ -254,7 +290,7 @@ internal class ImportCopies(private val context: Context) {
                 db.beginTransaction()
                 try {
                     invalidate(origin)
-                    db.delete("copies", "hash=?", arrayOf(origin.hash))
+                    deleteRow(origin.hash)
                     existing = origin.copy(hash = hash, bytes = snapshot.length(), touched = now())
                     save(checkNotNull(existing)); db.setTransactionSuccessful()
                 } finally { db.endTransaction() }
@@ -266,9 +302,9 @@ internal class ImportCopies(private val context: Context) {
                 if (sameSource || matches(entry, hash, signal)) {
                     val updated = rename(entry.copy(mime = sourceMime ?: entry.mime), logicalName(name)).copy(touched = now())
                     save(updated)
-                    trim(settings, evicted, signal)
+                    requireRoom(settings, 0, false, ownSource, updated.uri, warning)
                     val retained = find("hash=? AND pending=0", arrayOf(hash))?.uri?.let(Uri::parse)
-                    return@synchronized Result(retained, ownSource, evicted, warning, verified = retained != null)
+                    return Result(retained, ownSource, evicted, warning, verified = retained != null)
                 }
                 // This owned retained copy no longer matches its recorded identity.
                 if (entry.saf) forget(entry) else remove(entry, signal)
@@ -276,13 +312,13 @@ internal class ImportCopies(private val context: Context) {
                 existing = null
                 warning = "A saved copy changed."
             }
-            if (existing != null) return@synchronized Result(null, ownSource, evicted, "A saved copy needs cleanup.")
-            trim(settings, evicted, signal)
+            if (existing != null) return Result(null, ownSource, evicted, "A saved copy needs cleanup.")
+            requireRoom(settings, 0, false, ownSource, warning = warning)
             if (!settings.enabled || recoverable || ownSource)
-                return@synchronized Result(null, ownSource, evicted, warning)
+                return Result(null, ownSource, evicted, warning)
             if (snapshot.length() > settings.maxBytes)
-                return@synchronized Result(null, false, evicted, "File exceeds the saved-copy limit.")
-            makeRoom(settings, snapshot.length(), evicted, signal = signal)
+                return Result(null, false, evicted, "File exceeds the saved-copy limit.")
+            requireRoom(settings, snapshot.length(), true, ownSource, warning = warning)
             val target = settings.treeUri ?: if (Build.VERSION.SDK_INT >= 29) "media" else "private"
             val entry = Entry(hash, logicalName(name), sourceMime ?: mime ?: "application/octet-stream", snapshot.length(), null,
                 target, UUID.randomUUID().toString(), 1, Process.myPid(), now())
@@ -294,63 +330,150 @@ internal class ImportCopies(private val context: Context) {
                 warning = "Copy saved in app storage."
                 create(entry.copy(target = "private", token = UUID.randomUUID().toString()), snapshot, signal)
             }
-            Result(Uri.parse(saved.uri), false, evicted, warning, verified = true)
+            return Result(Uri.parse(saved.uri), false, evicted, warning, verified = true)
+        } catch (room: RoomNeeded) { throw room
         } catch (failure: Exception) {
             signal.throwIfCanceled()
             Log.w("AllDoc", "Cannot retain saved copy", failure)
-            Result(find("hash=? AND pending=0", arrayOf(hash))?.uri?.let(Uri::parse), ownSource, evicted,
+            return Result(find("hash=? AND pending=0", arrayOf(hash))?.uri?.let(Uri::parse), ownSource, evicted,
                 "Could not save a copy.")
         }
     }
 
-    fun status(settings: CopySettings): CopyStatus = synchronized(lock) {
+    /** Observe current ownership without replaying recovery or deleting any retained payload. */
+    fun observeStatus(settings: CopySettings): CopyStatus = synchronized(lock) {
         validate(settings)
-        evictionCount = null
-        var warning = recover()
+        val usage = usage()
+        CopyStatus(usage.first, usage.second, if (settings.treeUri != null) "Chosen folder"
+            else if (Build.VERSION.SDK_INT >= 29) "Documents/AllDoc" else "Private app storage")
+    }
+
+    fun status(settings: CopySettings): CopyStatus {
+        var warning = synchronized(lock) { validate(settings); evictionCount = null; recover() }
         val evicted = mutableListOf<String>()
-        try { trim(settings, evicted) } catch (failure: Exception) {
+        var failed = false
+        try { if (settings.enabled) makeRoom(settings, 0, evicted, false) } catch (failure: Exception) {
+            failed = true
             Log.w("AllDoc", "Cannot trim saved-copy storage", failure)
             warning = "Could not free saved-copy storage."
         }
-        val usage = usage()
-        CopyStatus(usage.first, usage.second, if (settings.treeUri != null) "Chosen folder"
-            else if (Build.VERSION.SDK_INT >= 29) "Documents/AllDoc" else "Private app storage", warning, evicted)
+        val usage = synchronized(lock) { usage() }
+        return CopyStatus(usage.first, usage.second, if (settings.treeUri != null) "Chosen folder"
+            else if (Build.VERSION.SDK_INT >= 29) "Documents/AllDoc" else "Private app storage", warning, evicted,
+            trimPending = !failed && settings.enabled && !fits(settings, usage.first, usage.second, 0, false))
     }
 
-    fun clear(): CopyChange = synchronized(lock) {
-        evictionCount = null
-        var warning = recover()
+    fun clear(after: String? = null): CopyChange {
+        var warning = synchronized(lock) { evictionCount = null; recover() }
         val evicted = mutableListOf<String>()
-        val hashes = db.rawQuery("SELECT hash FROM copies ORDER BY touched LIMIT 10000", null).use { cursor ->
-            buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
-        }
         var failed = false
-        for (hash in hashes) {
-            val entry = find("hash=?", arrayOf(hash)) ?: continue
-            try { remove(entry); evicted += entry.hash } catch (failure: Exception) {
+        val hashes = synchronized(lock) {
+            db.rawQuery("SELECT hash FROM copies WHERE hash>? ORDER BY hash LIMIT 256", arrayOf(after.orEmpty())).use { cursor ->
+                buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
+            }
+        }
+        var index = 0
+        while (index < hashes.size) synchronized(lock) {
+            evictionCount = null // Another caller may have changed the journal between durable units.
+            val entry = find("hash=?", arrayOf(hashes[index]))
+            if (entry == null) { index++; return@synchronized }
+            try {
+                if (missingPrivate(entry)) {
+                    val pending = db.rawQuery("SELECT COUNT(*) FROM evictions", null).use { it.moveToFirst(); it.getInt(0) }
+                    evictionCount = pending
+                    val limit = minOf(MISSING_BATCH, hashes.size - index, 20000 - pending)
+                    if (limit <= 0) throw IOException("Saved-copy history needs synchronization.")
+                    val missing = arrayListOf(entry)
+                    for (offset in 1 until limit) {
+                        val next = find("hash=?", arrayOf(hashes[index + offset])) ?: break
+                        if (!missingPrivate(next)) break
+                        missing += next
+                    }
+                    forgetMissing(missing)
+                    missing.forEach { evicted += it.hash }
+                    index += missing.size
+                } else {
+                    remove(entry); evicted += entry.hash; index++
+                }
+            } catch (failure: Exception) {
                 if (!failed) Log.w("AllDoc", "Cannot remove saved copies", failure)
                 failed = true
                 warning = "Some saved copies could not be removed."
+                index++
             }
         }
-        CopyChange(evicted, warning)
+        return CopyChange(evicted, warning, hashes.lastOrNull().takeIf { hashes.size == 256 })
     }
 
     private fun validate(settings: CopySettings) {
-        require(settings.maxBytes in 1..(8L * 1024 * 1024 * 1024) && settings.maxCount in 1..10000)
+        settings.validate()
         require(settings.treeUri == null || settings.treeUri.length <= 4096)
     }
     private fun usage(): Pair<Long, Int> = db.rawQuery("SELECT COALESCE(SUM(bytes),0),COUNT(*) FROM copies", null).use {
         it.moveToFirst(); it.getLong(0) to it.getInt(1)
     }
-    private fun trim(settings: CopySettings, evicted: MutableList<String>, signal: CancellationSignal = CancellationSignal()) =
-        makeRoom(settings, 0, evicted, false, signal)
-    private fun makeRoom(settings: CopySettings, size: Long, evicted: MutableList<String>, adding: Boolean = true, signal: CancellationSignal = CancellationSignal()) {
-        val usage = usage(); var bytes = usage.first; var count = usage.second
-        while (bytes + size > settings.maxBytes || count + (if (adding) 1 else 0) > settings.maxCount) {
+    private fun fits(settings: CopySettings, bytes: Long, count: Int, size: Long, adding: Boolean) =
+        size <= settings.maxBytes && bytes <= settings.maxBytes - size &&
+            count + (if (adding) 1 else 0) <= settings.maxCount
+
+    private fun requireRoom(settings: CopySettings, size: Long, adding: Boolean, ownSource: Boolean,
+        verifiedUri: String? = null, warning: String? = null) {
+        // Off stops retaining new files; existing copies stay available.
+        if (!settings.enabled) return
+        val usage = usage()
+        if (!fits(settings, usage.first, usage.second, size, adding)) throw RoomNeeded(size, adding, ownSource, verifiedUri, warning)
+    }
+
+    /** At most 32 absent private entries per lock acquisition, 256 deletions per reconciliation. */
+    private fun makeRoom(settings: CopySettings, size: Long, evicted: MutableList<String>, adding: Boolean,
+        signal: CancellationSignal = CancellationSignal()): Boolean {
+        var observedRevision = -1L
+        var bytes = 0L
+        var count = 0
+        while (true) {
             signal.throwIfCanceled()
-            val entry = find("1", emptyArray()) ?: throw IOException("Saved-copy storage is full.")
-            remove(entry, signal); evicted += entry.hash; bytes -= entry.bytes; count--
+            val finished = synchronized(lock) {
+                // Recount only after another operation changed the index, not once per deleted row.
+                if (observedRevision != mutationRevision) {
+                    val usage = usage(); bytes = usage.first; count = usage.second
+                }
+                if (fits(settings, bytes, count, size, adding)) true
+                else if (evicted.size >= 256) false
+                else {
+                    evictionCount = null // Other instances may reconcile receipts between durable units.
+                    val pending = db.rawQuery("SELECT COUNT(*) FROM evictions", null).use { it.moveToFirst(); it.getInt(0) }
+                    evictionCount = pending
+                    if (pending >= 20000) false
+                    else {
+                        val limit = minOf(MISSING_BATCH, 256 - evicted.size, 20000 - pending)
+                        val missing = ArrayList<Entry>(limit)
+                        var oldest: Entry? = null
+                        var remainingBytes = bytes
+                        var remainingCount = count
+                        db.query("copies", null, null, null, null, null, "touched", limit.toString()).use { cursor ->
+                            while (cursor.moveToNext()) {
+                                signal.throwIfCanceled()
+                                val entry = cursor.entry()
+                                if (oldest == null) oldest = entry
+                                if (!missingPrivate(entry)) break
+                                missing += entry; remainingBytes -= entry.bytes; remainingCount--
+                                if (fits(settings, remainingBytes, remainingCount, size, adding)) break
+                            }
+                        }
+                        if (missing.isEmpty()) {
+                            val entry = oldest ?: throw IOException("Saved-copy storage is full.")
+                            remove(entry, signal); evicted += entry.hash; bytes -= entry.bytes; count--
+                        } else {
+                            forgetMissing(missing, signal)
+                            missing.forEach { evicted += it.hash }
+                            bytes = remainingBytes; count = remainingCount
+                        }
+                        observedRevision = mutationRevision
+                        null
+                    }
+                }
+            }
+            if (finished != null) return finished
         }
     }
     private fun find(where: String, args: Array<String>): Entry? = db.query("copies", null, where, args, null, null, "touched", "1").use {
@@ -367,7 +490,9 @@ internal class ImportCopies(private val context: Context) {
             put("owner", entry.owner); put("touched", entry.touched)
         }
         db.insertWithOnConflict("copies", null, values, SQLiteDatabase.CONFLICT_REPLACE).also { check(it != -1L) }
+        mutationRevision++
     }
+    private fun deleteRow(hash: String) { db.delete("copies", "hash=?", arrayOf(hash)); mutationRevision++ }
     private fun invalidate(entry: Entry) {
         if (entry.uri == null || entry.pending == 1) return
         val count = evictionCount ?: db.rawQuery("SELECT COUNT(*) FROM evictions", null).use { it.moveToFirst(); it.getInt(0) }
@@ -375,9 +500,35 @@ internal class ImportCopies(private val context: Context) {
         db.execSQL("INSERT INTO evictions(hash,uri) VALUES(?,?)", arrayOf<Any?>(entry.hash, entry.uri))
         evictionCount = count + 1
     }
+    private fun missingPrivate(entry: Entry): Boolean {
+        if (entry.pending != 0 || entry.target != "private") return false
+        val uri = entry.uri?.let(Uri::parse) ?: return false
+        if (uri.scheme != "file") return false
+        return try {
+            val file = File(uri.path ?: return false)
+            if (file.canonicalFile.parentFile != privateDirectory().canonicalFile) false
+            else try { Os.lstat(file.path); false }
+            catch (failure: ErrnoException) { failure.errno == OsConstants.ENOENT }
+        } catch (_: IOException) { false }
+        catch (_: SecurityException) { false }
+    }
+    /** The shared lock covers fresh ownership/absence checks and this bounded atomic index update. */
+    private fun forgetMissing(entries: List<Entry>, signal: CancellationSignal = CancellationSignal()) {
+        db.beginTransaction()
+        try {
+            for (entry in entries) {
+                signal.throwIfCanceled()
+                invalidate(entry); deleteRow(entry.hash)
+            }
+            signal.throwIfCanceled()
+            db.setTransactionSuccessful()
+        } finally {
+            try { db.endTransaction() } finally { evictionCount = null }
+        }
+    }
     private fun forget(entry: Entry) {
         db.beginTransaction()
-        try { invalidate(entry); db.delete("copies", "hash=?", arrayOf(entry.hash)); db.setTransactionSuccessful() }
+        try { invalidate(entry); deleteRow(entry.hash); db.setTransactionSuccessful() }
         finally { db.endTransaction() }
     }
     // 0 published; 1 creating; 2 deleting; 3 renaming; 4 deleting an interrupted rename.
@@ -406,7 +557,7 @@ internal class ImportCopies(private val context: Context) {
             verified == true
         } else candidates
         owned.forEach { signal.throwIfCanceled(); delete(it, entry.target, signal) }
-        db.delete("copies", "hash=?", arrayOf(entry.hash))
+        deleteRow(entry.hash)
     }
 
     /** Journal precedes provider creation; recovery can locate a creation interrupted before URI commit. */
@@ -634,7 +785,9 @@ internal class ImportCopies(private val context: Context) {
     private fun now() = System.currentTimeMillis()
     companion object {
         private val lock = Any()
+        private var mutationRevision = 0L // Protected by lock; conservative across separate copy indexes.
         private val generation = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+        private const val MISSING_BATCH = 32
         private const val MAX_URI = 4096
         private const val MAX_INPUT = 128L * 1024 * 1024
     }

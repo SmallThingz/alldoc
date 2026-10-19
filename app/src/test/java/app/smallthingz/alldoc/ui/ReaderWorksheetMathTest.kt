@@ -3,6 +3,7 @@ package app.smallthingz.alldoc.ui
 import androidx.compose.ui.unit.IntSize
 import app.smallthingz.alldoc.engine.SheetGeometry
 import app.smallthingz.alldoc.engine.SheetInfo
+import app.smallthingz.alldoc.engine.SheetViewport
 import app.smallthingz.alldoc.state.SheetPosition
 import org.junit.Assert.*
 import org.junit.Test
@@ -33,21 +34,64 @@ class ReaderWorksheetMathTest {
 
     @Test fun quantizedRequestsCoverVisibleCellsAtPhoneAndLargeDisplaySizes() {
         for (width in listOf(360.0, 1080.0, 3840.0, 7680.0)) {
-            for (zoom in listOf(.25f, 1f, 8f)) {
+            for (zoom in listOf(.25f, 1f, 8f, 16f, 32f)) {
                 val position = SheetPosition(1, 12345.0, 34567.0, zoom)
                 val height = width * .6
                 val request = worksheetRequest(position, width, height, 1.0)
                 val visibleScale = worksheetScale(zoom, 1.0)
-                assertTrue(request.width in 1..2800 && request.height in 1..2800)
-                assertTrue(request.width.toLong() * request.height <= 8L * 1024 * 1024)
-                assertTrue(request.scale in .0625..32.0)
+                assertTrue(request.width in 1..SheetViewport.MAX_EDGE && request.height in 1..SheetViewport.MAX_EDGE)
+                assertTrue(request.width.toLong() * request.height <= SheetViewport.MAX_PIXELS)
+                assertTrue(request.scale in SheetViewport.MIN_SCALE..SheetViewport.MAX_SCALE)
                 assertTrue(request.x <= position.x && request.y <= position.y)
                 assertTrue(request.x + request.width / request.scale >= position.x + width / visibleScale)
                 assertTrue(request.y + request.height / request.scale >= position.y + height / visibleScale)
             }
         }
-        assertEquals(worksheetRequest(SheetPosition(x = 100.0), 800.0, 600.0, 1.0),
-            worksheetRequest(SheetPosition(x = 101.0), 800.0, 600.0, 1.0))
+        assertEquals(worksheetRequest(SheetPosition(sheet = 0, x = 100.0), 800.0, 600.0, 1.0),
+            worksheetRequest(SheetPosition(sheet = 0, x = 101.0), 800.0, 600.0, 1.0))
+    }
+
+    @Test fun visiblePixelsKeepTheirDensityWhenOnlyOverscanExceedsTheRasterBudget() {
+        val position = SheetPosition(2, 1234.25, 5678.5, 32f)
+        for (size in listOf(1080 to 2400, 2800 to 1800, 4000 to 1800, 4096 to 1600, 2800 to 2800, 4000 to 2000)) {
+            val request = worksheetRequest(position, size.first.toDouble(), size.second.toDouble(), 4.0)
+            assertEquals("Visible pixels take priority over padding at $size", 128.0, request.scale, 0.0)
+            assertTrue(request.width >= size.first && request.height >= size.second)
+            assertTrue(request.width.toLong() * request.height <= SheetViewport.MAX_PIXELS)
+            assertEquals(request, request.checked())
+        }
+        val fullBudget = worksheetRequest(position, 4000.0, 2000.0, 4.0)
+        assertEquals(position.x, fullBudget.x, 0.0)
+        assertEquals(position.y, fullBudget.y, 0.0)
+        assertEquals(4000, fullBudget.width)
+        assertEquals(2000, fullBudget.height)
+    }
+
+    @Test fun deepZoomRetainsTheFocalCellAtHighDensitiesWithoutAThirtyTwoScalePlateau() {
+        for (density in listOf(1.0, 2.625, 4.0, 8.0)) {
+            val before = SheetPosition(3, 1000.125, 2000.25, 16f)
+            val after = worksheetTransform(before, 1e6, 1e6, 1080.0, 1920.0, density,
+                370.0, 910.0, 0.0, 0.0, 2f)
+            assertEquals(32f, after.zoom, 0f)
+            val oldScale = worksheetScale(before.zoom, density)
+            val scale = worksheetScale(after.zoom, density)
+            assertEquals(32.0 * density, scale, 0.0)
+            assertEquals(before.x + 370.0 / oldScale, after.x + 370.0 / scale, 1e-9)
+            assertEquals(before.y + 910.0 / oldScale, after.y + 910.0 / scale, 1e-9)
+            val request = worksheetRequest(after, 1080.0, 1920.0, density)
+            assertEquals(scale, request.scale, 0.0)
+        }
+    }
+
+    @Test fun expandedViewportCapsKeepAreaAndFiniteScaleAdmissionBounded() {
+        assertEquals(256.0, SheetViewport(0, 0.0, 0.0, 256.0, 4096, 1953).checked().scale, 0.0)
+        for (invalid in listOf(
+            SheetViewport(0, 0.0, 0.0, 256.001, 10, 10),
+            SheetViewport(0, 0.0, 0.0, Double.NaN, 10, 10),
+            SheetViewport(0, 0.0, 0.0, 1.0, 4097, 10),
+            SheetViewport(0, 0.0, 0.0, 1.0, 4096, 2000))) {
+            assertThrows(IllegalArgumentException::class.java) { invalid.checked() }
+        }
     }
 
     @Test fun visibleExportsExcludeOverscanAndKeepDocumentExtentWhenDownsampled() {
@@ -62,8 +106,8 @@ class ReaderWorksheetMathTest {
             // Raster rounding can include less than one output pixel, never the render padding.
             assertEquals(size.width / scale, visible.width / visible.scale, 1.0 / visible.scale)
             assertEquals(size.height / scale, visible.height / visible.scale, 1.0 / visible.scale)
-            assertTrue(request.width / request.scale > visible.width / visible.scale)
-            assertTrue(request.height / request.scale > visible.height / visible.scale)
+            assertTrue(request.width / request.scale + 1.0 / visible.scale >= visible.width / visible.scale)
+            assertTrue(request.height / request.scale + 1.0 / visible.scale >= visible.height / visible.scale)
         }
         val rotated = requireNotNull(worksheetVisibleViewport(pose, IntSize(2160, 3840), 1.375))
         assertEquals(1575, rotated.width); assertEquals(2800, rotated.height)

@@ -403,6 +403,205 @@ class DocumentSourcesTest {
         }
     }
 
+    @Test fun offPreservesExistingCopiesAndDoesNotRetainNewInputs() = fixture { _, sources ->
+        val enabled = CopySettings(maxBytes = 1024, maxCount = 1_000_000)
+        val bodies = listOf("Retained first", "Retained second")
+        val retained = bodies.map { body -> open(sources, body, settings = enabled).use { requireNotNull(it.importUri) } }
+        val off = CopySettings(enabled = false, maxBytes = 0, maxCount = 1)
+        val before = sources.status(off)
+        assertEquals(2, before.count)
+        assertTrue(before.bytes > 0)
+        assertTrue(before.evictedHashes.isEmpty())
+        open(sources, "New input while retention is off", settings = off).use {
+            assertNull(it.importUri)
+            assertEquals("New input while retention is off", it.session.text(CancellationSignal()))
+        }
+        for ((index, body) in bodies.withIndex()) {
+            assertEquals(retained[index], sources.importUri(hash(body)))
+            open(sources, body, settings = off).use {
+                assertEquals(retained[index], it.importUri)
+                assertTrue(it.importVerified)
+            }
+            sources.open(retained[index], off, CancellationSignal()).use {
+                assertEquals(body, it.session.text(CancellationSignal()))
+            }
+        }
+        assertEquals(before.bytes, sources.status(off).bytes)
+        assertEquals(2, sources.status(off).count)
+        assertTrue(sources.pendingEvictions().isEmpty())
+    }
+
+    @Test fun unlimitedRetainsFiniteInputsAndAChangedFiniteCapStillTrims() = fixture { _, sources ->
+        val unlimited = CopySettings(maxBytes = Long.MAX_VALUE, maxCount = 1_000_000)
+        val bodies = listOf("Unlimited first", "Unlimited second")
+        val retained = bodies.map { body -> open(sources, body, settings = unlimited).use {
+            assertTrue(it.importVerified)
+            requireNotNull(it.importUri)
+        } }
+        val status = sources.status(unlimited)
+        assertEquals(2, status.count)
+        assertEquals(bodies.sumOf { it.toByteArray().size.toLong() }, status.bytes)
+        assertNull(status.warning)
+        bodies.forEachIndexed { index, body -> assertEquals(retained[index], sources.importUri(hash(body))) }
+        assertTrue(sources.pendingEvictions().isEmpty())
+        val trimmed = sources.status(unlimited.copy(maxBytes = 1))
+        assertEquals(0, trimmed.count)
+        assertEquals(0L, trimmed.bytes)
+        assertEquals(bodies.map(::hash).toSet(), trimmed.evictedHashes.toSet())
+    }
+
+    private fun seedMissingCopies(context: TestContext, count: Int, bytes: Long): File {
+        val directory = File(context.filesDir, "imports").apply { mkdirs() }
+        SQLiteDatabase.openDatabase(context.getDatabasePath("imports.sqlite").path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.beginTransaction()
+            try {
+                db.compileStatement("INSERT INTO copies(hash,name,mime,bytes,uri,target,token,pending,owner,touched) VALUES(?,?,?,?,?,?,?,?,?,?)").use { insert ->
+                    for (index in 1..count) {
+                        insert.clearBindings()
+                        insert.bindString(1, index.toString(16).padStart(64, '0'))
+                        insert.bindString(2, "Saved.md"); insert.bindString(3, "text/markdown"); insert.bindLong(4, bytes)
+                        insert.bindString(5, Uri.fromFile(File(directory, "missing-$index.md")).toString())
+                        insert.bindString(6, "private"); insert.bindString(7, UUID.randomUUID().toString())
+                        insert.bindLong(8, 0); insert.bindLong(9, Process.myPid().toLong()); insert.bindLong(10, index.toLong())
+                        insert.executeInsert()
+                    }
+                }
+                db.setTransactionSuccessful()
+            } finally { db.endTransaction() }
+        }
+        return directory
+    }
+
+    @Test fun clearBatchesTraverseBeyondTheReceiptLimitAndPreserveReadingPositions() = fixture { context, sources ->
+        val unlimited = CopySettings(maxBytes = Long.MAX_VALUE, maxCount = 1_000_000)
+        sources.status(unlimited)
+        val count = 20_001
+        val directory = seedMissingCopies(context, count, 0)
+        assertEquals(count, sources.status(unlimited).count)
+        app.smallthingz.alldoc.state.DocumentStore(context, "clear-state.db").use { store ->
+            val identities = listOf(1, count).map { it.toString(16).padStart(64, '0') }
+            for ((position, index) in listOf(1, count).withIndex()) {
+                store.open(identities[position], app.smallthingz.alldoc.state.DocumentMetadata("Saved.md", "text/markdown", 0,
+                    importUri = Uri.fromFile(File(directory, "missing-$index.md")).toString()))
+                store.saveState(identities[position], app.smallthingz.alldoc.state.DocumentState(page = 7))
+            }
+            var after: String? = null
+            var removed = 0
+            do {
+                val cleared = sources.clear(after)
+                assertNull(cleared.warning)
+                assertTrue(cleared.evictedHashes.size <= 256)
+                removed += cleared.evictedHashes.size
+                val receipts = sources.pendingEvictions()
+                assertTrue("Every batch keeps the durable receipt journal bounded", receipts.size <= 256)
+                store.clearMatchingImports(receipts.map { it.hash to it.importUri })
+                sources.acknowledgeEvictions(receipts.map { it.id })
+                cleared.continuation?.let { assertTrue(it > after.orEmpty()) }
+                after = cleared.continuation
+            } while (after != null)
+            assertEquals(count, removed)
+            for (identity in identities) {
+                assertNull(store.get(identity)!!.metadata.importUri)
+                assertEquals(7, store.get(identity)!!.state.page)
+            }
+        }
+        assertEquals(0, sources.status(unlimited).count)
+        assertTrue(sources.pendingEvictions().isEmpty())
+    }
+
+    @Test fun finiteTrimAndImportRoomMakingStayBoundedBeyondTheReceiptLimit() = fixture { context, sources ->
+        val unlimited = CopySettings(maxBytes = Long.MAX_VALUE, maxCount = 1_000_000)
+        sources.status(unlimited)
+        val count = 20_001
+        seedMissingCopies(context, count, 1024)
+        val finite = unlimited.copy(maxBytes = 1024)
+        val body = "A new temporary document"
+        open(sources, body, settings = finite).use {
+            assertNull("An unfinished capacity batch must not claim a new retained copy", it.importUri)
+            assertFalse(it.importVerified)
+            assertTrue(it.retentionWarning.orEmpty().contains("cleanup is pending"))
+            assertEquals(body, it.session.text(CancellationSignal()))
+            assertEquals(256, it.evictedHashes.size)
+        }
+        var removed = 0
+        fun acknowledgeBatch(expected: Int) {
+            val receipts = sources.pendingEvictions()
+            assertEquals(expected, receipts.size)
+            assertTrue("No pass may fill the 20,000-receipt journal", receipts.size <= 256)
+            removed += receipts.size
+            sources.acknowledgeEvictions(receipts.map { it.id })
+        }
+        acknowledgeBatch(256)
+        var batches = 0
+        do {
+            val status = sources.status(finite)
+            assertNull(status.warning)
+            assertTrue(status.evictedHashes.size <= 256)
+            acknowledgeBatch(status.evictedHashes.size)
+            assertEquals(count - removed, status.count)
+            assertEquals(status.count * 1024L, status.bytes)
+            assertEquals(status.bytes > finite.maxBytes, status.trimPending)
+            assertTrue("The continuation must make bounded forward progress", ++batches <= 80)
+        } while (status.trimPending)
+        assertEquals(count - 1, removed)
+        assertTrue(sources.pendingEvictions().isEmpty())
+        open(sources, body, settings = finite).use {
+            assertNotNull(it.importUri)
+            assertTrue(it.importVerified)
+            assertNull(it.retentionWarning)
+        }
+        val complete = sources.status(finite)
+        assertEquals(1, complete.count)
+        assertEquals(body.toByteArray().size.toLong(), complete.bytes)
+        assertFalse(complete.trimPending)
+    }
+
+    @Test fun missingPrivateTrimRollsBackReceiptsAndRowsTogetherBeforeRetry() = fixture { context, sources ->
+        val unlimited = CopySettings(maxBytes = Long.MAX_VALUE, maxCount = 1_000_000)
+        sources.status(unlimited)
+        val count = 64
+        seedMissingCopies(context, count, 1024)
+        val second = 2.toString(16).padStart(64, '0')
+        SQLiteDatabase.openDatabase(context.getDatabasePath("imports.sqlite").path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("CREATE TRIGGER fail_missing_delete BEFORE DELETE ON copies WHEN OLD.hash='$second' BEGIN SELECT RAISE(ABORT,'injected deletion failure'); END")
+        }
+        val finite = unlimited.copy(maxBytes = 1)
+        val failed = sources.status(finite)
+        assertNotNull(failed.warning)
+        assertEquals("A failed atomic batch must retain every indexed copy", count, failed.count)
+        assertEquals(count * 1024L, failed.bytes)
+        assertTrue(failed.evictedHashes.isEmpty())
+        assertTrue("Rolled-back removals must not leave durable eviction receipts", sources.pendingEvictions().isEmpty())
+        SQLiteDatabase.openDatabase(context.getDatabasePath("imports.sqlite").path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("DROP TRIGGER fail_missing_delete")
+        }
+        val retried = sources.status(finite)
+        assertNull(retried.warning)
+        assertEquals(0, retried.count)
+        assertEquals(0L, retried.bytes)
+        assertEquals(count, retried.evictedHashes.size)
+        assertFalse(retried.trimPending)
+        val receipts = sources.pendingEvictions()
+        assertEquals(count, receipts.size)
+        assertEquals(retried.evictedHashes.toSet(), receipts.map { it.hash }.toSet())
+    }
+
+    @Test fun usageObservationNeitherTrimsNorReplaysPendingDeletion() = fixture { context, sources ->
+        val body = "A retained copy remains available"
+        val retained = open(sources, body).use { requireNotNull(it.importUri) }
+        val pending = pendingFile(context, "Pending deletion still owns its bytes", 2, "recorded")
+        val receipts = sources.pendingEvictions()
+        assertEquals(1, receipts.size)
+        val observed = sources.observeStatus(CopySettings(maxBytes = 1))
+        assertEquals(2, observed.count)
+        assertEquals(body.toByteArray().size + pending.length(), observed.bytes)
+        assertTrue(observed.evictedHashes.isEmpty())
+        assertFalse(observed.trimPending)
+        assertTrue(pending.isFile)
+        assertEquals(retained, sources.importUri(hash(body)))
+        assertEquals(receipts, sources.pendingEvictions())
+    }
+
     @Test fun disabledCopyAndCancellationLeaveNoRetainedPayload() = fixture { _, sources ->
         open(sources, "No retained copy", settings = CopySettings(enabled = false)).use { assertNull(it.importUri) }
         val cancelled = CancellationSignal().apply { cancel() }

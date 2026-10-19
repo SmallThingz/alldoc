@@ -11,6 +11,7 @@ import android.os.CancellationSignal
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.test.core.app.ActivityScenario
 import app.smallthingz.alldoc.ReaderTestActivity
 import androidx.lifecycle.ViewModelStore
@@ -23,8 +24,11 @@ import app.smallthingz.alldoc.engine.DocumentNotes
 import app.smallthingz.alldoc.engine.DocumentNote
 import app.smallthingz.alldoc.engine.DocumentOutlineEntry
 import app.smallthingz.alldoc.engine.DocumentSession
+import app.smallthingz.alldoc.engine.PageRegion
 import app.smallthingz.alldoc.sources.DocumentSources
 import app.smallthingz.alldoc.state.DocumentStore
+import app.smallthingz.alldoc.theme.BitmapTheme
+import app.smallthingz.alldoc.theme.RegionThemeContext
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.io.Closeable
 import java.io.File
@@ -45,6 +49,299 @@ import org.junit.runner.RunWith
 class ReaderAllocationTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private fun main(action: () -> Unit) = instrumentation.runOnMainSync { action() }
+
+    @Test fun addingASecondViewportPatchRebudgetsAnUnchangedFirstRequest() {
+        val closes = AtomicInteger()
+        Fixture(closes, pages = 2).use { fixture ->
+            main {
+                fixture.reader.setAppearance(ThemeSettings(app.smallthingz.alldoc.theme.ReadingMode.ORIGINAL))
+                fixture.reader.requestVisiblePages(0..1)
+                fixture.reader.setRenderWidth(720)
+            }
+            fixture.await { it.pageImages.keys.containsAll(listOf(0, 1)) }
+            val wanted = PageRegion(.1f, .1f, .7f, .7f, 2048, 2048)
+            main { fixture.reader.requestVisibleRegions(mapOf(0 to wanted)) }
+            fixture.await { it.pageDetails[0]?.bitmap?.allocationByteCount == 16 * 1024 * 1024 && detailJob(it)?.isActive != true }
+            lateinit var original: Bitmap
+            main {
+                original = requireNotNull(fixture.reader.pageDetails[0]).bitmap
+                fixture.reader.requestVisibleRegions(mapOf(0 to wanted, 1 to wanted))
+            }
+            fixture.await { reader -> reader.pageDetails.size == 2 && reader.pageDetails.values.all {
+                it.bitmap.allocationByteCount <= 8 * 1024 * 1024
+            } && detailJob(reader)?.isActive != true }
+            val calls = fixture.session.regionCalls.toList()
+            assertEquals("Both patches must render again under the smaller shared budget", listOf(0, 0, 1), calls.map { it.first })
+            assertEquals(wanted, calls.first().second)
+            assertTrue(calls.drop(1).all { it.second.width < wanted.width && it.second.height < wanted.height })
+            main {
+                assertTrue(fixture.reader.pageDetails.values.sumOf { it.bitmap.allocationByteCount.toLong() } <= 16L * 1024 * 1024)
+                assertFalse("A previously displayed patch remains valid through its final Compose frame", original.isRecycled)
+                repeat(20) { fixture.reader.requestVisibleRegions(mapOf(0 to wanted, 1 to wanted)) }
+                assertTrue(detailJob(fixture.reader)?.isActive != true)
+                assertNull(fixture.reader.error)
+            }
+            assertEquals("Unchanged viewport callbacks must not rerender", calls, fixture.session.regionCalls.toList())
+        }
+        assertEquals(1, closes.get())
+    }
+
+    @Test fun supersededHiddenAndReplacedDocumentsRejectLateViewportPixels() {
+        for (exit in listOf("superseded", "hidden", "document")) {
+            val closes = AtomicInteger()
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            Fixture(closes).use { fixture ->
+                try {
+                    main {
+                        fixture.reader.setAppearance(ThemeSettings(app.smallthingz.alldoc.theme.ReadingMode.ORIGINAL))
+                        fixture.reader.setRenderWidth(720)
+                    }
+                    fixture.await { it.bitmap != null && !it.pageLoading }
+                    val warm = PageRegion(0f, 0f, .2f, .2f, 64, 64)
+                    val pending = PageRegion(.1f, .1f, .6f, .6f, 512, 512)
+                    val next = PageRegion(.3f, .3f, .8f, .8f, 384, 384)
+                    main { fixture.reader.requestVisibleRegions(mapOf(0 to warm)) }
+                    fixture.await { it.pageDetails[0]?.region == warm && detailJob(it)?.isActive != true }
+                    lateinit var retained: Bitmap
+                    var late: Bitmap? = null
+                    var canceled: CancellationSignal? = null
+                    val attempts = AtomicInteger()
+                    fixture.session.afterRegion = { _, _, image, signal ->
+                        if (attempts.getAndIncrement() == 0) {
+                            late = image; canceled = signal
+                            entered.countDown()
+                            check(release.await(15, TimeUnit.SECONDS))
+                        }
+                    }
+                    lateinit var oldJob: Job
+                    var identity = 0L
+                    main {
+                        retained = requireNotNull(fixture.reader.pageDetails[0]).bitmap
+                        identity = fixture.reader.documentId
+                        fixture.reader.requestVisibleRegions(mapOf(0 to pending))
+                        oldJob = requireNotNull(detailJob(fixture.reader))
+                    }
+                    assertTrue(entered.await(5, TimeUnit.SECONDS))
+                    main {
+                        when (exit) {
+                            "superseded" -> fixture.reader.requestVisibleRegions(mapOf(0 to next))
+                            "hidden" -> fixture.reader.showReader(false)
+                            else -> {
+                                val file = File(fixture.context.root, "replacement.html").apply {
+                                    writeText("<html><body>Replacement document</body></html>")
+                                }
+                                fixture.reader.open(Uri.fromFile(file))
+                            }
+                        }
+                        assertTrue(oldJob.isCancelled)
+                        assertTrue(requireNotNull(canceled).isCanceled)
+                        if (exit != "document") assertSame(retained, fixture.reader.pageDetails[0]?.bitmap)
+                    }
+                    if (exit == "document") {
+                        fixture.await { it.currentTitle == "replacement.html" && it.info != null && !it.loading }
+                        main {
+                            assertTrue(fixture.reader.pageDetails.isEmpty())
+                            fixture.reader.requestVisibleRegions(mapOf(0 to pending), identity)
+                            assertTrue("An old view cannot repopulate the replacement document", fixture.reader.pageDetails.isEmpty())
+                        }
+                    }
+                    assertEquals("Canceled native work remains serialized until it returns", 2, fixture.session.regionCalls.size)
+                    release.countDown()
+                    runBlocking { withTimeout(15_000) { oldJob.join() } }
+                    assertTrue("An unpublished late viewport must be recycled", requireNotNull(late).isRecycled)
+                    if (exit == "hidden") {
+                        main {
+                            assertFalse(fixture.reader.readerVisible)
+                            assertSame(retained, fixture.reader.pageDetails[0]?.bitmap)
+                            assertEquals(2, fixture.session.regionCalls.size)
+                            fixture.reader.showReader(true)
+                        }
+                        fixture.await { it.pageDetails[0]?.region == pending && detailJob(it)?.isActive != true }
+                    } else if (exit == "superseded") {
+                        fixture.await { it.pageDetails[0]?.region == next && detailJob(it)?.isActive != true }
+                    } else fixture.await { closes.get() == 1 && it.bitmap != null && !it.pageLoading }
+                    main {
+                        assertNull(fixture.reader.error)
+                        assertFalse(retained.isRecycled)
+                        assertTrue(fixture.reader.pageDetails.values.none { it.bitmap === late })
+                        if (exit == "document") assertTrue(fixture.reader.pageDetails.isEmpty())
+                    }
+                } finally { release.countDown() }
+            }
+            assertEquals(1, closes.get())
+        }
+    }
+
+    private fun detailJob(reader: ReaderModel): Job? {
+        val task = ReaderModel::class.java.getDeclaredField("detailing").apply { isAccessible = true }.get(reader)
+        return task.javaClass.getDeclaredField("job").apply { isAccessible = true }.get(task) as Job?
+    }
+
+    @Test fun changingAppearanceRebuildsTheSameViewportWithoutAnotherLayoutCallback() {
+        val closes = AtomicInteger()
+        Fixture(closes).use { fixture ->
+            val appearances = CopyOnWriteArrayList<ThemeSettings>()
+            fixture.session.regionAppearance = { appearances += it }
+            main {
+                fixture.reader.setAppearance(ThemeSettings(app.smallthingz.alldoc.theme.ReadingMode.ORIGINAL))
+                fixture.reader.setRenderWidth(720)
+            }
+            fixture.await { it.bitmap != null && !it.pageLoading }
+            val wanted = PageRegion(.1f, .2f, .6f, .7f, 512, 512)
+            main { fixture.reader.requestVisibleRegions(mapOf(0 to wanted)) }
+            fixture.await { it.pageDetails[0]?.region == wanted && detailJob(it)?.isActive != true }
+            lateinit var first: Bitmap
+            val appearance = ThemeSettings(app.smallthingz.alldoc.theme.ReadingMode.ADAPTIVE)
+            main {
+                first = requireNotNull(fixture.reader.pageDetails[0]).bitmap
+                fixture.reader.setAppearance(appearance)
+                assertTrue(fixture.reader.pageDetails.isEmpty())
+            }
+            fixture.await { it.pageDetails[0]?.region == wanted && it.pageDetails[0]?.bitmap !== first && detailJob(it)?.isActive != true }
+            main {
+                assertEquals(listOf(ThemeSettings(app.smallthingz.alldoc.theme.ReadingMode.ORIGINAL), appearance), appearances.toList())
+                assertEquals(listOf(0 to wanted, 0 to wanted), fixture.session.regionCalls.toList())
+                assertFalse(first.isRecycled)
+                assertNull(fixture.reader.error)
+            }
+        }
+        assertEquals(1, closes.get())
+    }
+
+    @Test fun aBaseUpgradeRejectsQueuedOldPolicyDetailAndRetriesTheCurrentPolicy() {
+        val closes = AtomicInteger()
+        val baseEntered = CountDownLatch(1)
+        val releaseBase = CountDownLatch(1)
+        val detailEntered = CountDownLatch(1)
+        val releaseDetail = CountDownLatch(1)
+        Fixture(closes).use { fixture ->
+            try {
+                fixture.session.trackThemeContexts = true
+                main {
+                    fixture.reader.setAppearance(ThemeSettings(app.smallthingz.alldoc.theme.ReadingMode.ADAPTIVE))
+                    fixture.reader.setRenderWidth(720)
+                }
+                fixture.await { it.pageImages[0]?.themeContext != null && !it.pageLoading }
+                lateinit var originalContext: RegionThemeContext
+                main { originalContext = requireNotNull(fixture.reader.pageImages[0]?.themeContext) }
+                val contexts = CopyOnWriteArrayList<RegionThemeContext?>()
+                val images = CopyOnWriteArrayList<Bitmap>()
+                fixture.session.regionContext = { _, context -> contexts += context }
+                fixture.session.beforeRender = { _, _, _ ->
+                    baseEntered.countDown()
+                    check(releaseBase.await(15, TimeUnit.SECONDS))
+                }
+                fixture.session.afterRegion = { _, _, image, _ ->
+                    images += image
+                    if (images.size == 1) {
+                        detailEntered.countDown()
+                        check(releaseDetail.await(15, TimeUnit.SECONDS))
+                    }
+                }
+                main { fixture.reader.setRenderWidth(1440) }
+                assertTrue(baseEntered.await(5, TimeUnit.SECONDS))
+                val wanted = PageRegion(.1f, .1f, .6f, .6f, 128, 128)
+                main { fixture.reader.requestVisibleRegions(mapOf(0 to wanted)) }
+                // Let the detail's 100 ms coalescing timer reach the pending base upgrade.
+                SystemClock.sleep(150)
+                instrumentation.waitForIdleSync()
+                assertTrue("A known base upgrade must defer native detail work", contexts.isEmpty())
+                releaseBase.countDown()
+                fixture.await { it.pageImages[0]?.themeContext?.let { context -> context !== originalContext } == true }
+                // This headless fixture has no Compose owner to publish pending snapshot writes.
+                main { Snapshot.sendApplyNotifications() }
+                assertTrue(detailEntered.await(5, TimeUnit.SECONDS))
+                main {
+                    assertSame("The queued request must capture the newly published base policy",
+                        fixture.reader.pageImages[0]?.themeContext, contexts.single())
+                    assertTrue(fixture.reader.pageDetails.isEmpty())
+                }
+                releaseDetail.countDown()
+                fixture.await { it.pageDetails[0]?.region == wanted && detailJob(it)?.isActive != true }
+                main {
+                    assertEquals("A queued upgrade must need only one native detail render", 1, contexts.size)
+                    assertSame(fixture.reader.pageImages[0]?.themeContext, contexts.single())
+                    assertSame(images.single(), fixture.reader.pageDetails[0]?.bitmap)
+                    assertFalse(images.single().isRecycled)
+                    repeat(20) { fixture.reader.requestVisibleRegions(mapOf(0 to wanted)) }
+                    assertNull(fixture.reader.error)
+                }
+                assertEquals(1, fixture.session.regionCalls.size)
+                assertEquals("Detail must not reclassify another complete page", 2, fixture.session.themedContexts.size)
+            } finally { releaseBase.countDown(); releaseDetail.countDown() }
+        }
+        assertEquals(1, closes.get())
+    }
+
+    @Test fun viewportDetailUsesItsRetainedBasePolicyAndRebuildsOnlyADiscardedPolicy() {
+        val closes = AtomicInteger()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Fixture(closes, pages = 3).use { fixture ->
+            try {
+                fixture.session.trackThemeContexts = true
+                val details = CopyOnWriteArrayList<Pair<Int, RegionThemeContext?>>()
+                fixture.session.regionContext = { index, context -> details += index to context }
+                main {
+                    fixture.reader.setAppearance(ThemeSettings(app.smallthingz.alldoc.theme.ReadingMode.ADAPTIVE))
+                    fixture.reader.requestVisiblePages(0..2)
+                    fixture.reader.setRenderWidth(720)
+                }
+                fixture.await { it.pageImages.keys.containsAll(listOf(0, 1, 2)) }
+                lateinit var firstContext: RegionThemeContext
+                lateinit var thirdBitmap: Bitmap
+                main {
+                    firstContext = requireNotNull(fixture.reader.pageImages[0]?.themeContext)
+                    thirdBitmap = requireNotNull(fixture.reader.pageImages[2]).bitmap
+                    assertEquals(setOf(0, 1), fixture.reader.pageImages.filterValues { it.themeContext != null }.keys)
+                    assertTrue(requireNotNull(fixture.reader.pageImages[2]).missingThemeContext)
+                }
+                assertEquals(listOf(0, 1, 2), fixture.session.themedContexts.map { it.first })
+                assertEquals("The engine's single-entry cache has already moved to another page", 2,
+                    fixture.session.cachedThemeContext?.first)
+                val wanted = PageRegion(.1f, .1f, .6f, .6f, 128, 128)
+                main { fixture.reader.requestVisibleRegions(mapOf(0 to wanted)) }
+                fixture.await { it.pageDetails[0]?.region == wanted && detailJob(it)?.isActive != true }
+                assertSame("Detail must use the policy of the displayed base, not the engine's latest page",
+                    firstContext, details.single().second)
+                assertEquals("Retained policy needs no extra complete-page render", listOf(0, 1, 2), fixture.session.pages.toList())
+                val discardedContext = fixture.session.themedContexts.last().second
+                fixture.session.beforeRender = { index, _, _ ->
+                    if (index == 2) {
+                        entered.countDown()
+                        check(release.await(15, TimeUnit.SECONDS))
+                    }
+                }
+                main { fixture.reader.requestVisibleRegions(mapOf(0 to wanted, 2 to wanted)) }
+                assertTrue("Demand for an evicted policy must rebuild that page", entered.await(5, TimeUnit.SECONDS))
+                main {
+                    assertSame("Keep the published page visible while rebuilding its policy", thirdBitmap,
+                        fixture.reader.pageImages[2]?.bitmap)
+                    assertTrue(requireNotNull(fixture.reader.pageImages[2]).missingThemeContext)
+                }
+                release.countDown()
+                fixture.await { it.pageDetails.keys.containsAll(listOf(0, 2)) && detailJob(it)?.isActive != true }
+                main {
+                    assertEquals(setOf(0, 2), fixture.reader.pageImages.filterValues { it.themeContext != null }.keys)
+                    assertTrue(requireNotNull(fixture.reader.pageImages[1]).missingThemeContext)
+                    val rebuilt = requireNotNull(fixture.reader.pageImages[2]?.themeContext)
+                    assertNotSame(discardedContext, rebuilt)
+                    assertSame(rebuilt, details.last { it.first == 2 }.second)
+                    assertTrue(details.filter { it.first == 0 }.all { it.second === firstContext })
+                    assertTrue(fixture.reader.pageImages.values.sumOf { it.themeContext?.byteCount ?: 0 } <=
+                        2 * RegionThemeContext.MAX_BYTE_COUNT)
+                    assertFalse(thirdBitmap.isRecycled)
+                    repeat(20) { fixture.reader.requestVisibleRegions(mapOf(0 to wanted, 2 to wanted)) }
+                    assertNull(fixture.reader.error)
+                }
+                assertEquals("Only the requested discarded policy may be rebuilt", listOf(0, 1, 2, 2),
+                    fixture.session.themedContexts.map { it.first })
+                assertEquals(listOf(0, 1, 2, 2), fixture.session.pages.toList())
+            } finally { release.countDown() }
+        }
+        assertEquals(1, closes.get())
+    }
 
     @Test fun pageTextAndContentsAllocationFailuresAllowRetryWithoutClosingTheDocument() {
         for (operation in listOf("page", "text", "contents")) {
@@ -1183,11 +1480,18 @@ class ReaderAllocationTest {
         @Volatile var before: (String) -> Unit = {}
         @Volatile var beforeRender: (Int, Int, CancellationSignal) -> Unit = { _, _, _ -> }
         @Volatile var afterRender: (Bitmap) -> Unit = {}
+        @Volatile var afterRegion: (Int, PageRegion, Bitmap, CancellationSignal) -> Unit = { _, _, _, _ -> }
+        @Volatile var regionAppearance: (ThemeSettings) -> Unit = {}
+        @Volatile var regionContext: (Int, RegionThemeContext?) -> Unit = { _, _ -> }
+        @Volatile var trackThemeContexts = false
+        @Volatile var cachedThemeContext: Pair<Int, RegionThemeContext>? = null
+        val themedContexts = CopyOnWriteArrayList<Pair<Int, RegionThemeContext>>()
         @Volatile var aspect: ((Int) -> Float)? = null
         var renderSize = 24 to 32
         var rich: MarkdownDocument? = null
         val pages = CopyOnWriteArrayList<Int>()
         val widths = CopyOnWriteArrayList<Int>()
+        val regionCalls = CopyOnWriteArrayList<Pair<Int, PageRegion>>()
         override fun pageAspect(index: Int, signal: CancellationSignal): Float {
             signal.throwIfCanceled()
             return aspect?.invoke(index) ?: super<DocumentSession>.pageAspect(index, signal)
@@ -1200,6 +1504,31 @@ class ReaderAllocationTest {
             signal.throwIfCanceled()
             val image = Bitmap.createBitmap(renderSize.first, renderSize.second, Bitmap.Config.ARGB_8888)
             try { afterRender(image); return image } catch (failure: Throwable) { image.recycle(); throw failure }
+        }
+        override fun themePage(index: Int, bitmap: Bitmap, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
+            if (!trackThemeContexts) return super<DocumentSession>.themePage(index, bitmap, settings, signal)
+            val context = BitmapTheme.prepareContext(bitmap, settings, signal)
+            cachedThemeContext = index to context
+            themedContexts += index to context
+            return bitmap
+        }
+        override fun pageThemeContext(index: Int, settings: ThemeSettings, signal: CancellationSignal): RegionThemeContext? {
+            signal.throwIfCanceled()
+            return cachedThemeContext?.takeIf { it.first == index && it.second.settings == settings }?.second
+        }
+        override fun renderRegionWithContext(index: Int, region: PageRegion, settings: ThemeSettings,
+            signal: CancellationSignal, context: RegionThemeContext?): Bitmap {
+            regionContext(index, context)
+            return renderRegion(index, region, settings, signal)
+        }
+        override fun renderRegion(index: Int, region: PageRegion, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
+            regionCalls += index to region
+            regionAppearance(settings)
+            before("region")
+            signal.throwIfCanceled()
+            val image = Bitmap.createBitmap(region.width, region.height, Bitmap.Config.ARGB_8888)
+            try { afterRegion(index, region, image, signal); return image }
+            catch (failure: Throwable) { image.recycle(); throw failure }
         }
         override fun markdown(signal: CancellationSignal): MarkdownDocument? { signal.throwIfCanceled(); return rich }
         override fun text(signal: CancellationSignal): String { before("text"); signal.throwIfCanceled(); return "Recovered text" }

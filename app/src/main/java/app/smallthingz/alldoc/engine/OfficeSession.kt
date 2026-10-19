@@ -7,7 +7,10 @@ import android.os.ParcelFileDescriptor
 import app.smallthingz.alldoc.core.Document
 import app.smallthingz.alldoc.pdf.PdfDocument
 import app.smallthingz.alldoc.render.DocRenderCore
+import app.smallthingz.alldoc.theme.BitmapTheme
 import app.smallthingz.alldoc.theme.RasterRegion
+import app.smallthingz.alldoc.theme.ReadingMode
+import app.smallthingz.alldoc.theme.RegionThemeContext
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.io.File
 import java.io.IOException
@@ -17,6 +20,9 @@ internal class OfficeSession(private val file: File, private val name: String, m
     private val pages = LinkedHashMap<Int, CachedPage>(3, 0.75f, true)
     // Tiny metadata cache remains available even when a PNG exceeds the encoded-cache budget.
     private val regions = LinkedHashMap<Int, List<RasterRegion>?>(3, 0.75f, true)
+    private var themeContext: RegionThemeContext? = null
+    private var themeContextPage = -1
+    private var themeContextSettings: ThemeSettings? = null
     private var aspect = 1.4142135f
     private var pdf: PdfDocument? = null
     private var pdfFile: File? = null
@@ -130,7 +136,56 @@ internal class OfficeSession(private val file: File, private val name: String, m
             try { Bitmap.createScaledBitmap(decoded, actual, maxOf(1, (decoded.height.toLong() * actual / decoded.width).toInt()), true) }
             finally { decoded.recycle() }
         } else decoded
-        return themed(bitmap, settings, signal, page.rasterRegions)
+        return themePage(index, bitmap, settings, signal)
+    }
+    @Synchronized override fun themePage(index: Int, bitmap: Bitmap, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
+        try {
+            ready(signal); require(index in 0 until loadPrintInfo(signal).pageCount) { "Invalid page" }
+            return themed(bitmap, settings, signal, regions[index], preparePageThemeContext(index, settings, signal, bitmap))
+        } catch (failure: Throwable) { if (!bitmap.isRecycled) bitmap.recycle(); throw failure }
+    }
+    @Synchronized override fun pageThemeContext(index: Int, settings: ThemeSettings, signal: CancellationSignal): RegionThemeContext? {
+        ready(signal)
+        return themeContext?.takeIf { themeContextPage == index && themeContextSettings == settings }
+    }
+    private fun preparePageThemeContext(index: Int, settings: ThemeSettings, signal: CancellationSignal, source: Bitmap? = null): RegionThemeContext? {
+        if (settings.mode == ReadingMode.ORIGINAL || settings.mode == ReadingMode.INVERT || pdf != null) return null
+        themeContext?.takeIf { themeContextPage == index && themeContextSettings == settings }?.let { return it }
+        // Normal base rendering already owns a complete source page. The theme helper samples
+        // it at bounded resolution; only a region requested first needs a separate full probe.
+        val prepared = if (source != null) BitmapTheme.prepareContext(source, settings, signal, regions[index]) else {
+            val page = native(index, 512, signal)
+            if (page.format != DocRenderCore.RenderedPage.PNG) throw IOException("Unexpected theme probe encoding")
+            val data = page.cachedBytes()
+            val probe = BitmapFactory.decodeByteArray(data, 0, data.size) ?: throw IOException("Cannot decode the theme probe")
+            try { BitmapTheme.prepareContext(probe, settings, signal, page.rasterRegions) }
+                finally { probe.recycle() }
+        }
+        signal.throwIfCanceled()
+        themeContext = prepared; themeContextPage = index; themeContextSettings = settings
+        return prepared
+    }
+    @Synchronized override fun renderRegion(index: Int, region: PageRegion, settings: ThemeSettings, signal: CancellationSignal): Bitmap? {
+        return renderRegionWithContext(index, region, settings, signal, null)
+    }
+    @Synchronized override fun renderRegionWithContext(index: Int, region: PageRegion, settings: ThemeSettings,
+        signal: CancellationSignal, context: RegionThemeContext?): Bitmap? {
+        ready(signal); require(index in 0 until loadPrintInfo(signal).pageCount) { "Invalid page" }
+        // Print-export compatibility remains independent from the bounded detail surface.
+        if (pdf != null) return null
+        val policy = context ?: preparePageThemeContext(index, settings, signal)
+        val page = DocRenderCore.renderRegionFile(file, renderName, DocRenderCore.ViewState(index, 0, file.name),
+            region, DocRenderCore.Check { signal.isCanceled })
+        signal.throwIfCanceled()
+        val data = page.cachedBytes()
+        val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size) ?: throw IOException("Cannot decode the rendered region")
+        try {
+            signal.throwIfCanceled()
+            if (bitmap.width != region.width || bitmap.height != region.height) throw IOException("Rendered region dimensions changed")
+        } catch (failure: Throwable) { bitmap.recycle(); throw failure }
+        // Region receipts already carry image enclosures transformed into this raster.
+        // Do not replace full-page geometry/cache entries with a viewport's dimensions.
+        return themed(bitmap, settings, signal, page.rasterRegions, policy, region)
     }
     private fun rememberRegions(index: Int, page: DocRenderCore.RenderedPage) {
         regions[index] = page.rasterRegions
@@ -146,6 +201,7 @@ internal class OfficeSession(private val file: File, private val name: String, m
     @Synchronized override fun close() {
         if (closed) return
         closed = true; pages.clear(); regions.clear(); sheetViewport = null; sheetRegions = null
+        themeContext = null; themeContextPage = -1; themeContextSettings = null
         val workbook = sheets; sheets = null
         val print = pdf; pdf = null
         val preview = pdfFile; pdfFile = null

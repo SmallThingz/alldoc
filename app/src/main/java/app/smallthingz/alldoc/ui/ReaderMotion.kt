@@ -37,6 +37,9 @@ import kotlin.math.roundToInt
 /** Requested fullscreen state, independent of temporarily revealed system bars. */
 internal val LocalReaderImmersive = staticCompositionLocalOf { false }
 
+/** Deferred edits check the current transition owner, including before recomposition. */
+internal val LocalReaderInputAllowed = compositionLocalOf<() -> Boolean> { { true } }
+
 /** Dialogs own a separate window; inherit reader chrome without polling or another Back handler. */
 @Composable
 internal fun ReaderModalWindow() {
@@ -191,14 +194,21 @@ internal fun ReaderMotionLayer(
     LaunchedEffect(visible) { if (visible) motion.reveal() else motion.dismiss() }
     backdrop(motion)
     // Back eligibility can be disabled for a nested reader; exit ownership is independent.
-    val moving = modifier.readerInput(visible && !motion.closing).graphicsLayer {
+    val parentInputAllowed = LocalReaderInputAllowed.current
+    val currentVisible by rememberUpdatedState(visible)
+    val inputAllowed = remember(parentInputAllowed, motion) {
+        { parentInputAllowed() && currentVisible && !motion.closing }
+    }
+    val moving = modifier.readerInput(inputAllowed()).graphicsLayer {
         val hidden = 1f - motion.openness.value
         if (fromTop) translationY = -size.height * hidden else translationX = size.width * hidden
         alpha = 1f - 0.12f * hidden
     }
     // A stationary viewport clips foreground travel while the backdrop remains full-window.
-    if (viewportModifier == null) Box(moving) { content(motion::dismiss) }
-    else Box(viewportModifier) { Box(moving) { content(motion::dismiss) } }
+    CompositionLocalProvider(LocalReaderInputAllowed provides inputAllowed) {
+        if (viewportModifier == null) Box(moving) { content(motion::dismiss) }
+        else Box(viewportModifier) { Box(moving) { content(motion::dismiss) } }
+    }
 }
 
 /** Fullscreen Back restores chrome without treating text mode as another screen. */

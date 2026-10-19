@@ -30,8 +30,14 @@ class SheetGeometry(val sheet: SheetInfo, private val rowEdges: DoubleArray? = n
 data class SheetViewport(val sheet: Int, val x: Double, val y: Double, val scale: Double, val width: Int, val height: Int) {
     fun checked(): SheetViewport = apply {
         require(sheet in 0..1023 && x.isFinite() && y.isFinite() && x in 0.0..1e9 && y in 0.0..1e9 &&
-            scale.isFinite() && scale in .0625..32.0 && width in 1..2800 && height in 1..2800 &&
-            width.toLong() * height <= 8_000_000) { "Invalid worksheet viewport" }
+            scale.isFinite() && scale in MIN_SCALE..MAX_SCALE && width in 1..MAX_EDGE && height in 1..MAX_EDGE &&
+            width.toLong() * height <= MAX_PIXELS) { "Invalid worksheet viewport" }
+    }
+    companion object {
+        const val MIN_SCALE = .0625
+        const val MAX_SCALE = 256.0
+        const val MAX_EDGE = 4096
+        const val MAX_PIXELS = 8_000_000L
     }
 }
 /** Published pixels are immutable and may remain in Compose while a replacement is rendered. */

@@ -22,7 +22,36 @@ internal class BackdropRegions(
     var transparent = false
         private set
     val isEmpty get() = count == 0
+    val byteCount: Long get() = 256L + active.size * 4L + regions.size * 4L + previous.size * 4L +
+        inkRamps.size * 8L + inkRamps.sumOf { if (it == null) 0L else 24L + it.size * 4L }
     private val radius = (width / 32).coerceAtLeast(4)
+
+    /** Project recognized page plates; a crop boundary must not reclassify a plate as paper or ink. */
+    fun project(sourceHeight: Int, outputWidth: Int, outputHeight: Int,
+        left: Float, top: Float, widthFraction: Float, heightFraction: Float): BackdropRegions {
+        val output = BackdropRegions(outputWidth, allowNeutralColoredInk)
+        output.transparent = transparent
+        for (index in 0 until count) {
+            val at = index * 7
+            val x0 = projectedEdge(regions[at], width, left, widthFraction, outputWidth, false)
+            val x1 = projectedEdge(regions[at + 1], width, left, widthFraction, outputWidth, true)
+            val y0 = projectedEdge(regions[at + 2], sourceHeight, top, heightFraction, outputHeight, false)
+            val y1 = projectedEdge(regions[at + 3], sourceHeight, top, heightFraction, outputHeight, true)
+            if (x0 >= x1 || y0 >= y1) continue
+            val target = output.count++ * 7
+            output.regions[target] = x0; output.regions[target + 1] = x1
+            output.regions[target + 2] = y0; output.regions[target + 3] = y1
+            output.regions[target + 4] = regions[at + 4]
+            output.regions[target + 5] = regions[at + 5]
+            output.regions[target + 6] = regions[at + 6]
+            output.inkRamps[target / 7] = inkRamps[index]
+        }
+        return output
+    }
+
+    private fun projectedEdge(value: Int, sourceSize: Int, start: Float, fraction: Float, outputSize: Int, upper: Boolean): Int {
+        return projectRasterEdge(value.toDouble() / sourceSize, 0.0, start, fraction, outputSize, upper)
+    }
 
     fun scan(pixels: IntArray, rows: Int, checkCancelled: () -> Unit) {
         for (row in 0 until rows) {

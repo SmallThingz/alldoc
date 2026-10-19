@@ -145,6 +145,10 @@ class DocumentServiceMemoryTest {
             previous.close()
         }
         val pose = SheetViewport(3, 29_000_000.03125, 29_000_000.0625, 32.0, 64, 64)
+        assertThrows(IllegalArgumentException::class.java) {
+            session.readSheet(17, pose.sheet, pose.x, pose.y, 33.0, 64, 64, "adaptive", "auto").close()
+        }
+        assertNull(fake.viewport)
         fun render(treatment: String = "auto") = fixture.bytes(session.readSheet(17, pose.sheet, pose.x, pose.y, pose.scale,
             pose.width, pose.height, "adaptive", treatment))
         fake.fail = true

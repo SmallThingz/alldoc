@@ -28,7 +28,6 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -39,7 +38,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import app.smallthingz.alldoc.ReaderTestActivity
 import app.smallthingz.alldoc.state.AppTheme
 import app.smallthingz.alldoc.state.CopySettings
-import app.smallthingz.alldoc.state.LibraryCategory
 import app.smallthingz.alldoc.theme.ImageTreatment
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
@@ -194,9 +192,9 @@ class ReaderDialogLayoutTest {
         }
     }
 
-    @Test fun narrowSettingsKeepFourThemeAndLibraryTargetsInOneRow() {
+    @Test fun narrowSettingsKeepFourThemeAndImageTargetsInOneRow() {
         val theme = AtomicReference(AppTheme.SYSTEM)
-        val hidden = AtomicReference(emptySet<LibraryCategory>())
+        val images = AtomicReference(ImageTreatment.AUTO)
         val target = AtomicReference(0f)
         launchReaderTestActivity().use { scenario ->
             scenario.onActivity { activity -> activity.setContent {
@@ -205,12 +203,11 @@ class ReaderDialogLayoutTest {
                 CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
                     ReaderTheme {
                         var selected by remember { mutableStateOf(AppTheme.SYSTEM) }
-                        var excluded by remember { mutableStateOf(emptySet<LibraryCategory>()) }
+                        var appearance by remember { mutableStateOf(ThemeSettings()) }
                         Box(Modifier.width(240.dp).height(360.dp).clipToBounds()) {
                             ReaderSettingsScreen(CopySettings(), "Documents", 0, 0, false, null,
-                                {}, {}, {}, {}, ThemeSettings(), {}, {}, appTheme = selected,
-                                onAppThemeChange = { selected = it; theme.set(it) }, hiddenLibraryTypes = excluded,
-                                onHiddenLibraryTypesChange = { excluded = it; hidden.set(it) })
+                                {}, {}, {}, appearance, { appearance = it; images.set(it.imageTreatment) }, {}, appTheme = selected,
+                                onAppThemeChange = { selected = it; theme.set(it) })
                         }
                     }
                 }
@@ -252,22 +249,22 @@ class ReaderDialogLayoutTest {
                 }?.config?.getOrNull(SemanticsProperties.Selected) == true }
                 selected
             }
-            row(LibraryCategory.available.map { "Library: ${it.label}" })
-            choose("Library: Presentations")
+            row(listOf("Auto", "Keep", "Dim", "Recolor"))
+            choose("Recolor")
             instrumentation.waitForIdleSync()
-            assertEquals(setOf(LibraryCategory.PRESENTATIONS), hidden.get())
-            awaitSemantics("Excluded document type is not exposed") {
-                var excluded = false
-                scenario.onActivity { activity -> excluded = find(activity.testSemantics()) {
-                    "Library: Presentations" in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty()
-                }?.config?.getOrNull(SemanticsProperties.ToggleableState) == ToggleableState.Off }
-                excluded
+            assertEquals(ImageTreatment.RECOLOR, images.get())
+            awaitSemantics("Selected image treatment is not exposed") {
+                var selected = false
+                scenario.onActivity { activity -> selected = find(activity.testSemantics()) {
+                    "Recolor" in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty()
+                }?.config?.getOrNull(SemanticsProperties.Selected) == true }
+                selected
             }
         }
     }
 
     @Test @SdkSuppress(minSdkVersion = 29)
-    fun storageSliderPreservesFileCountAndExposesMegabytesWithoutTextFields() {
+    fun inlineStorageSliderExposesDiscreteLimitsAndSentinelsWithoutTextFields() {
         val initial = CopySettings(enabled = false, maxCount = 37, treeUri = "content://storage/tree/docs")
         val changed = AtomicReference(initial)
         val writes = AtomicInteger()
@@ -275,7 +272,7 @@ class ReaderDialogLayoutTest {
             scenario.onActivity { activity -> activity.setContent {
                 ReaderTheme {
                     var value by remember { mutableStateOf(initial) }
-                    CopyLimitsDialog(value, { value = it; changed.set(it); writes.incrementAndGet() }, {})
+                    CopyLimitControl(value, { value = it; changed.set(it); writes.incrementAndGet() })
                 }
             } }
             val deadline = SystemClock.uptimeMillis() + 8_000
@@ -288,9 +285,10 @@ class ReaderDialogLayoutTest {
                     }
                     if (node != null) {
                         val range = requireNotNull(node.config.getOrNull(SemanticsProperties.ProgressBarRangeInfo))
-                        assertEquals(1f, range.range.start, 0f)
-                        assertEquals(8192f, range.range.endInclusive, 0f)
-                        set = node.config.getOrNull(SemanticsActions.SetProgress)?.action?.invoke(512f) == true
+                        assertEquals(0f, range.range.start, 0f)
+                        assertEquals(21f, range.range.endInclusive, 0f)
+                        assertEquals(20, range.steps)
+                        set = node.config.getOrNull(SemanticsActions.SetProgress)?.action?.invoke(10f) == true
                     }
                 }
                 if (!set) SystemClock.sleep(50)
@@ -298,7 +296,7 @@ class ReaderDialogLayoutTest {
             assertTrue("Storage slider must support an accessible numeric value", set)
             instrumentation.waitForIdleSync()
             assertEquals(1, writes.get())
-            assertEquals(initial.copy(maxBytes = 512L * 1024 * 1024), changed.get())
+            assertEquals(initial.copy(enabled = true, maxBytes = 512L * 1024 * 1024, maxCount = 1_000_000), changed.get())
             awaitSemantics("Slider does not expose 512 MB") {
                 var updated = false
                 scenario.onActivity { activity ->
@@ -313,6 +311,17 @@ class ReaderDialogLayoutTest {
                 }
                 updated
             }
+            for ((position, expected) in listOf(0f to 0L, 21f to Long.MAX_VALUE)) {
+                scenario.onActivity { activity ->
+                    val slider = requireNotNull(find(activity.testSemantics()) {
+                        "Storage limit" in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty()
+                    })
+                    assertTrue(slider.config.getOrNull(SemanticsActions.SetProgress)?.action?.invoke(position) == true)
+                }
+                instrumentation.waitForIdleSync()
+                assertEquals(initial.copy(enabled = expected != 0L, maxBytes = expected, maxCount = 1_000_000), changed.get())
+            }
+            assertEquals(3, writes.get())
         }
     }
 

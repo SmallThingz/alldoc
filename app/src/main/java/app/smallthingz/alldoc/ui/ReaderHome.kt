@@ -1,15 +1,13 @@
 package app.smallthingz.alldoc.ui
 
 import android.graphics.Bitmap
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animate
 import androidx.compose.foundation.MutatePriority
 import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.BorderStroke
@@ -34,7 +32,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CollectionsBookmark
 import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -77,6 +74,7 @@ import app.smallthingz.alldoc.state.LibraryDocument
 import app.smallthingz.alldoc.state.StoredDocument
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -93,6 +91,8 @@ internal fun ReaderHome(
     onRefresh: () -> Unit = {}, libraryScanning: Boolean = false, onTabSelected: () -> Unit = {},
     onExamples: () -> Unit = {}, coverPaper: Color = Color.White, currentAvailable: Boolean = true,
     onRecentVisible: (List<StoredDocument>) -> Unit = {},
+    hiddenLibraryTypes: Set<LibraryCategory> = emptySet(),
+    onHiddenLibraryTypesChange: (Set<LibraryCategory>) -> Unit = {}, libraryTypesEnabled: Boolean = true,
 ) {
     val pager = rememberPagerState { 2 }
     val pullRefresh = rememberPullToRefreshState()
@@ -101,10 +101,7 @@ internal fun ReaderHome(
     val dragged by pager.interactionSource.collectIsDraggedAsState()
     val tabSelected by rememberUpdatedState(onTabSelected)
     var query by rememberSaveable { mutableStateOf("") }
-    var categoryName by rememberSaveable { mutableStateOf<String?>(null) }
-    val category = categoryName?.let { name -> LibraryCategory.available.firstOrNull { it.name == name } }
-    var filterOpen by remember { mutableStateOf(false) }
-    val inputActive = active && !filterOpen
+    val inputActive = active
     var compactSearch by rememberSaveable { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -132,35 +129,44 @@ internal fun ReaderHome(
     val filterLibrary by rememberUpdatedState(onLibraryFilter)
     val controlsState = rememberTopAppBarState()
     val controls = TopAppBarDefaults.enterAlwaysScrollBehavior(state = controlsState, canScroll = {
-        inputActive && (controlsState.heightOffset < 0f || if (tab == 0)
-            recentScroll.canScrollForward || recentScroll.canScrollBackward
-        else libraryScroll.canScrollForward || libraryScroll.canScrollBackward)
+        inputActive && tab == 1 && !pager.isScrollInProgress && (controlsState.heightOffset < 0f ||
+            libraryScroll.canScrollForward || libraryScroll.canScrollBackward)
     })
-    fun filter(text: String = query, type: LibraryCategory? = category) {
+    fun filter(text: String) {
         query = text.takeScalarSafe(128)
-        categoryName = type?.name
         libraryScroll.requestScrollToItem(0)
     }
     LaunchedEffect(dragged) {
         if (dragged && active) { focus.clearFocus(); keyboard?.hide(); tabSelected() }
     }
     LaunchedEffect(active, tab) {
-        filterOpen = false
         selectedLibrary(active && tab == 1)
     }
-    LaunchedEffect(active, tab, query, category) {
-        if (active && tab == 1) filterLibrary(query, category)
+    LaunchedEffect(active, tab, query) {
+        if (active && tab == 1) filterLibrary(query, null)
     }
-    LaunchedEffect(tab) { controls.state.heightOffset = 0f }
+    LaunchedEffect(active, pager) {
+        if (!active) return@LaunchedEffect
+        snapshotFlow { pager.settledPage to pager.isScrollInProgress }.collect { (settled, moving) ->
+            // Reset only after Library is fully offscreen, never at a swipe's midpoint.
+            if (!moving && settled == 0) controlsState.heightOffset = 0f
+        }
+    }
     LaunchedEffect(active, tab) {
         if (!active) return@LaunchedEffect
         snapshotFlow {
-            if (tab == 0) Triple(recentScroll.isScrollInProgress, recentScroll.canScrollBackward, recentScroll.canScrollForward)
+            pager.isScrollInProgress to if (tab == 0)
+                Triple(recentScroll.isScrollInProgress, recentScroll.canScrollBackward, recentScroll.canScrollForward)
             else Triple(libraryScroll.isScrollInProgress, libraryScroll.canScrollBackward, libraryScroll.canScrollForward)
-        }.collect { (scrolling, backward, forward) ->
+        }.collectLatest { (swiping, list) ->
+            val (scrolling, backward, forward) = list
             if (scrolling) { focus.clearFocus(); keyboard?.hide() }
             // Fitting content has no accessibility scroll action to reveal a hidden header.
-            else if (!backward && !forward) controlsState.heightOffset = 0f
+            else if (!swiping && !backward && !forward && controlsState.heightOffset < 0f) {
+                animate(controlsState.heightOffset, 0f, animationSpec = tween(180)) { offset, _ ->
+                    controlsState.heightOffset = offset
+                }
+            }
         }
     }
     LaunchedEffect(library, active, tab) {
@@ -204,41 +210,42 @@ internal fun ReaderHome(
                                 controls.state.heightOffsetLimit = -it.height.toFloat()
                                 controls.state.heightOffset = controls.state.heightOffset.coerceIn(-it.height.toFloat(), 0f)
                             }) {
-                                if (compact) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    ReaderAction(if (compactSearch) Icons.Outlined.Close else Icons.Outlined.Search,
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    // Keep the field at the same composition location across an IME/size change.
+                                    // Compact search and format choices share one row, so both retain 48 dp targets.
+                                    Box(Modifier.weight(1f)) {
+                                        androidx.compose.animation.AnimatedVisibility(visible = !compact || compactSearch,
+                                            modifier = Modifier.readerInput(active && tab == 1 && (!compact || compactSearch)),
+                                            enter = fadeIn(tween(120)), exit = fadeOut(tween(120))) {
+                                            OutlinedTextField(query, onValueChange = { filter(it) }, singleLine = true,
+                                                modifier = Modifier.fillMaxWidth().onFocusChanged { if (it.isFocused) compactSearch = true },
+                                                placeholder = { Text("Find documents") },
+                                                leadingIcon = { Icon(Icons.Outlined.Search, null) },
+                                                trailingIcon = if (query.isEmpty()) null else { {
+                                                    ReaderAction(Icons.Outlined.Close, "Clear search", onClick = { filter("") })
+                                                } })
+                                        }
+                                        androidx.compose.animation.AnimatedVisibility(visible = compact && !compactSearch,
+                                            modifier = Modifier.readerInput(active && tab == 1 && compact && !compactSearch),
+                                            enter = fadeIn(tween(120)), exit = fadeOut(tween(120))) {
+                                            LibraryFormatFilters(hiddenLibraryTypes, onChange = {
+                                                libraryScroll.requestScrollToItem(0)
+                                                onHiddenLibraryTypesChange(it)
+                                            }, enabled = active && tab == 1 && !compactSearch && libraryTypesEnabled)
+                                        }
+                                    }
+                                    if (compact) ReaderAction(if (compactSearch) Icons.Outlined.Close else Icons.Outlined.Search,
                                         if (compactSearch) "Close library search" else "Find documents", onClick = {
                                             compactSearch = !compactSearch
                                             if (!compactSearch) { focus.clearFocus(); keyboard?.hide() }
                                         })
                                 }
-                                AnimatedVisibility(visible = !compact || compactSearch,
-                                    modifier = Modifier.readerInput(!compact || compactSearch),
-                                    enter = expandVertically(tween(180)) + fadeIn(tween(120)),
-                                    exit = shrinkVertically(tween(180)) + fadeOut(tween(120))) {
-                                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        OutlinedTextField(query, onValueChange = { filter(it) }, singleLine = true,
-                                            modifier = Modifier.weight(1f).onFocusChanged { if (it.isFocused) compactSearch = true },
-                                            placeholder = { Text("Find documents") },
-                                            leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                                            trailingIcon = if (query.isEmpty()) null else { {
-                                                ReaderAction(Icons.Outlined.Close, "Clear search", onClick = { filter("") })
-                                            } })
-                                        Box {
-                                            ReaderTooltip("Document type") {
-                                                IconToggleButton(checked = category != null, onCheckedChange = { filterOpen = true },
-                                                    modifier = Modifier.semantics { contentDescription = "Document type"; stateDescription = category?.label ?: "All types" }) {
-                                                    Icon(Icons.Outlined.FilterList, null)
-                                                }
-                                            }
-                                            if (active && tab == 1) DropdownMenu(filterOpen, onDismissRequest = { filterOpen = false }) {
-                                                DropdownMenuItem(text = { Text("All types") }, onClick = { filter(type = null); filterOpen = false })
-                                                LibraryCategory.available.forEach { type ->
-                                                    DropdownMenuItem(text = { Text(type.label) }, onClick = { filter(type = type); filterOpen = false })
-                                                }
-                                            }
-                                        }
-                                    }
+                                if (!compact) Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                    LibraryFormatFilters(hiddenLibraryTypes, onChange = {
+                                        libraryScroll.requestScrollToItem(0)
+                                        onHiddenLibraryTypesChange(it)
+                                    }, enabled = active && tab == 1 && libraryTypesEnabled)
                                 }
                                 Box(Modifier.fillMaxWidth().height(3.dp)) {
                                     if (active && tab == 1) {
@@ -304,7 +311,7 @@ internal fun ReaderHome(
                                             refresh is LoadState.Loading || libraryScanning -> if (active && tab == 1 && !libraryScanning)
                                                 CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
                                             refresh is LoadState.Error -> Text("Library unavailable", style = MaterialTheme.typography.bodyMedium)
-                                            query.isNotBlank() || category != null -> Text("No matches", style = MaterialTheme.typography.bodyMedium)
+                                            query.isNotBlank() || hiddenLibraryTypes.isNotEmpty() -> Text("No matches", style = MaterialTheme.typography.bodyMedium)
                                             else -> TextButton(onClick = onLibrarySettings) { Text("Library settings") }
                                         }
                                     }

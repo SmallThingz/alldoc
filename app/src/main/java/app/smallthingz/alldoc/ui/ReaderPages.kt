@@ -3,6 +3,9 @@ package app.smallthingz.alldoc.ui
 import android.graphics.Bitmap
 import android.graphics.RectF
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.AnimationState
+import androidx.compose.animation.core.animateDecay
+import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.MutatePriority
@@ -84,6 +87,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -95,19 +99,28 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
+import app.smallthingz.alldoc.engine.PageRegion
 import app.smallthingz.alldoc.state.ViewportState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** Published bitmaps remain owned by the render pool; drawing never copies or recycles them. */
-internal data class ReaderPageImage(val bitmap: Bitmap, val crop: RectF? = null, val renderWidth: Int = bitmap.width)
+internal data class ReaderPageImage(val bitmap: Bitmap, val crop: RectF? = null, val renderWidth: Int = bitmap.width,
+    val themeContext: app.smallthingz.alldoc.theme.RegionThemeContext? = null,
+    val themeContextRequired: Boolean = themeContext != null) {
+    val missingThemeContext get() = themeContextRequired && themeContext == null
+}
+internal data class ReaderPageDetail(val bitmap: Bitmap, val region: PageRegion)
 
 internal data class PageAnchor(val page: Int, val fraction: Float)
 private data class PageScroll(val page: Int, val offset: Int, val height: Int, val scrolling: Boolean,
@@ -145,6 +158,8 @@ internal fun ReaderPages(
     normalEdgePadding: Dp = 16.dp,
     onZoomAnimation: (Boolean) -> Unit = {},
     active: Boolean = true,
+    details: Map<Int, ReaderPageDetail> = emptyMap(),
+    onVisibleRegions: (Map<Int, PageRegion>) -> Unit = {},
 ) {
     if (pageCount <= 0) return
     val enabled by rememberUpdatedState(active)
@@ -157,6 +172,9 @@ internal fun ReaderPages(
     val position by rememberUpdatedState(onPosition)
     val updatePose by rememberUpdatedState(onViewportChange)
     val requestPages by rememberUpdatedState(onVisiblePages)
+    val requestRegions by rememberUpdatedState(onVisibleRegions)
+    val currentImages by rememberUpdatedState(images)
+    val selectedPage by rememberUpdatedState(page)
     val finish by rememberUpdatedState(onGestureEnd)
     val currentPage by rememberUpdatedState(onCurrentPage)
     val scrollDirection by rememberUpdatedState(onScrollDirection)
@@ -198,6 +216,7 @@ internal fun ReaderPages(
             .coerceIn(0f, height / 3f).roundToInt().toFloat()
         val usable = width > 0 && constraints.maxHeight > 0
         var previousLayout by remember(documentKey) { mutableStateOf<PageLayout?>(null) }
+        var pendingFinish by remember(documentKey) { mutableStateOf(false) }
         fun rowLength(index: Int, pose: ViewportState = currentPose): Float =
             pageRowLength(width, imageHeight, ratios[index] ?: DefaultPageAspect, pose, horizontal)
         suspend fun place(target: PageAnchor, pose: ViewportState = currentPose, complete: () -> Unit = {}) {
@@ -225,8 +244,10 @@ internal fun ReaderPages(
             return presentationSnapOffset(list.firstVisibleItemScrollOffset, row.size, width.roundToInt(), gap,
                 index < count - 1, velocity, with(density) { 400.dp.toPx() })
         }
-        suspend fun snapPresentation(velocity: Float = 0f) {
-            if (horizontal) presentationOffset(velocity).takeIf { it != 0f }?.let { list.scrollBy(it) }
+        suspend fun snapPresentation(velocity: Float = 0f, animated: Boolean = false) {
+            if (horizontal) presentationOffset(velocity).takeIf { it != 0f }?.let {
+                if (animated) list.animateScrollBy(it, tween(180, easing = FastOutSlowInEasing)) else list.scrollBy(it)
+            }
         }
         fun capture(): PageAnchor? {
             if (!ready || !usable) return null
@@ -277,8 +298,8 @@ internal fun ReaderPages(
             gesture.pose = next
             updatePose(next)
         }
-        val currentCapture by rememberUpdatedState(::capture)
-        val currentTransform by rememberUpdatedState(::transform)
+        val currentCapture by rememberUpdatedState<() -> PageAnchor?>(newValue = { capture() })
+        val currentTransform by rememberUpdatedState<(Offset, Offset, Float) -> Unit>(newValue = { focus, pan, change -> transform(focus, pan, change) })
         fun settle() {
             if (!enabled) return
             settling?.cancel()
@@ -288,10 +309,11 @@ internal fun ReaderPages(
                 gesture.page = null
                 snapPresentation()
                 if (anchor.fraction >= 0f) currentCapture()
+                pendingFinish = false
                 finish()
             }
         }
-        val settleTransform by rememberUpdatedState(::settle)
+        val settleTransform by rememberUpdatedState<() -> Unit>(newValue = { settle() })
         fun animateZoom(focus: Offset, target: Float) {
             if (!enabled) return
             cancelZoom(releaseGate = false)
@@ -317,20 +339,53 @@ internal fun ReaderPages(
             zooming.job = job
             job.start()
         }
-        val zoomTo by rememberUpdatedState(::animateZoom)
-        LaunchedEffect(documentKey, active) {
-            if (active) return@LaunchedEffect
+        val zoomTo by rememberUpdatedState<(Offset, Float) -> Unit>(newValue = { focus, target -> animateZoom(focus, target) })
+        fun coastCrossAxis(speed: Float) {
+            val revision = ++zooming.revision
+            val job = scope.launch(start = CoroutineStart.LAZY) {
+                transforming = true
+                var previous = 0f
+                try {
+                    AnimationState(0f, speed.coerceIn(-12000f, 12000f)).animateDecay(exponentialDecay()) {
+                        val delta = value - previous
+                        previous = value
+                        val before = gesture.pose
+                        currentTransform(Offset(width / 2f, height / 2f),
+                            if (horizontal) Offset(0f, delta) else Offset(delta, 0f), 1f)
+                        if (gesture.pose == before) cancelAnimation()
+                    }
+                } finally {
+                    if (revision == zooming.revision) {
+                        zooming.job = null
+                        transforming = false
+                        zoomAnimation(false)
+                        settleTransform()
+                    }
+                }
+            }
+            zooming.job = job
+            job.start()
+        }
+        val coast by rememberUpdatedState<(Float) -> Unit>(newValue = { speed -> coastCrossAxis(speed) })
+        LaunchedEffect(documentKey, active, positionRevision, width, height, leading, viewport.rotation, horizontal, usable) {
+            if (active) {
+                if (pendingFinish) settleTransform()
+                return@LaunchedEffect
+            }
+            pendingFinish = true
             settling?.cancel()
             settling = null
             cancelZoom()
             transforming = false
+            // A brief cover must not leave gesture ownership blocking later semantic snapping.
+            gesture.page = null
             list.stopScroll(MutatePriority.PreventUserInput)
             // Input is already disabled; let the last gesture request finish remeasuring.
             repeat(2) { withFrameNanos { } }
-            gesture.page = null
             // Finish a Present step while covered; returning must not advance a retained page.
             if (horizontal) snapPresentation(if (list.lastScrolledForward) Float.MAX_VALUE else -Float.MAX_VALUE)
             if (anchor.fraction >= 0f) currentCapture()
+            pendingFinish = false
             finish()
         }
         val restoredPosition = remember(documentKey, positionRevision) {
@@ -338,8 +393,15 @@ internal fun ReaderPages(
         }
         // Relayout never saves a clamped temporary position over the document anchor.
         LaunchedEffect(documentKey, positionRevision, width, height, leading, viewport.rotation, horizontal, usable) {
+            // A suspended settle owns the previous geometry, not this replacement placement.
+            if (settling?.isActive == true) pendingFinish = true
+            settling?.cancel()
+            settling = null
             cancelZoom()
-            if (!usable) return@LaunchedEffect
+            if (!usable) {
+                if (pendingFinish) { pendingFinish = false; finish() }
+                return@LaunchedEffect
+            }
             var target = if (appliedRevision != positionRevision) restoredPosition else anchor
             val old = previousLayout
             val transformed = ready && old != null && (old.pose.rotation != viewport.rotation || old.horizontal != horizontal) &&
@@ -380,7 +442,11 @@ internal fun ReaderPages(
                 previousLayout = PageLayout(width, height, nextPose, horizontal, leading)
                 appliedRevision = positionRevision
             }
-            if (transformed) { capture(); finish() }
+            if (transformed) capture()
+            if (transformed || pendingFinish) {
+                pendingFinish = false
+                finish()
+            }
         }
         val legacyImage = if (anchor.fraction < 0f) images[anchor.page] else null
         LaunchedEffect(legacyImage, width, height, horizontal, viewport.rotation) {
@@ -417,6 +483,35 @@ internal fun ReaderPages(
                 if (visible.isEmpty()) null else visible.first().index..visible.last().index
             }.collect { range -> if (range != null) requestPages(range) }
         }
+        LaunchedEffect(list, documentKey, usable, horizontal, width, height, leading, breathing, active) {
+            if (!active || !usable) {
+                requestRegions(emptyMap())
+                return@LaunchedEffect
+            }
+            snapshotFlow {
+                if (!ready || transforming || list.isScrollInProgress) null else {
+                    val pose = currentPose
+                    list.layoutInfo.visibleItemsInfo.sortedBy { if (it.index == selectedPage) 0 else 1 }
+                        .mapNotNull { item ->
+                            val rendered = currentImages[item.index] ?: return@mapNotNull null
+                            val bitmap = rendered.bitmap
+                            val source = pageSource(bitmap.width, bitmap.height, rendered.crop)
+                            val size = if (horizontal) Size(item.size.toFloat(), height) else Size(width, item.size.toFloat())
+                            val offset = item.offset + leading
+                            val visible = if (horizontal) Rect(maxOf(0f, -offset), 0f, minOf(size.width, width - offset), height)
+                                else Rect(0f, maxOf(0f, -offset), width, minOf(size.height, height - offset))
+                            val transform = pageImageTransform(source, size, pose, horizontal, if (horizontal) breathing else 0f)
+                            pageVisibleRegion(bitmap.width, bitmap.height, transform, visible)?.let { item.index to it }
+                        }.take(2).toMap()
+                }
+            }.collectLatest { regions ->
+                if (regions != null) {
+                    // Keep painting retained detail during motion; only the settled viewport starts new work.
+                    delay(100)
+                    requestRegions(regions)
+                }
+            }
+        }
         LaunchedEffect(list, documentKey, usable, horizontal, width, height, active) {
             if (!active || !usable) return@LaunchedEffect
             snapshotFlow {
@@ -450,18 +545,30 @@ internal fun ReaderPages(
                     moved = scroll.scrolling
                     if (!moved && discrete && presentationOffset() != 0f) {
                         // Touch flings already snapped; semantic/key steps retain their requested direction.
-                        try { snapPresentation(if (list.lastScrolledForward) Float.MAX_VALUE else -Float.MAX_VALUE) }
+                        try {
+                            coroutineScope {
+                                val correction = launch {
+                                    snapPresentation(if (list.lastScrolledForward) Float.MAX_VALUE else -Float.MAX_VALUE, animated = true)
+                                }
+                                settling?.cancel()
+                                settling = correction
+                                try {
+                                    correction.join()
+                                    if (correction.isCancelled) throw CancellationException("Presentation settling interrupted")
+                                } finally { if (settling === correction) settling = null }
+                            }
+                        }
                         catch (_: CancellationException) {
                             // A new input mutation may interrupt settling without cancelling this observer.
                             currentCoroutineContext().ensureActive()
                             return@collect
                         }
-                        // The synchronous correction is already handled; its next snapshot is not a new gesture.
+                        // The completed correction is already handled; its next snapshot is not a new gesture.
                         previous = scroll.copy(page = list.firstVisibleItemIndex,
                             offset = list.firstVisibleItemScrollOffset, scrolling = false)
                     }
                     currentCapture()
-                    if (!moved) finish()
+                    if (!moved) { pendingFinish = false; finish() }
                 }
             }
         }
@@ -506,7 +613,8 @@ internal fun ReaderPages(
             }.focusRequester(focus).focusable(active).pointerInput(documentKey, horizontal, active) {
                 if (!active) return@pointerInput
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val velocity = VelocityTracker().apply { addPosition(down.uptimeMillis, down.position) }
                     focus.requestFocus()
                     cancelZoomAnimation()
                     settling?.cancel()
@@ -516,11 +624,16 @@ internal fun ReaderPages(
                     var owns = false
                     var crossAxis = false
                     var changed = false
+                    var pinched = false
+                    var released = false
+                    var gated = false
                     try {
                         do {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             if (event.changes.any { it.isConsumed }) break
                             val multiple = event.changes.count { it.pressed } > 1
+                            pinched = pinched || multiple
+                            event.changes.firstOrNull { it.id == down.id }?.let { velocity.addPosition(it.uptimeMillis, it.position) }
                             val pan = event.calculatePan()
                             val factor = event.calculateZoom()
                             motion += pan
@@ -533,16 +646,23 @@ internal fun ReaderPages(
                                 owns = pinch || crossAxis
                             }
                             if (owns) {
+                                if (!gated) { gated = true; zoomAnimation(true) }
                                 transforming = true
                                 currentTransform(event.calculateCentroid(useCurrent = false),
                                     if (crossAxis && !multiple) { if (horizontal) Offset(0f, pan.y) else Offset(pan.x, 0f) } else pan, if (multiple) factor else 1f)
                                 changed = true
                                 event.changes.forEach { if (it.positionChanged()) it.consume() }
                             }
-                        } while (event.changes.any { it.pressed })
+                            released = event.changes.none { it.pressed }
+                        } while (!released)
                     } finally {
-                        if (zooming.job == null) transforming = false
-                        if (changed) settleTransform()
+                        val speed = velocity.calculateVelocity().let { if (horizontal) it.y else it.x }
+                        if (changed && released && !pinched && crossAxis && enabled && abs(speed) > 180f) coast(speed)
+                        else {
+                            if (zooming.job == null) transforming = false
+                            if (gated) zoomAnimation(false)
+                            if (changed || pendingFinish) settleTransform()
+                        }
                     }
                 }
             }.pointerInput(documentKey, horizontal, active) {
@@ -557,7 +677,7 @@ internal fun ReaderPages(
                 val rendered = images[index]
                 val extent = with(density) { rowLength(index).toDp() }
                 val size = if (horizontal) Modifier.width(extent).height(maxHeight) else Modifier.fillMaxWidth().height(extent)
-                PageImage(rendered, currentPose, paper, horizontal, if (horizontal) breathing else 0f, size
+                PageImage(rendered, details[index], currentPose, paper, horizontal, if (horizontal) breathing else 0f, size
                     .semantics {
                         contentDescription = "Page ${index + 1}"
                         stateDescription = when {
@@ -577,7 +697,7 @@ internal fun ReaderPages(
             }
         }
         if (horizontal) CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-            val snapOffset by rememberUpdatedState(::presentationOffset)
+            val snapOffset by rememberUpdatedState<(Float) -> Float>(newValue = { velocity -> presentationOffset(velocity) })
             val snap = remember(list) {
                 object : SnapLayoutInfoProvider {
                     // A presentation swipe selects the adjacent page; momentum must not skip slides.
@@ -723,20 +843,12 @@ private fun withPageCrossCenter(pose: ViewportState, rotation: Int, value: Float
 }
 
 @Composable
-private fun PageImage(rendered: ReaderPageImage?, pose: ViewportState, paper: Color, horizontal: Boolean, inset: Float, modifier: Modifier,
+private fun PageImage(rendered: ReaderPageImage?, detail: ReaderPageDetail?, pose: ViewportState, paper: Color, horizontal: Boolean, inset: Float, modifier: Modifier,
     placeholder: @Composable () -> Unit,
 ) {
     val image = remember(rendered?.bitmap) { rendered?.bitmap?.asImageBitmap() }
-    val source = remember(image, rendered?.crop) {
-        image?.let {
-            val crop = rendered?.crop?.takeIf { region ->
-                region.left.isFinite() && region.top.isFinite() && region.right.isFinite() && region.bottom.isFinite() &&
-                    region.left >= 0f && region.top >= 0f && region.right <= 1f && region.bottom <= 1f && region.width() > 0f && region.height() > 0f
-            }
-            if (crop == null) Rect(0f, 0f, it.width.toFloat(), it.height.toFloat())
-            else Rect(crop.left * it.width, crop.top * it.height, crop.right * it.width, crop.bottom * it.height)
-        }
-    }
+    val patch = remember(detail?.bitmap) { detail?.bitmap?.asImageBitmap() }
+    val source = remember(image, rendered?.crop) { image?.let { pageSource(it.width, it.height, rendered?.crop) } }
     val edge = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f)
     Box(modifier.then(if (!horizontal) Modifier.shadow(2.dp, ambientColor = Color.Black, spotColor = Color.Black) else Modifier)
         .clipToBounds().then(if (image == null) Modifier.background(paper) else Modifier).drawWithCache {
@@ -744,18 +856,10 @@ private fun PageImage(rendered: ReaderPageImage?, pose: ViewportState, paper: Co
         val region = source
         onDrawBehind {
             if (page != null && region != null && region.width > 0 && region.height > 0) {
-                val sideways = pose.rotation % 2 != 0
-                val rotatedWidth = if (sideways) region.height else region.width
-                val rotatedHeight = if (sideways) region.width else region.height
-                val scale = if (horizontal) min(size.width / rotatedWidth * min(1f, pose.zoom), (size.height - 2f * inset).coerceAtLeast(1f) / rotatedHeight * pose.zoom)
-                    else min(size.width / rotatedWidth * pose.zoom, size.height / rotatedHeight)
-                val center = pageCrossCenter(pose, (pose.rotation + if (horizontal) 3 else 0) % 4)
-                val axis = if (horizontal) size.height else size.width
-                val extent = (if (horizontal) rotatedHeight else rotatedWidth) * scale
-                val half = min(.5f, axis / (2f * extent))
-                val shift = (.5f - center.coerceIn(half, 1f - half)) * extent
+                val transform = pageImageTransform(region, size, pose, horizontal, inset)
+                val scale = transform.scale
                 withTransform({
-                    translate(size.width / 2 + if (horizontal) 0f else shift, size.height / 2 + if (horizontal) shift else 0f)
+                    translate(transform.center.x, transform.center.y)
                     rotate(pose.rotation * 90f, Offset.Zero)
                     scale(scale, scale, Offset.Zero)
                     translate(-region.width / 2, -region.height / 2)
@@ -768,6 +872,14 @@ private fun PageImage(rendered: ReaderPageImage?, pose: ViewportState, paper: Co
                     clipRect(0f, 0f, region.width, region.height) {
                         drawRect(paper, size = Size(region.width, region.height))
                         drawImage(page, topLeft = Offset(-region.left, -region.top))
+                        if (patch != null && detail != null) {
+                            val bounds = detail.region
+                            withTransform({
+                                translate(bounds.left * page.width - region.left, bounds.top * page.height - region.top)
+                                scale(bounds.widthFraction * page.width / patch.width,
+                                    bounds.heightFraction * page.height / patch.height, Offset.Zero)
+                            }) { drawImage(patch) }
+                        }
                         val line = 1.dp.toPx() / scale
                         drawRect(edge, topLeft = Offset(line / 2f, line / 2f),
                             size = Size((region.width - line).coerceAtLeast(0f), (region.height - line).coerceAtLeast(0f)),
@@ -779,9 +891,19 @@ private fun PageImage(rendered: ReaderPageImage?, pose: ViewportState, paper: Co
     }, contentAlignment = Alignment.Center) { if (image == null) placeholder() }
 }
 
-private fun pageCrossCenter(pose: ViewportState, rotation: Int): Float = when (rotation) {
+internal fun pageCrossCenter(pose: ViewportState, rotation: Int): Float = when (rotation) {
     1 -> 1f - pose.centerY
     2 -> 1f - pose.centerX
     3 -> pose.centerY
     else -> pose.centerX
+}
+
+
+private fun pageSource(width: Int, height: Int, crop: RectF?): Rect {
+    val region = crop?.takeIf {
+        it.left.isFinite() && it.top.isFinite() && it.right.isFinite() && it.bottom.isFinite() &&
+            it.left >= 0f && it.top >= 0f && it.right <= 1f && it.bottom <= 1f && it.width() > 0f && it.height() > 0f
+    }
+    return if (region == null) Rect(0f, 0f, width.toFloat(), height.toFloat())
+        else Rect(region.left * width, region.top * height, region.right * width, region.bottom * height)
 }

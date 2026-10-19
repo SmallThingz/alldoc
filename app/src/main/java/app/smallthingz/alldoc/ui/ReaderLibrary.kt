@@ -9,6 +9,12 @@ import android.os.SystemClock
 import android.util.Log
 import app.smallthingz.alldoc.core.takeScalarSafe
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.Composable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Slideshow
+import androidx.compose.material.icons.outlined.TableChart
+import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.paging.Pager
@@ -44,6 +50,21 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+
+@Composable
+internal fun LibraryFormatFilters(hiddenTypes: Set<LibraryCategory>, onChange: (Set<LibraryCategory>) -> Unit,
+    enabled: Boolean = true,
+) {
+    SettingsChoices(LibraryCategory.available, { it !in hiddenTypes }, { type ->
+        onChange(if (type in hiddenTypes) hiddenTypes - type else hiddenTypes + type)
+    }, label = { when (it) {
+        LibraryCategory.DOCUMENTS -> "Docs"; LibraryCategory.PRESENTATIONS -> "Slides"
+        LibraryCategory.SPREADSHEETS -> "Sheets"; else -> "Books"
+    } }, icon = { when (it) {
+        LibraryCategory.DOCUMENTS -> Icons.Outlined.Description; LibraryCategory.PRESENTATIONS -> Icons.Outlined.Slideshow
+        LibraryCategory.SPREADSHEETS -> Icons.Outlined.TableChart; else -> Icons.Outlined.MenuBook
+    } }, description = { "Library: ${it.label}" }, multiple = true, enabled = enabled)
+}
 
 /** A foreground, finite catalog scan, independent of reading history. */
 @OptIn(ExperimentalCoroutinesApi::class)

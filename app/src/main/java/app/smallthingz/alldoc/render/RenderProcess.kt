@@ -2,6 +2,7 @@ package app.smallthingz.alldoc.render
 
 import java.io.*
 import java.util.concurrent.*
+import app.smallthingz.alldoc.engine.PageRegion
 
 /** Mandatory native limit launcher; child and scratch belong to this call. */
 internal object RenderProcess {
@@ -15,7 +16,7 @@ internal object RenderProcess {
     internal val SLOT = Semaphore(1, true)
 
     @Throws(IOException::class)
-    fun run(module: Module?, input: ByteArray?, inputFile: File?, kind: Int, page: Int, side: Int, poll: DocRenderCore.Check?): ByteArray {
+    fun run(module: Module?, input: ByteArray?, inputFile: File?, kind: Int, page: Int, side: Int, poll: DocRenderCore.Check?, region: PageRegion? = null): ByteArray {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
         var slot = false
         var dir: File? = null
@@ -41,8 +42,12 @@ internal object RenderProcess {
                 }
             }
             check(poll, deadline)
-            val builder = ProcessBuilder(module.launcher.path, android.os.Process.myPid().toString(), module.executable.path,
-                kind.toString(), source.absolutePath, receipt.absolutePath, side.toString(), page.toString()).directory(dir)
+            val command = mutableListOf(module.launcher.path, android.os.Process.myPid().toString(), module.executable.path)
+            if (region == null) command += listOf(kind.toString(), source.absolutePath, receipt.absolutePath, side.toString(), page.toString())
+            else command += listOf("--region", kind.toString(), source.absolutePath, receipt.absolutePath, page.toString(),
+                region.left.toString(), region.top.toString(), region.right.toString(), region.bottom.toString(),
+                region.width.toString(), region.height.toString())
+            val builder = ProcessBuilder(command).directory(dir)
             builder.environment()["LC_ALL"] = "C.UTF-8"
             builder.environment()["RAYON_NUM_THREADS"] = "2"
             child = builder.start()

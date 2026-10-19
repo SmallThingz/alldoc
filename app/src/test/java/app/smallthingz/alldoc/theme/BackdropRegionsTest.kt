@@ -4,6 +4,39 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BackdropRegionsTest {
+    @Test fun projectedImageBoundsShareCropRoundingWithoutSnappingFractionalEdges() {
+        fun edge(value: Float, start: Float, end: Float, size: Int, upper: Boolean) =
+            projectRasterEdge(value.toDouble(), Math.ulp(value).toDouble() * .5, start, end - start, size, upper)
+        assertEquals(80, edge(.5f, .3f, .8f, 200, false))
+        assertEquals(180, edge(.75f, .3f, .8f, 200, true))
+        assertEquals(0, edge(.5f, .65f, .95f, 120, false))
+        assertEquals(40, edge(.75f, .65f, .95f, 120, true))
+        assertEquals(79, edge(.5f, .301f, .801f, 200, false))
+        assertEquals(80, edge(.5f, .301f, .801f, 200, true))
+    }
+
+    @Test fun projectedPlatesKeepIntegerCropEdgesWithoutSnappingRealSubpixelEdges() {
+        val sourceWidth = 400
+        val source = IntArray(sourceWidth * sourceWidth) { at ->
+            if (at % sourceWidth in 200 until 300 && at / sourceWidth in 200 until 300) 0xff00aa00.toInt() else -1
+        }
+        val regions = scan(source, sourceWidth, 64)
+        assertFalse(regions.isEmpty)
+        data class Crop(val start: Float, val fraction: Float, val width: Int, val first: Int, val last: Int)
+        for (crop in listOf(Crop(.3f, .5f, 200, 80, 180), Crop(.65f, .3f, 120, 0, 40),
+            Crop(.301f, .5f, 200, 79, 180))) {
+            val projected = regions.project(sourceWidth, crop.width, crop.width, crop.start, crop.start, crop.fraction, crop.fraction)
+            val all = LongArray((crop.width * crop.width + 63) / 64)
+            val neutral = LongArray(all.size)
+            assertTrue(projected.masks(0, crop.width, all, neutral))
+            for (y in 0 until crop.width) for (x in 0 until crop.width) {
+                val at = y * crop.width + x
+                val selected = all[at ushr 6] and (1L shl (at and 63)) != 0L
+                assertEquals("Plate edge at $x,$y for $crop", x in crop.first until crop.last && y in crop.first until crop.last, selected)
+            }
+        }
+    }
+
     @Test fun knownDarkPaperAdmitsOneColoredInkFamilyWithoutBroadeningUnknownImages() {
         val width = 256
         val height = 128

@@ -302,7 +302,7 @@
  }
  
  /// Segments of a page along one axis: repeated titles (before the band) then the band.
-@@ -1238,13 +1239,87 @@
+@@ -1238,13 +1239,105 @@
  /// Renders laid-out sheets to a PDF.
  pub fn render_pdf(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str) -> (Vec<u8>, usize) {
      let mut doc = PdfDoc::new();
@@ -330,13 +330,31 @@
 +    doc.finish_raster()
 +}
 +
++/// Renders a region of one selected print page. Per-axis scales map original page
++/// points to pixels; offsets translate in output pixels (negative for a crop).
++/// The original layout, print-page context and drawing budgets are retained.
++#[cfg(feature = "raster")]
++pub fn render_raster_region(wb: &Workbook, layouts: &[SheetLayout], file: &str, path: &str,
++    width: u32, height: u32, scale_x: f64, scale_y: f64, offset_x: f64, offset_y: f64,
++    print_page: usize, print_pages: usize) -> std::result::Result<gridcraft_pdf::RasterImage, String> {
++    if layouts.iter().map(|l| l.pages.len()).sum::<usize>() != 1 {
++        return Err("Worksheet raster requires one selected print page".into());
++    }
++    if print_page == 0 || print_page > print_pages || print_pages > MAX_PAGES {
++        return Err("Worksheet print page context is out of range".into());
++    }
++    let mut doc = PdfDoc::new_raster_region(width, height, scale_x, scale_y, offset_x, offset_y)?;
++    draw_document(wb, layouts, file, path, &mut doc, Some((print_page, print_pages)));
++    doc.finish_raster()
++}
++
 +/// Nonpaginated worksheet viewport in sheet pixels at 96dpi. Reuses the print renderer's
 +/// cells, merges, wrapping, charts and images, without print areas/margins/title repetition.
 +#[cfg(feature = "raster")]
 +pub fn render_sheet_region(wb: &Workbook, sheet: usize, rows: &LineIndex, cols: &LineIndex,
 +    cf: &mut Option<crate::cf::CfCache>, x: f64, y: f64, width: u32, height: u32, scale: f64,
 +    max_rows: u32, max_cols: u32) -> std::result::Result<gridcraft_pdf::RasterImage, String> {
-+    if ![x, y, scale].iter().all(|v| v.is_finite()) || x < 0.0 || y < 0.0 || !(0.0625..=32.0).contains(&scale)
++    if ![x, y, scale].iter().all(|v| v.is_finite()) || x < 0.0 || y < 0.0 || !(0.0625..=256.0).contains(&scale)
 +        || max_rows == 0 || max_cols == 0 {
 +        return Err("Invalid worksheet viewport".into());
 +    }
@@ -365,7 +383,7 @@
 +    let ys = (r0..=r1 + 1).map(|r| ((rows.start(r) - y) * scale) as f32).collect();
 +    let block = Block { wb, si: sheet, sh, rows: (r0, r1), cols: (first_col, last_col), xs, ys,
 +        k: scale as f32, scale: (scale / PX_TO_PT as f64) as f32, axes: Some((rows, cols)) };
-+    let mut doc = PdfDoc::new_raster(width, height, 1.0)?;
++    let mut doc = PdfDoc::new_raster_region(width, height, 1.0, 1.0, 0.0, 0.0)?;
 +    let pg = doc.add_page(width as f32, height as f32);
 +    pg.save();
 +    pg.clip_rect(0.0, 0.0, width as f32, height as f32);
@@ -392,7 +410,7 @@
      for lay in layouts {
          let Some(sh) = wb.sheet(lay.sheet) else { continue };
          let mut cf = if sh.cond_formats.is_empty() { None } else { Some(crate::cf::CfCache::new()) };
-@@ -1278,7 +1353,7 @@
+@@ -1278,7 +1371,7 @@
                  y += seg_size(sh, *rs, true) * k;
              }
              if let Some(b) = &body {
@@ -401,7 +419,7 @@
              }
              if lay.settings.headings {
                  let fill = [0xF2, 0xF2, 0xF2];
-@@ -1297,8 +1372,6 @@
+@@ -1297,8 +1390,6 @@
              draw_header_footer(pg, lay, &cx);
          }
      }
@@ -410,7 +428,7 @@
  }
  
  // ---------------------------------------------------------------- commands
-@@ -1756,10 +1829,65 @@
+@@ -1756,10 +1847,71 @@
          let b = bands(0, 2, |r| if r == 1 { 100.0 } else { 10.0 }, |_| 35.0, &[], 100);
          assert_eq!(b, vec![(0, 0), (1, 1), (2, 2)]);
          assert_eq!(bands(0, 1_000_000, |_| 10.0, |_| 5.0, &[], 3).len(), 3);
@@ -476,6 +494,12 @@
 +        let expected = render_raster(&doc.wb, &[literal], "Document", "", 612, 792, 1.0, 1, 1).unwrap();
 +        assert_eq!(actual.pixels, expected.pixels, "selected page must render the original footer, including offsets exactly once");
 +        assert_ne!(actual.pixels, reset.pixels, "the old 1/1 footer must be visibly different, not silently omitted");
++        let footer = render_raster_region(&doc.wb, &[selected.clone()], "Document", "", 612, 96, 1.0, 1.0,
++            0.0, -696.0, 2, pages).unwrap();
++        assert_eq!(footer.pixels, actual.pixels[696 * 612 * 4..], "regional footer retains original page numbering");
++        assert!(footer.pixels.chunks_exact(4).any(|p| p[0] < 128), "footer crop contains visible text");
++        assert!(render_raster_region(&doc.wb, &[selected.clone()], "Document", "", 612, 96, 1.0, 1.0,
++            0.0, -696.0, 0, pages).is_err());
 +        assert!(render_raster(&doc.wb, &[selected.clone()], "Document", "", 612, 792, 1.0, 0, pages).is_err());
 +        assert!(render_raster(&doc.wb, &[selected], "Document", "", 612, 792, 1.0, pages + 1, pages).is_err());
 +    }
@@ -636,7 +660,7 @@
  }
  
  /// PackBits-style run-length encoding (PDF `RunLengthDecode`).
-@@ -525,11 +563,33 @@
+@@ -525,11 +563,43 @@
          PdfDoc::default()
      }
  
@@ -645,6 +669,16 @@
 +    pub fn new_raster(width: u32, height: u32, scale: f64) -> Result<Self, String> {
 +        let mut doc = Self::new();
 +        doc.next_raster = Some(raster::RasterPage::new(width, height, scale)?);
++        Ok(doc)
++    }
++
++    /// One-page region target with per-axis page-points-to-pixels scales followed by
++    /// an output-pixel translation. Page geometry and traversal remain in original points.
++    #[cfg(feature = "raster")]
++    pub fn new_raster_region(width: u32, height: u32, scale_x: f64, scale_y: f64,
++        offset_x: f64, offset_y: f64) -> Result<Self, String> {
++        let mut doc = Self::new();
++        doc.next_raster = Some(raster::RasterPage::new_region(width, height, scale_x, scale_y, offset_x, offset_y)?);
 +        Ok(doc)
 +    }
 +
@@ -673,7 +707,7 @@
      }
 --- /dev/null
 +++ b/gridcraft/crates/pdf/src/raster.rs
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,275 @@
 +//! Optional bounded print raster target. Layout remains in GridCraft's print traversal;
 +//! text uses the same pinned shaper/font database and colour-glyph renderer as WordCraft.
 +use std::{collections::HashMap, sync::Arc};
@@ -692,6 +726,14 @@
 +
 +// Bound a single shaping allocation independently of the aggregate drawing budget.
 +const MAX_TEXT_BYTES: usize = 256 * 1024;
++// Worksheet fonts are at most 409 pt at 256 px per sheet pixel (0.75 pt).
++// Keep glyph shaping bounded; the removed scale is applied directly to outlines.
++const MAX_RENDERED_FONT_SIZE: f32 = 409.0 * (256.0 / 0.75);
++fn normalized_font_size(size: f32) -> Option<(f32, f64)> {
++    if !size.is_finite() || size < 0.0 || size > MAX_RENDERED_FONT_SIZE { return None; }
++    let scale = (size / 10_000.0).ceil().max(1.0);
++    Some((size / scale, scale as f64))
++}
 +fn scalar(v: f32) -> f64 { if v.is_finite() { v.clamp(-1e7, 1e7) as f64 } else { 0.0 } }
 +fn color(c: Rgb) -> peniko::Color { peniko::Color::from_rgba8(c[0], c[1], c[2], 255) }
 +fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
@@ -778,11 +820,38 @@
 +            || !scale.is_finite() || scale <= 0.0 || scale > 4.0 {
 +            return Err("Worksheet raster dimensions exceed the visual reader limit".into());
 +        }
++        Self::with_view(width, height, Affine::scale(scale))
++    }
++    pub(super) fn new_region(width: u32, height: u32, scale_x: f64, scale_y: f64,
++        offset_x: f64, offset_y: f64) -> Result<Self, String> {
++        if width == 0 || height == 0 || width > 4096 || height > 4096
++            || u64::from(width) * u64::from(height) > 8_000_000 {
++            return Err("Worksheet raster dimensions exceed the region limit".into());
++        }
++        // Drawing coordinates are clamped to +/-1e7; rectangle endpoints can reach
++        // twice that. Keep their transformed coordinates bounded before rasterization,
++        // including offscreen geometry, without imposing the full-page 4 px/pt cap.
++        let extent_x = 2e7 * scale_x + offset_x.abs();
++        let extent_y = 2e7 * scale_y + offset_y.abs();
++        let determinant = scale_x * scale_y;
++        let inverse_x = scale_x.recip();
++        let inverse_y = scale_y.recip();
++        let inverse_offset_x = offset_x / scale_x;
++        let inverse_offset_y = offset_y / scale_y;
++        let inverse_determinant = determinant.recip();
++        if ![scale_x, scale_y, offset_x, offset_y, extent_x, extent_y, determinant,
++            inverse_x, inverse_y, inverse_offset_x, inverse_offset_y, inverse_determinant].iter().all(|v| v.is_finite())
++            || scale_x <= 0.0 || scale_y <= 0.0 || determinant <= 0.0 || extent_x > 1e12 || extent_y > 1e12 {
++            return Err("Worksheet raster region transform is out of range".into());
++        }
++        Self::with_view(width, height, Affine::new([scale_x, 0.0, 0.0, scale_y, offset_x, offset_y]))
++    }
++    fn with_view(width: u32, height: u32, view: Affine) -> Result<Self, String> {
 +        let mut ctx = RenderContext::new_with(width as u16, height as u16,
 +            vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
 +        ctx.set_paint(color([255, 255, 255]));
 +        ctx.fill_rect(&Rect::new(0.0, 0.0, width as f64, height as f64));
-+        Ok(Self { ctx, resources: Resources::new(), fonts: HashMap::new(), view: Affine::scale(scale),
++        Ok(Self { ctx, resources: Resources::new(), fonts: HashMap::new(), view,
 +            width, height, clips: 0, saved: Vec::new(), used: 0, error: None })
 +    }
 +    fn reserve(&mut self, bytes: usize) -> bool {
@@ -793,7 +862,8 @@
 +        }
 +    }
 +    pub(super) fn measure(font: Font, size: f32, text: &str) -> f32 {
-+        shape(font, size, text).map(|t| t.width).unwrap_or(f32::INFINITY)
++        let Some((size, scale)) = normalized_font_size(size) else { return f32::INFINITY; };
++        shape(font, size, text).map(|t| t.width * scale as f32).unwrap_or(f32::INFINITY)
 +    }
 +    pub(super) fn save(&mut self) {
 +        if !self.reserve(64) { return; }
@@ -858,10 +928,10 @@
 +    }
 +    pub(super) fn text_rotated(&mut self, x: f32, y: f32, size: f32, font: Font, c: Rgb, text: &str, angle: f32) {
 +        if text.is_empty() || !size.is_finite() || size <= 0.0 || !self.reserve(text.len().saturating_mul(256)) { return; }
++        let Some((size, scale)) = normalized_font_size(size) else { self.error = Some("Worksheet text shaping limit"); return; };
 +        let Some(shaped) = shape(font, size, text) else { self.error = Some("Worksheet text shaping limit"); return; };
-+        let size = size.min(10_000.0);
 +        let angle = if angle.is_finite() { angle as f64 } else { 0.0 };
-+        let base = self.view * Affine::translate((scalar(x), scalar(y))) * Affine::rotate(angle);
++        let base = self.view * Affine::translate((scalar(x), scalar(y))) * Affine::rotate(angle) * Affine::scale(scale);
 +        for run in shaped.runs {
 +            if !self.reserve(run.glyphs.len().saturating_mul(256)) { return; }
 +            let face = run.face;
@@ -915,7 +985,7 @@
 +}
 --- a/gridcraft/crates/pdf/src/tests.rs
 +++ b/gridcraft/crates/pdf/src/tests.rs
-@@ -157,3 +157,69 @@
+@@ -157,3 +157,200 @@
      let pdf = d.finish();
      check_xref(&pdf);
  }
@@ -983,6 +1053,137 @@
 +    let mut multi = PdfDoc::new_raster(64, 64, 1.0)?;
 +    multi.add_page(64.0, 64.0); multi.add_page(64.0, 64.0);
 +    assert_eq!(multi.finish_raster().err().as_deref(), Some("Worksheet raster requires one rendered print page"));
++    let mut oversized_font = PdfDoc::new_raster(64, 64, 1.0)?;
++    let pg = oversized_font.add_page(64.0, 64.0);
++    assert!(pg.text_width(Font::Helvetica, 409.0 * (256.0 / 0.75), "E").is_finite());
++    assert!(pg.text_width(Font::Helvetica, 200_000.0, "E").is_infinite());
++    pg.text(0.0, 32.0, 200_000.0, Font::Helvetica, [0, 0, 0], "E");
++    assert_eq!(oversized_font.finish_raster().err().as_deref(), Some("Worksheet text shaping limit"));
++    Ok(())
++}
++
++#[cfg(feature = "raster")]
++#[test]
++fn raster_region_matches_a_same_scale_crop_with_clips_images_and_text() -> Result<(), String> {
++    let draw = |pg: &mut Page, with_text: bool| {
++        pg.fill_rect(0.0, 0.0, 128.0, 128.0, [240, 230, 220]);
++        pg.save(); pg.clip_rect(30.0, 38.0, 16.0, 18.0);
++        pg.fill_rect(28.0, 36.0, 24.0, 24.0, [0, 0, 255]);
++        pg.image_rgba(33.0, 41.0, 6.0, 4.0, &[255, 0, 0, 128, 0, 255, 0, 255], 2, 1);
++        pg.restore();
++        pg.stroke_line_dashed(30.0, 43.25, 48.0, 43.25, 0.25, [0, 0, 0], &[]);
++        if with_text { pg.text(32.0, 49.5, 5.0, Font::TimesRoman, [0, 0, 0], "Region Ω"); }
++    };
++    let mut without_text = Vec::new();
++    for with_text in [false, true] {
++        // Above the old full-page scale limit, with a nonzero origin on both axes.
++        let mut full = PdfDoc::new_raster_region(1024, 1024, 8.0, 8.0, 0.0, 0.0)?;
++        draw(full.add_page(128.0, 128.0), with_text);
++        let full = full.finish_raster()?;
++        let mut region = PdfDoc::new_raster_region(96, 80, 8.0, 8.0, -256.0, -320.0)?;
++        draw(region.add_page(128.0, 128.0), with_text);
++        let region = region.finish_raster()?;
++        let (mut differing_channels, mut unexpected_channels, mut max_delta) = (0usize, 0usize, 0u8);
++        let (mut first_difference, mut first_unexpected) = (None, None);
++        for y in 0..80usize {
++            for x in 0..96usize {
++                let at = (y * 96 + x) * 4;
++                let start = ((320 + y) * 1024 + 256 + x) * 4;
++                let actual = &region.pixels[at..at + 4];
++                let expected = &full.pixels[start..start + 4];
++                // Vello converts transformed outline points to f32 before tile-local
++                // coverage calculation, then rounds coverage to u8. Integer translation
++                // can change that rounding by one level at a partial glyph edge.
++                // The exact first pass proves both pre-text pixels are solid blue here.
++                let partial_text = with_text && without_text[at..at + 4] == [0, 0, 255, 255]
++                    && [actual, expected].iter().all(|p| p[0] == 0 && p[1] == 0 && p[3] == 255
++                        && p[2] > 0 && p[2] < 255);
++                for channel in 0..4 {
++                    let delta = actual[channel].abs_diff(expected[channel]);
++                    if delta == 0 { continue; }
++                    differing_channels += 1;
++                    max_delta = max_delta.max(delta);
++                    let difference = (x, y, channel, actual[channel], expected[channel]);
++                    first_difference.get_or_insert(difference);
++                    if !(partial_text && channel == 2 && delta <= 1) {
++                        unexpected_channels += 1;
++                        first_unexpected.get_or_insert(difference);
++                    }
++                }
++            }
++        }
++        assert_eq!(unexpected_channels, 0,
++            "text={with_text}: differing_channels={differing_channels}, max_delta={max_delta}, first_difference={first_difference:?}, first_unexpected={first_unexpected:?}");
++        // A quarter-point stroke occupies two native pixels at this scale; it is not
++        // reconstructed from an enlarged one-pixel-per-point page bitmap.
++        let pixel = |x: usize, y: usize| &region.pixels[(y * 96 + x) * 4..(y * 96 + x) * 4 + 4];
++        assert_eq!(pixel(88, 25), &[0, 0, 0, 255]);
++        assert_eq!(pixel(88, 26), &[0, 0, 0, 255]);
++        assert_eq!(pixel(88, 23), &[0, 0, 255, 255]);
++        if !with_text { without_text = region.pixels; }
++    }
++    Ok(())
++}
++
++#[cfg(feature = "raster")]
++#[test]
++fn raster_region_maps_anisotropic_corners_clips_and_images_into_exact_output() -> Result<(), String> {
++    // Original points [32, 40]..[44, 50] map directly to 96 x 90 pixels.
++    // Different scales exercise exact right/bottom coverage without an intermediate raster.
++    let mut doc = PdfDoc::new_raster_region(96, 90, 8.0, 9.0, -256.0, -360.0)?;
++    let pg = doc.add_page(128.0, 128.0);
++    pg.fill_rect(0.0, 0.0, 128.0, 128.0, [240, 230, 220]);
++    pg.fill_rect(32.0, 40.0, 1.0, 1.0, [255, 0, 0]);
++    pg.fill_rect(43.0, 40.0, 1.0, 1.0, [0, 255, 0]);
++    pg.fill_rect(32.0, 49.0, 1.0, 1.0, [0, 0, 255]);
++    pg.fill_rect(43.0, 49.0, 1.0, 1.0, [255, 255, 0]);
++    pg.save(); pg.clip_rect(33.0, 41.0, 10.0, 8.0);
++    pg.fill_rect(0.0, 0.0, 128.0, 128.0, [0, 255, 255]);
++    pg.image_rgba(35.0, 43.0, 6.0, 4.0, &[255, 0, 255, 255, 0, 255, 0, 255], 2, 1);
++    pg.restore();
++    let image = doc.finish_raster()?;
++    assert_eq!((image.width, image.height, image.pixels.len()), (96, 90, 96 * 90 * 4));
++    let pixel = |x: usize, y: usize| &image.pixels[(y * 96 + x) * 4..(y * 96 + x) * 4 + 4];
++    for (x, y, color) in [(0, 0, [255, 0, 0, 255]), (95, 0, [0, 255, 0, 255]),
++        (0, 89, [0, 0, 255, 255]), (95, 89, [255, 255, 0, 255])] {
++        assert_eq!(pixel(x, y), &color, "all four source corners reach the requested output corners");
++    }
++    for (x, y) in [(7, 40), (88, 40), (40, 8), (40, 81)] {
++        assert_eq!(pixel(x, y), &[240, 230, 220, 255], "clip does not reach outside its transformed bounds");
++    }
++    for (x, y) in [(8, 40), (87, 40), (40, 9), (40, 80)] {
++        assert_eq!(pixel(x, y), &[0, 255, 255, 255], "clip includes both transformed edge pixels");
++    }
++    assert_eq!(pixel(32, 40), &[255, 0, 255, 255]);
++    assert_eq!(pixel(64, 40), &[0, 255, 0, 255]);
++    Ok(())
++}
++
++#[cfg(feature = "raster")]
++#[test]
++fn raster_region_bounds_preserve_the_full_page_contract_and_drawing_budget() -> Result<(), String> {
++    assert!(PdfDoc::new_raster(2800, 64, 4.0).is_ok());
++    assert!(PdfDoc::new_raster(2801, 64, 4.0).is_err());
++    assert!(PdfDoc::new_raster(64, 64, 4.01).is_err());
++    assert!(PdfDoc::new_raster_region(4096, 1, 32.0, 64.0, -12_288.0, -16_384.0).is_ok());
++    assert!(PdfDoc::new_raster_region(4000, 2000, 1.0, 1.0, 0.0, 0.0).is_ok());
++    for (width, height) in [(0, 64), (64, 0), (4097, 1), (1, 4097), (4000, 2001)] {
++        assert!(PdfDoc::new_raster_region(width, height, 1.0, 1.0, 0.0, 0.0).is_err());
++    }
++    for scale in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::MAX, f64::from_bits(1)] {
++        assert!(PdfDoc::new_raster_region(64, 64, scale, 8.0, 0.0, 0.0).is_err());
++        assert!(PdfDoc::new_raster_region(64, 64, 8.0, scale, 0.0, 0.0).is_err());
++    }
++    assert!(PdfDoc::new_raster_region(64, 64, f64::MIN_POSITIVE, f64::MIN_POSITIVE, 0.0, 0.0).is_err());
++    for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX, 1e12] {
++        assert!(PdfDoc::new_raster_region(64, 64, 8.0, 9.0, offset, 0.0).is_err());
++        assert!(PdfDoc::new_raster_region(64, 64, 8.0, 9.0, 0.0, offset).is_err());
++    }
++    let mut doc = PdfDoc::new_raster_region(64, 64, 8.0, 9.0, -256.0, -320.0)?;
++    let pg = doc.add_page(128.0, 128.0);
++    let pts = vec![[1.0, 1.0]; MAX_PAGE_CONTENT / 128 + 1];
++    pg.polygon(&pts, Some([0, 0, 0]), None);
++    assert_eq!(doc.finish_raster().err().as_deref(), Some("Worksheet raster drawing budget exceeded"));
 +    Ok(())
 +}
 --- a/gridcraft/crates/chart/src/lib.rs

@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +45,7 @@ private val LocalReaderTexture = staticCompositionLocalOf<ShaderBrush?> { null }
 @Composable
 fun ReaderTheme(appTheme: AppTheme = AppTheme.SYSTEM, content: @Composable () -> Unit) {
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
     val dark = appTheme.isDark(isSystemInDarkTheme())
     val black = appTheme == AppTheme.AMOLED
     val texture by produceState<ShaderBrush?>(null, context.resources, black) {
@@ -51,25 +53,11 @@ fun ReaderTheme(appTheme: AppTheme = AppTheme.SYSTEM, content: @Composable () ->
             try { ReaderTexture.brush(context.resources) } catch (_: OutOfMemoryError) { null }
         }
     }
-    val colors = remember(context, dark, black) {
-        val accent = if (Build.VERSION.SDK_INT >= 31) {
+    val colors = remember(context, configuration, dark, black) {
+        val palette = if (Build.VERSION.SDK_INT >= 31) {
             if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         } else if (dark) darkColorScheme() else lightColorScheme()
-        fun tone(night: Long, day: Long) = Color(if (dark) night else day)
-        accent.copy(
-            background = if (black) Color.Black else tone(0xFF101418, 0xFFF5F6F7),
-            surface = if (black) Color.Black else tone(0xFF101418, 0xFFF5F6F7),
-            onBackground = tone(0xFFE5EBEF, 0xFF1A2329), onSurface = tone(0xFFE5EBEF, 0xFF1A2329),
-            onSurfaceVariant = tone(0xFFAFBAC2, 0xFF56636C),
-            surfaceDim = if (black) Color.Black else tone(0xFF101418, 0xFFDDE3E7), surfaceBright = tone(0xFF343C43, 0xFFFAFCFD),
-            surfaceContainerLowest = if (black) Color.Black else tone(0xFF0B0F12, 0xFFFFFFFF),
-            surfaceContainerLow = if (black) Color(0xFF111111) else tone(0xFF171D22, 0xFFF0F3F5),
-            surfaceContainer = if (black) Color(0xFF181818) else tone(0xFF1D242A, 0xFFEAF0F3),
-            surfaceContainerHigh = if (black) Color(0xFF202020) else tone(0xFF262E35, 0xFFE2E9ED),
-            surfaceContainerHighest = if (black) Color(0xFF292929) else tone(0xFF303A42, 0xFFD8E1E7),
-            surfaceVariant = tone(0xFF303A42, 0xFFD8E1E7),
-            outline = tone(0xFF64727D, 0xFF77858F), outlineVariant = tone(0xFF34404A, 0xFFC8D3DB),
-        )
+        readerColorScheme(palette, black)
     }
     val view = LocalView.current
     SideEffect {
@@ -89,6 +77,10 @@ fun ReaderTheme(appTheme: AppTheme = AppTheme.SYSTEM, content: @Composable () ->
         }
     }
 }
+
+internal fun readerColorScheme(palette: ColorScheme, black: Boolean): ColorScheme =
+    if (!black) palette else palette.copy(background = Color.Black, surface = Color.Black,
+        surfaceDim = Color.Black, surfaceContainerLowest = Color.Black)
 
 /** Explicit brightness remains useful for host screens and UI tests. */
 @Composable

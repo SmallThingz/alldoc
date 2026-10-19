@@ -66,7 +66,7 @@ class ReaderPagesGeometryTest {
         assertEquals(.75f, pose.zoom, 0f)
         assertEquals(.75f, ViewportState(zoom = .1f).normalized().zoom, 0f)
         assertEquals(1f, ViewportState(zoom = Float.NaN).normalized().zoom, 0f)
-        assertEquals(8f, ViewportState(zoom = 20f).normalized().zoom, 0f)
+        assertEquals(32f, ViewportState(zoom = 40f).normalized().zoom, 0f)
         assertEquals(225f, pageRowLength(600f, 400f, .5f, pose, false), 0f)
         assertEquals(450f, pageImageLength(600f, 400f, .5f, pose, true), 0f)
         assertEquals(600f, pageRowLength(600f, 400f, .5f, pose, true), 0f)

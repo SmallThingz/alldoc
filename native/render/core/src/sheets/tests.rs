@@ -86,8 +86,91 @@ fn viewport_reuses_workbook_and_renders_charts_images_and_far_cells() {
     assert_eq!(header, header_again);
     assert_eq!(&reader.workbook as *const Workbook, pointer);
     assert!(reader.render(0, f64::NAN, 0.0, 1.0, 100, 100).is_err());
-    assert!(reader.render(0, 0.0, 0.0, 33.0, 100, 100).is_err());
-    assert!(reader.render(0, 0.0, 0.0, 1.0, 2801, 100).is_err());
+    assert!(reader.render(0, 0.0, 0.0, 257.0, 100, 100).is_err());
+    assert!(reader.render(0, 0.0, 0.0, 1.0, 4097, 100).is_err());
+    assert!(reader.render(0, 0.0, 0.0, 1.0, 4096, 1954).is_err());
+}
+
+#[test]
+fn deep_worksheet_viewport_keeps_native_detail_and_physical_output_bounds() {
+    let mut workbook = Workbook::new();
+    let mut style = Style::default();
+    style.font.size = 8.0;
+    let style = workbook.styles.intern(style);
+    let sheet = workbook.sheet_mut(0).unwrap();
+    sheet.show_gridlines = false;
+    sheet.set_value(CellRef::new(0, 0), CellValue::Text("Edge".into()));
+    sheet.set_style(CellRef::new(0, 0), style);
+    let mut reader = WorkbookReader::from_workbook(workbook, String::new()).unwrap();
+    let (_, low) = reader.render(0, 0.0, 0.0, 32.0, 128, 512).unwrap();
+    let (receipt, high) = reader.render(0, 0.0, 0.0, 256.0, 1024, 4096).unwrap();
+    assert_eq!(receipt["width"], 1024);
+    assert_eq!(receipt["height"], 4096);
+    assert_eq!(receipt["scale"], 256.0);
+    let low = image::load_from_memory(&low).unwrap().to_rgb8();
+    let high = image::load_from_memory(&high).unwrap().to_rgb8();
+    assert_eq!(high.dimensions(), (1024, 4096));
+    assert!(high.pixels().filter(|p| p.0.iter().all(|c| *c < 100)).count() > 100);
+    assert_ne!(high, image::imageops::resize(&low, 1024, 4096, image::imageops::FilterType::Triangle));
+}
+
+#[test]
+fn ordinary_large_fonts_keep_native_edges_and_alignment_at_maximum_zoom() {
+    use deckcraft_geom::KurboShape;
+    use gridcraft_model::{HAlign, VAlign};
+
+    // Derive the expected edge from the pinned font outline and advance, without
+    // using the raster target's measurement or a resized preview as the oracle.
+    let face = wordcraft_fonts::word::resolve("Arial", false, false).face;
+    let glyphs = wordcraft_fonts::shape(&face, "E", &[], |c| c);
+    assert_eq!(glyphs.len(), 1);
+    let glyph = &glyphs[0];
+    let outline = wordcraft_fonts::FontDb::global().outline(&face, glyph.gid);
+    assert!(!outline.elements().is_empty());
+    let bounds = outline.bounding_box();
+    for font_size in [32.0f32, 64.0] {
+        for alignment in [HAlign::Left, HAlign::Right] {
+            let mut workbook = Workbook::new();
+            let mut style = Style::default();
+            style.font.name = "Arial".into();
+            style.font.size = font_size;
+            style.align.h = alignment;
+            style.align.v = VAlign::Top;
+            let style = workbook.styles.intern(style);
+            let sheet = workbook.sheet_mut(0).unwrap();
+            sheet.default_col_width = 300.0;
+            sheet.default_row_height = 200.0;
+            sheet.show_gridlines = false;
+            sheet.set_value(CellRef::new(0, 0), CellValue::Text("E".into()));
+            sheet.set_style(CellRef::new(0, 0), style);
+
+            let size = font_size as f64 / 0.75;
+            let units = size / face.upem;
+            let advance = glyph.x_advance as f64 * units;
+            let origin = if alignment == HAlign::Right { 300.0 - 2.0 - advance } else { 2.0 };
+            let left = origin + (bounds.x0 + glyph.x_offset as f64) * units;
+            let middle = 2.0 + size * 0.8
+                + ((bounds.y0 + bounds.y1) / 2.0 - glyph.y_offset as f64) * units;
+            let mut reader = WorkbookReader::from_workbook(workbook, String::new()).unwrap();
+            let (receipt, bytes) = reader.render(0, left - 1.0, middle - 2.0, 256.0, 1024, 1024).unwrap();
+            assert_eq!(receipt["width"], 1024);
+            assert_eq!(receipt["height"], 1024);
+            assert_eq!(receipt["scale"], 256.0);
+            let image = image::load_from_memory(&bytes).unwrap().to_rgb8();
+            assert_eq!(image.dimensions(), (1024, 1024));
+            let mut darkest_left = u32::MAX;
+            let mut dark_pixels = 0;
+            for (x, _, pixel) in image.enumerate_pixels() {
+                if pixel.0.iter().all(|c| *c < 100) {
+                    darkest_left = darkest_left.min(x);
+                    dark_pixels += 1;
+                }
+            }
+            assert!(dark_pixels > 1000, "{font_size} pt {alignment:?} stem must remain visible");
+            assert!(darkest_left.abs_diff(256) <= 3,
+                "{font_size} pt {alignment:?} edge moved to {darkest_left}; expected one sheet pixel of padding");
+        }
+    }
 }
 
 #[test]

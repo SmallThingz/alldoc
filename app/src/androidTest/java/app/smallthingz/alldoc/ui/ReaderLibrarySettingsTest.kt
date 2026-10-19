@@ -46,16 +46,20 @@ class ReaderLibrarySettingsTest {
                     ReaderTheme { ReaderScreen(fixture.reader, onOpen = {}, onExport = { _, _ -> }) }
                 } }
                 fun node(label: String, nodes: List<SemanticsNode>) = find(nodes) {
-                    label in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty()
+                    label in it.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty() ||
+                        it.config.getOrNull(SemanticsProperties.Text).orEmpty().any { text -> text.text == label }
                 }
-                await("Home settings action is unavailable") {
+                await("Library tab is unavailable") {
                     var opened = false
-                    scenario.onActivity { activity -> opened = node("Settings", activity.testSemantics())
-                        ?.config?.getOrNull(SemanticsActions.OnClick)?.action?.invoke() == true }
+                    scenario.onActivity { activity -> opened = node("Library", activity.testSemantics())?.let { label ->
+                        generateSequence(label) { it.parent }.mapNotNull {
+                            it.config.getOrNull(SemanticsActions.OnClick)?.action
+                        }.firstOrNull()?.invoke() == true
+                    } == true }
                     opened
                 }
                 val label = "Library: Documents"
-                await("Settings type controls did not lay out") {
+                await("Library type controls did not lay out") {
                     var visible = false
                     scenario.onActivity { activity ->
                         val choice = node(label, activity.testSemantics())
@@ -87,7 +91,7 @@ class ReaderLibrarySettingsTest {
                     assertFalse(fixture.reader.librarySettingsLoaded.value)
                     assertTrue("An early UI tap must not replace unseen saved types", fixture.reader.libraryHiddenTypes.isEmpty())
                     assertNotNull(requireNotNull(node(label, activity.testSemantics())).config.getOrNull(SemanticsProperties.Disabled))
-                    assertNull("Unrelated settings must remain usable", requireNotNull(node("App theme: Dark", activity.testSemantics()))
+                    assertNull("Document opening must remain usable", requireNotNull(node("Open", activity.testSemantics()))
                         .config.getOrNull(SemanticsProperties.Disabled))
                 }
                 release.countDown()

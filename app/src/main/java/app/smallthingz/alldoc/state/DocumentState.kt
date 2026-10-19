@@ -10,18 +10,23 @@ data class ViewportState(val zoom: Float = 1f, val centerX: Float = .5f, val cen
         rotation = ((rotation % 4) + 4) % 4)
     companion object {
         const val MIN_ZOOM = .75f
-        const val MAX_ZOOM = 8f
+        const val MAX_ZOOM = 32f
     }
 }
 
-data class TextPosition(val offset: Int = 0, val fraction: Float = 0f) {
-    fun normalized() = copy(offset = offset.coerceAtLeast(0), fraction = fraction.finite(0f).coerceIn(0f, 1f))
+data class TextPosition(val offset: Int = 0, val fraction: Float = 0f, val zoom: Float = 1f,
+    val horizontalOffset: Int = -1, val horizontalFraction: Float = 0f) {
+    fun normalized() = copy(offset = offset.coerceAtLeast(0), fraction = fraction.finite(0f).coerceIn(0f, 1f),
+        zoom = zoom.finite(1f).coerceIn(MIN_ZOOM, MAX_ZOOM), horizontalOffset = horizontalOffset.coerceAtLeast(-1),
+        // Signed glyph fractions preserve the leading inset and space beyond a short line.
+        horizontalFraction = if (horizontalOffset < 0) 0f else horizontalFraction.finite(0f))
+    companion object { const val MIN_ZOOM = .5f; const val MAX_ZOOM = 8f }
 }
 
 /** -1 selects the authored active worksheet when this document has no saved sheet. */
 data class SheetPosition(val sheet: Int = -1, val x: Double = 0.0, val y: Double = 0.0, val zoom: Float = 1f) {
     fun normalized() = copy(sheet = sheet.coerceIn(-1, 1023), x = x.takeIf { it.isFinite() }?.coerceIn(0.0, 1e9) ?: 0.0,
-        y = y.takeIf { it.isFinite() }?.coerceIn(0.0, 1e9) ?: 0.0, zoom = zoom.finite(1f).coerceIn(.25f, 8f))
+        y = y.takeIf { it.isFinite() }?.coerceIn(0.0, 1e9) ?: 0.0, zoom = zoom.finite(1f).coerceIn(.25f, 32f))
 }
 
 enum class DocumentViewMode { PAGES, TEXT }
@@ -53,6 +58,12 @@ data class StoredDocument(val hash: String, val metadata: DocumentMetadata, val 
 
 /** Enabled means retaining otherwise unrecoverable inputs, not copying every opened file. */
 data class CopySettings(val enabled: Boolean = true, val maxBytes: Long = 256L * 1024 * 1024,
-    val maxCount: Int = 1000, val treeUri: String? = null)
+    val maxCount: Int = 1_000_000, val treeUri: String? = null) {
+    fun validate() {
+        require((maxBytes in 1..DocumentStore.MAX_COPY_BYTES || maxBytes == Long.MAX_VALUE ||
+            maxBytes == 0L && !enabled) && maxCount in 1..DocumentStore.MAX_COPIES)
+        require(treeUri == null || treeUri.length in 1..4096 && '\u0000' !in treeUri) { "Document reference exceeds its metadata limit" }
+    }
+}
 
 private fun Float.finite(fallback: Float) = if (isFinite()) this else fallback

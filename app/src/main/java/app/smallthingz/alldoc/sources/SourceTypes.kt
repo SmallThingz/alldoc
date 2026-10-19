@@ -15,8 +15,11 @@ data class PreparedDocument(val hash: String, val sizeBytes: Long, val displayNa
     override fun close() = session.close()
 }
 
-data class CopyStatus(val bytes: Long, val count: Int, val location: String, val warning: String? = null, val evictedHashes: List<String> = emptyList())
-data class CopyChange(val evictedHashes: List<String>, val warning: String? = null)
+/** Reconcile this bounded trim batch before continuing while trimPending is true. */
+data class CopyStatus(val bytes: Long, val count: Int, val location: String, val warning: String? = null,
+    val evictedHashes: List<String> = emptyList(), val trimPending: Boolean = false)
+/** A bounded deletion batch. Reconcile its receipts before requesting the continuation. */
+data class CopyChange(val evictedHashes: List<String>, val warning: String? = null, val continuation: String? = null)
 
 data class CopyEviction(val id: Long, val hash: String, val importUri: String)
 

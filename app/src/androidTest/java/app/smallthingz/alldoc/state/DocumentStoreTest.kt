@@ -195,6 +195,129 @@ class DocumentStoreTest {
         }
     }
 
+    @Test fun versionSixAddsIndependentTextZoomAndPreservesPageAndSheetState() = database { name ->
+        legacyDatabase(name, 6)
+        val text = TextPosition(400, .25f, 3f)
+        DocumentStore(context, name).use { store ->
+            val old = store.get(hash(1))!!.state
+            assertEquals(1f, old.textPosition.zoom, 0f)
+            assertEquals(2.5f, old.viewport.zoom, 0f)
+            store.saveState(hash(1), old.copy(textPosition = text,
+                viewport = old.viewport.copy(zoom = 24f), sheetPosition = SheetPosition(3, 90.5, 120.5, 28f)))
+        }
+        DocumentStore(context, name).use { store ->
+            val alias = store.open(hash(1), metadata("Renamed", source = "content://alias/1"))
+            assertEquals(text, alias.state.textPosition)
+            assertEquals(24f, alias.state.viewport.zoom, 0f)
+            assertEquals(SheetPosition(3, 90.5, 120.5, 28f), alias.state.sheetPosition)
+        }
+    }
+
+    @Test fun versionSevenAddsAbsentHorizontalAnchorWithoutChangingReadingState() = database { name ->
+        legacyDatabase(name, 7)
+        SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("UPDATE documents SET text_zoom=3,sheet=3,sheet_x=90.5,sheet_y=120.5,sheet_zoom=28")
+        }
+        DocumentStore(context, name).use { store ->
+            val old = store.get(hash(1))!!.state
+            assertEquals(TextPosition(400, .25f, 3f), old.textPosition)
+            assertEquals(7, old.page)
+            assertEquals(ViewportState(2.5f, .2f, .8f, 3), old.viewport)
+            assertEquals(.375f, old.pageFraction, 0f)
+            assertTrue(old.horizontalPages)
+            assertEquals(SheetPosition(3, 90.5, 120.5, 28f), old.sheetPosition)
+            assertTrue(store.saveState(hash(1), old.copy(textPosition = old.textPosition.copy(
+                horizontalOffset = 1200, horizontalFraction = -.375f))))
+        }
+        DocumentStore(context, name).use { store ->
+            val saved = store.get(hash(1))!!.state
+            assertEquals(TextPosition(400, .25f, 3f, 1200, -.375f), saved.textPosition)
+            assertEquals(ViewportState(2.5f, .2f, .8f, 3), saved.viewport)
+            assertEquals(SheetPosition(3, 90.5, 120.5, 28f), saved.sheetPosition)
+        }
+        SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+            assertEquals(8, db.version)
+        }
+    }
+
+    @Test fun horizontalAnchorFollowsContentAcrossReopenAndAliasIndependentlyOfVerticalPosition() = database { name ->
+        val initial = DocumentState(page = 7, viewport = ViewportState(4f, .3f, .7f, 2),
+            textPosition = TextPosition(400, .25f, 3f, 1200, -.375f), mode = DocumentViewMode.TEXT,
+            sheetPosition = SheetPosition(3, 90.5, 120.5, 28f))
+        val moved = initial.copy(textPosition = initial.textPosition.copy(offset = 640, fraction = .75f, zoom = 2f))
+        DocumentStore(context, name).use { store ->
+            store.open(hash(10), metadata(source = "content://original/markdown"), initial)
+            store.open(hash(11), metadata("Other content"))
+        }
+        DocumentStore(context, name).use { store ->
+            val alias = store.open(hash(10).uppercase(), metadata("Alias", source = "content://alias/markdown"),
+                DocumentState(textPosition = TextPosition(0, 0f, 1f, 99, .5f)))
+            assertEquals(initial, alias.state)
+            assertEquals("content://alias/markdown", alias.metadata.sourceUri)
+            assertEquals(TextPosition(), store.get(hash(11))!!.state.textPosition)
+            assertTrue(store.saveState(hash(10), moved))
+        }
+        DocumentStore(context, name).use { store ->
+            assertEquals(moved, store.get(hash(10))!!.state)
+            assertTrue(store.saveState(hash(10), moved.copy(textPosition =
+                moved.textPosition.copy(horizontalOffset = -1, horizontalFraction = 0f))))
+        }
+        DocumentStore(context, name).use { store ->
+            assertEquals(moved.copy(textPosition = TextPosition(640, .75f, 2f)), store.get(hash(10))!!.state)
+            assertEquals(TextPosition(), store.get(hash(11))!!.state.textPosition)
+        }
+    }
+
+    @Test fun horizontalAnchorNormalizesAbsentAndNonFiniteValuesBeforePersistence() = database { name ->
+        val invalid = listOf(
+            TextPosition(400, .25f, 3f, -9, .5f) to TextPosition(400, .25f, 3f),
+            TextPosition(400, .25f, 3f, -1, -.5f) to TextPosition(400, .25f, 3f),
+            TextPosition(400, .25f, 3f, 1200, Float.NaN) to TextPosition(400, .25f, 3f, 1200, 0f),
+            TextPosition(400, .25f, 3f, 1200, Float.POSITIVE_INFINITY) to TextPosition(400, .25f, 3f, 1200, 0f))
+        DocumentStore(context, name).use { store ->
+            invalid.forEachIndexed { index, (input, _) ->
+                store.open(hash(index + 1), metadata(), DocumentState(textPosition = input))
+            }
+        }
+        DocumentStore(context, name).use { store ->
+            invalid.forEachIndexed { index, (_, expected) ->
+                assertEquals(expected, store.get(hash(index + 1))!!.state.textPosition)
+            }
+        }
+    }
+
+    @Test fun disabledAndUnlimitedCopyLimitsPersistWithoutClearingReferences() = database { name ->
+        val uri = "content://retained/document"
+        for (settings in listOf(CopySettings(false, 0), CopySettings(true, Long.MAX_VALUE), CopySettings(false, 1024))) {
+            DocumentStore(context, name).use { store ->
+                store.open(hash(1), metadata().copy(importUri = uri))
+                store.saveCopySettings(settings)
+                assertEquals(uri, store.get(hash(1))!!.metadata.importUri)
+                assertThrows(IllegalArgumentException::class.java) { store.saveCopySettings(CopySettings(true, 0)) }
+                assertThrows(IllegalArgumentException::class.java) { store.saveCopySettings(CopySettings(true, -1)) }
+            }
+            DocumentStore(context, name).use { assertEquals(settings, it.copySettings()) }
+        }
+    }
+
+    @Test fun everyDiscreteFiniteCapPersistsAtTheMillionCopyBoundary() = database { name ->
+        val megabytes = listOf<Long>(1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768,
+            1024, 1280, 1536, 1792, 2048, 2560, 3072, 3584, 4096)
+        for (limit in megabytes) {
+            val settings = CopySettings(true, limit * 1024 * 1024, 1_000_000, "content://documents/tree/alldoc")
+            settings.validate()
+            DocumentStore(context, name).use { it.saveCopySettings(settings) }
+            DocumentStore(context, name).use { assertEquals(settings, it.copySettings()) }
+        }
+        DocumentStore(context, name).use { store ->
+            for (invalid in listOf(CopySettings(maxCount = 1_000_001), CopySettings(maxCount = 0),
+                CopySettings(maxBytes = 0), CopySettings(maxBytes = -1))) {
+                assertThrows(IllegalArgumentException::class.java) { invalid.validate() }
+                assertThrows(IllegalArgumentException::class.java) { store.saveCopySettings(invalid) }
+            }
+        }
+    }
+
     private fun legacyDatabase(name: String, version: Int) {
         val path = context.getDatabasePath(name).apply { parentFile!!.mkdirs() }
         SQLiteDatabase.openOrCreateDatabase(path, null).use { db ->
@@ -224,6 +347,14 @@ class DocumentStoreTest {
                 db.execSQL("UPDATE documents SET page_fraction=.375,horizontal_pages=1")
             }
             if (version >= 4) db.execSQL("ALTER TABLE documents ADD COLUMN notes_visible INTEGER NOT NULL DEFAULT 1")
+            if (version >= 5) db.execSQL("ALTER TABLE documents ADD COLUMN paper_roughness INTEGER NOT NULL DEFAULT 0")
+            if (version >= 6) {
+                db.execSQL("ALTER TABLE documents ADD COLUMN sheet INTEGER NOT NULL DEFAULT -1")
+                db.execSQL("ALTER TABLE documents ADD COLUMN sheet_x REAL NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE documents ADD COLUMN sheet_y REAL NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE documents ADD COLUMN sheet_zoom REAL NOT NULL DEFAULT 1")
+            }
+            if (version >= 7) db.execSQL("ALTER TABLE documents ADD COLUMN text_zoom REAL NOT NULL DEFAULT 1")
             db.version = version
         }
     }

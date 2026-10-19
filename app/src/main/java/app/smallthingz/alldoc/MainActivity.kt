@@ -37,9 +37,6 @@ class MainActivity : ComponentActivity() {
         if (uri != null) reader.useStorageFolder(uri)
     }
 
-    private val libraryFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) reader.addLibraryFolder(uri)
-    }
     private val libraryAccess = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { refreshLibraryAccess(true) }
     private val legacyLibraryAccess = registerForActivityResult(ActivityResultContracts.RequestPermission()) { refreshLibraryAccess(true) }
 
@@ -70,10 +67,7 @@ class MainActivity : ComponentActivity() {
             }, onChooseStorage = {
                 try { storageFolder.launch(reader.copySettings.treeUri?.let(Uri::parse)) }
                 catch (_: android.content.ActivityNotFoundException) { reader.showError("No folder picker is available.") }
-            }, libraryAccess = access, onLibraryAccess = ::requestLibraryAccess, onAddLibraryFolder = {
-                try { libraryFolder.launch(null) }
-                catch (_: ActivityNotFoundException) { reader.showError("No folder picker is available.") }
-            }, externalDocument = externalDocument, onInternalOpen = { externalDocument = false },
+            }, libraryAccess = access, onLibraryAccess = ::requestLibraryAccess, externalDocument = externalDocument, onInternalOpen = { externalDocument = false },
                 onFullscreen = ::setFullscreen,
                 onPrint = { identity ->
                     reader.createPrintAdapter(identity)?.let { adapter ->

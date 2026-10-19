@@ -151,6 +151,7 @@ class DocumentService : Service() {
                                width: Int, height: Int, theme: String, imageTreatment: String): ParcelFileDescriptor = memorySafe {
             checkOwner()
             require(width in 64..2048 && height in 64..2048) { "Invalid worksheet image size" }
+            require(scale <= 32.0) { "Invalid worksheet scale" }
             require(imageTreatment.length <= 8) { "Unknown image treatment" }
             val viewport = SheetViewport(sheet, x, y, scale, width, height).checked()
             val images = when (imageTreatment.lowercase(Locale.ROOT)) {

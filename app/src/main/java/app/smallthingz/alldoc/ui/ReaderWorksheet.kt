@@ -67,6 +67,7 @@ import app.smallthingz.alldoc.engine.SheetGeometry
 import app.smallthingz.alldoc.engine.SheetViewport
 import app.smallthingz.alldoc.engine.WorkbookInfo
 import app.smallthingz.alldoc.state.SheetPosition
+import app.smallthingz.alldoc.state.ViewportState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -77,6 +78,7 @@ import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 
 /** Cell geometry and pixels come from one sheet renderer; this surface never arranges print pages. */
 @Composable
@@ -154,14 +156,17 @@ internal fun ReaderWorksheet(
                 if (abs(pan.y) > abs(pan.x) && pan.y != 0f) direction(pan.y < 0f)
                 return true
             }
-            val moveNow by rememberUpdatedState(::move)
+            // Callable-reference equality ignores changed captured geometry; keep these as lambdas.
+            val moveNow by rememberUpdatedState<(Offset, Float, Offset) -> Boolean> { pan, factor, anchor ->
+                move(pan, factor, anchor)
+            }
             fun zoom(anchor: Offset, target: Float) {
                 settling?.cancel()
                 val start = pose
                 val current = sheet ?: return
                 settling = scope.launch {
                     try {
-                        animate(start.zoom, target.coerceIn(.25f, 8f), animationSpec = tween(220)) { value, _ ->
+                        animate(start.zoom, target.coerceIn(.25f, ViewportState.MAX_ZOOM), animationSpec = tween(220)) { value, _ ->
                             pose = worksheetTransform(start, current.sheet.width, current.sheet.height, width.toDouble(), height.toDouble(),
                                 baseScale, anchor.x.toDouble(), anchor.y.toDouble(), 0.0, 0.0, value / start.zoom)
                             changed(pose)
@@ -169,7 +174,7 @@ internal fun ReaderWorksheet(
                     } finally { finished() }
                 }
             }
-            val zoomNow by rememberUpdatedState(::zoom)
+            val zoomNow by rememberUpdatedState<(Offset, Float) -> Unit> { anchor, target -> zoom(anchor, target) }
             fun step(x: Float, y: Float): Boolean {
                 settling?.cancel()
                 if (!move(Offset(-x, -y))) return false
@@ -244,8 +249,11 @@ internal fun ReaderWorksheet(
                                 multiple && abs(1f - zoomMotion) * event.calculateCentroidSize(useCurrent = false) > viewConfiguration.touchSlop
                             if (owns) {
                                 dragging = true
-                                val anchor = event.calculateCentroid(useCurrent = false) - origin
-                                moved = moveNow(pan, if (multiple) factor else 1f, anchor) || moved
+                                // Final UP has no shared pressed pointers, so its centroid is unspecified.
+                                if (pan != Offset.Zero || multiple && factor != 1f) {
+                                    val anchor = event.calculateCentroid(useCurrent = false) - origin
+                                    moved = moveNow(pan, if (multiple) factor else 1f, anchor) || moved
+                                }
                                 event.changes.forEach { if (it.positionChanged()) it.consume() }
                             }
                             released = event.changes.none { it.pressed }
@@ -371,13 +379,17 @@ internal fun ReaderWorksheet(
     }
 }
 
-internal fun worksheetScale(zoom: Float, density: Double) = (zoom * density).coerceIn(.25, 32.0)
+internal fun worksheetScale(zoom: Float, density: Double): Double {
+    val level = zoom.takeIf { it.isFinite() && it > 0f } ?: 1f
+    val pixels = density.takeIf { it.isFinite() && it > 0.0 } ?: 1.0
+    return (level * pixels).coerceIn(.25, SheetViewport.MAX_SCALE)
+}
 
 /** Preserve the document point beneath the fingers, then clamp to the sheet bounds. */
 internal fun worksheetTransform(before: SheetPosition, sheetWidth: Double, sheetHeight: Double,
     width: Double, height: Double, density: Double, focusX: Double, focusY: Double,
     panX: Double, panY: Double, factor: Float): SheetPosition {
-    val zoom = (before.zoom * factor.takeIf { it.isFinite() && it > 0f }.let { it ?: 1f }).coerceIn(.25f, 8f)
+    val zoom = (before.zoom * factor.takeIf { it.isFinite() && it > 0f }.let { it ?: 1f }).coerceIn(.25f, ViewportState.MAX_ZOOM)
     val old = worksheetScale(before.zoom, density)
     val next = worksheetScale(zoom, density)
     return before.copy(zoom = zoom,
@@ -385,16 +397,27 @@ internal fun worksheetTransform(before: SheetPosition, sheetWidth: Double, sheet
         y = (before.y + focusY / old - (focusY + panY) / next).coerceIn(0.0, max(0.0, sheetHeight - height / next)))
 }
 
-/** Quantized overscan avoids rerendering while the current frame still covers small pans. */
+/** Spend the raster budget on visible pixels first; quantized overscan only uses spare capacity. */
 internal fun worksheetRequest(position: SheetPosition, width: Double, height: Double, density: Double): SheetViewport {
     val scale = worksheetScale(position.zoom, density)
-    val downsample = min(1.0, 2800.0 / max(width + 192, height + 192))
-    val renderedScale = scale * downsample
-    val x = max(0.0, (floor(position.x * scale / 96) * 96 - 96) / scale)
-    val y = max(0.0, (floor(position.y * scale / 96) * 96 - 96) / scale)
-    return SheetViewport(position.sheet, x, y, renderedScale,
-        ceil((width + 192) * downsample).toInt().coerceIn(1, 2800),
-        ceil((height + 192) * downsample).toInt().coerceIn(1, 2800))
+    val visibleWidth = ceil(width).coerceAtLeast(1.0)
+    val visibleHeight = ceil(height).coerceAtLeast(1.0)
+    val spareArea = (sqrt((visibleWidth - visibleHeight) * (visibleWidth - visibleHeight) +
+        4.0 * SheetViewport.MAX_PIXELS) - visibleWidth - visibleHeight) / 2.0
+    val padding = minOf(192.0, SheetViewport.MAX_EDGE - visibleWidth, SheetViewport.MAX_EDGE - visibleHeight,
+        spareArea).coerceAtLeast(0.0)
+    val step = floor(padding / 2.0)
+    val paddedWidth = visibleWidth + 2.0 * step
+    val paddedHeight = visibleHeight + 2.0 * step
+    val fit = minOf(1.0, SheetViewport.MAX_EDGE / paddedWidth, SheetViewport.MAX_EDGE / paddedHeight,
+        sqrt(SheetViewport.MAX_PIXELS / (paddedWidth * paddedHeight)))
+    val rasterWidth = floor(paddedWidth * fit).toInt().coerceIn(1, SheetViewport.MAX_EDGE)
+    val rasterHeight = floor(paddedHeight * fit).toInt().coerceIn(1, SheetViewport.MAX_EDGE)
+    // Derive density from the rounded allocation so both axes still cover the full visible extent.
+    val downsample = minOf(1.0, rasterWidth / paddedWidth, rasterHeight / paddedHeight)
+    val x = if (step == 0.0) position.x else max(0.0, (floor(position.x * scale / step) * step - step) / scale)
+    val y = if (step == 0.0) position.y else max(0.0, (floor(position.y * scale / step) * step - step) / scale)
+    return SheetViewport(position.sheet, x, y, scale * downsample, rasterWidth, rasterHeight).checked()
 }
 
 /** Export visible cells, independently of padded render requests or their completion. */

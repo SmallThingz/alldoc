@@ -14,6 +14,7 @@ import app.smallthingz.alldoc.theme.RasterRegion
 import app.smallthingz.alldoc.theme.ReadingMode
 import app.smallthingz.alldoc.theme.ThemeSettings
 import java.io.File
+import kotlin.math.roundToInt
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -135,6 +136,73 @@ class OfficeDetailTest {
                 assertTrue(cache.isEmpty())
             }
         } finally { file.delete() }
+    }
+
+    @Test fun officeRegionsRasterizeTheRequestedContentWithoutReplacingFullPageState() {
+        DocRenderCore.configure(context)
+        for (name in listOf("sample.docx", "sample.pptx", "sample.xlsx")) {
+            val file = File.createTempFile("office-region-", ".fixture", context.cacheDir)
+            try {
+                instrumentation.context.assets.open("office/$name").use { input -> file.outputStream().use { input.copyTo(it) } }
+                OfficeSession(file, name, "application/octet-stream", Document(name.substringAfterLast('.')), CancellationSignal()).use { session ->
+                    val pages = session.printInfo(CancellationSignal()).pageCount
+                    val aspect = session.pageAspect(0, CancellationSignal())
+                    val cache = OfficeSession::class.java.getDeclaredField("pages").apply { isAccessible = true }.get(session) as Map<*, *>
+                    val full = requireNotNull(cache[0])
+                    val fullHints = session.rasterRegions(0, CancellationSignal())
+                    val region = PageRegion(.05f, .05f, .25f, .25f, 800, (800 * aspect).roundToInt())
+                    val detail = requireNotNull(session.renderRegion(0, region, original, CancellationSignal()))
+                    try {
+                        assertEquals(region.width, detail.width)
+                        assertEquals(region.height, detail.height)
+                        assertTrue(detail.allocationByteCount <= PageRegion.MAX_PIXELS * 4)
+                        val other = requireNotNull(session.renderRegion(0,
+                            region.copy(left = .55f, top = .55f, right = .75f, bottom = .75f), original, CancellationSignal()))
+                        try { assertFalse("$name must render the selected region, not a cached full page", detail.sameAs(other)) }
+                        finally { other.recycle() }
+                    } finally { detail.recycle() }
+                    assertEquals(pages, session.pageCount(CancellationSignal()))
+                    assertEquals(aspect, session.pageAspect(0, CancellationSignal()))
+                    assertEquals(fullHints, session.rasterRegions(0, CancellationSignal()))
+                    assertSame("Viewport output cannot replace the full-page cache", full, cache[0])
+                    assertThrows(OperationCanceledException::class.java) {
+                        session.renderRegion(0, region, original, CancellationSignal().apply { cancel() })
+                    }
+                    assertSame(full, cache[0])
+                    if (name.endsWith(".pptx")) {
+                        val settings = ThemeSettings(ReadingMode.ADAPTIVE)
+                        session.renderPage(0, 320, settings, CancellationSignal()).recycle()
+                        val contextField = OfficeSession::class.java.getDeclaredField("themeContext").apply { isAccessible = true }
+                        val policy = requireNotNull(contextField.get(session))
+                        val source = session.renderPage(0, 320, original, CancellationSignal())
+                        val parked = File(file.parentFile, file.name + ".parked")
+                        assertFalse(parked.exists())
+                        assertTrue(file.renameTo(parked))
+                        try {
+                            session.themePage(0, source, settings, CancellationSignal()).recycle()
+                        } finally { assertTrue("Restore the owned fixture", parked.renameTo(file)) }
+                        assertSame("The same page/settings must reuse its full-source classification", policy, contextField.get(session))
+                        assertSame("Theme probes cannot replace the full-page receipt", full, cache[0])
+                        assertEquals(fullHints, session.rasterRegions(0, CancellationSignal()))
+                        val cancelled = session.renderPage(0, 320, original, CancellationSignal())
+                        assertThrows(OperationCanceledException::class.java) {
+                            session.themePage(0, cancelled, settings, CancellationSignal().apply { cancel() })
+                        }
+                        assertTrue("Cancelled theming releases its adopted bitmap", cancelled.isRecycled)
+                        assertSame(policy, contextField.get(session))
+                        val retained = requireNotNull(session.pageThemeContext(0, settings, CancellationSignal()))
+                        session.renderPage(1, 320, settings, CancellationSignal()).recycle()
+                        val nextPolicy = requireNotNull(session.pageThemeContext(1, settings, CancellationSignal()))
+                        assertNotSame(retained, nextPolicy)
+                        assertNull("The accessor must not recreate an evicted page classification",
+                            session.pageThemeContext(0, settings, CancellationSignal()))
+                        requireNotNull(session.renderRegionWithContext(0, region, settings, CancellationSignal(), retained)).recycle()
+                        assertSame("Detail must use its retained base classification without preparing another probe",
+                            nextPolicy, session.pageThemeContext(1, settings, CancellationSignal()))
+                    }
+                }
+            } finally { file.delete() }
+        }
     }
 
     @Test fun noteMetadataTracksLazyPrintResolutionWithoutLosingItsCapabilities() {

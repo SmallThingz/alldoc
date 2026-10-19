@@ -2,11 +2,107 @@ package app.smallthingz.alldoc.theme
 
 import android.graphics.Bitmap
 import android.os.CancellationSignal
+import app.smallthingz.alldoc.engine.PageRegion
 import kotlin.math.ceil
 import kotlin.math.min
 
 object BitmapTheme {
     private const val TILE = 64
+
+    /** Analyze a bounded sample of a complete page. Input stays unchanged; no bitmap is retained. */
+    fun prepareContext(bitmap: Bitmap, settings: ThemeSettings, signal: CancellationSignal,
+        rasterRegions: List<RasterRegion>? = null): RegionThemeContext {
+        signal.throwIfCanceled()
+        require(bitmap.config != Bitmap.Config.HARDWARE)
+        if (bitmap.width > 512 || bitmap.height > 512) {
+            val scale = minOf(512.0 / bitmap.width, 512.0 / bitmap.height)
+            val sample = Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1), true)
+            try { return prepareContext(sample, settings, signal, rasterRegions) }
+            finally { sample.recycle() }
+        }
+        require(bitmap.width <= RegionThemeContext.MAX_EDGE && bitmap.height <= RegionThemeContext.MAX_EDGE &&
+            bitmap.width.toLong() * bitmap.height <= RegionThemeContext.MAX_PIXELS)
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * min(TILE, height))
+        val sourceRegions = if (settings.imageTreatment == ImageTreatment.AUTO && settings.mode != ReadingMode.INVERT)
+            RasterRegion.snapshot(rasterRegions) else null
+        val fullCanvasImage = sourceRegions?.singleOrNull()?.let {
+            it.left == 0f && it.top == 0f && it.right == 1f && it.bottom == 1f
+        } == true
+        val regions = if (settings.imageTreatment == ImageTreatment.AUTO && settings.mode != ReadingMode.INVERT && !fullCanvasImage)
+            BackdropRegions(width, settings.mode == ReadingMode.ADAPTIVE && sourceRegions != null).also { detector ->
+                for (top in 0 until height step TILE) {
+                    signal.throwIfCanceled()
+                    val rows = min(TILE, height - top)
+                    bitmap.getPixels(pixels, 0, width, 0, top, width, rows)
+                    detector.scan(pixels, rows, signal::throwIfCanceled)
+                    if (detector.transparent) break
+                }
+                detector.finish()
+                detector.prepareInk()
+            } else null
+        val transparent = regions?.transparent ?: (settings.mode != ReadingMode.INVERT && hasTransparency(bitmap, pixels, signal))
+        val bounds = if (transparent) null else sourceRegions?.let { values -> IntArray(values.size * 4).also { result ->
+            values.forEachIndexed { index, value ->
+                result[index * 4] = imageEdge(value.left, width, false)
+                result[index * 4 + 1] = imageEdge(value.top, height, false)
+                result[index * 4 + 2] = imageEdge(value.right, width, true)
+                result[index * 4 + 3] = imageEdge(value.bottom, height, true)
+            }
+        } }
+        val scans = bounds?.let { scanImages(bitmap, requireNotNull(sourceRegions), it, (pixels.size + 63) / 64, signal,
+            RegionThemeContext.MAX_SCAN_BYTES) }
+        val columns = (width + TILE - 1) / TILE
+        val treatments = Array(columns * ((height + TILE - 1) / TILE)) { PixelTheme.Tile.RECOLOR }
+        if (bounds == null) {
+            val theme = PixelTheme(settings, transparent)
+            val backdrops = LongArray((pixels.size + 63) / 64)
+            val neutral = LongArray(backdrops.size)
+            for (top in 0 until height step TILE) {
+                signal.throwIfCanceled()
+                val rows = min(TILE, height - top)
+                bitmap.getPixels(pixels, 0, width, 0, top, width, rows)
+                val present = regions?.masks(top, rows, backdrops, neutral) == true
+                for (column in 0 until columns) treatments[top / TILE * columns + column] =
+                    theme.tile(pixels, width, column * TILE, 0, min(TILE, width - column * TILE), rows,
+                        if (present) neutral else null, if (present) backdrops else null)
+            }
+        }
+        val ink = if (settings.mode == ReadingMode.ADAPTIVE && bounds != null && !fullCanvasImage) {
+            val detector = ColoredWhiteInk(width, PixelTheme(settings, transparent), bounds)
+            val images = LongArray((pixels.size + 63) / 64)
+            val backdrops = LongArray(images.size)
+            val neutral = LongArray(images.size)
+            // Separate bounded exclusions cannot displace the original proven-ink spans.
+            val rejected = RegionInkContext()
+            RegionInkContext().also { context ->
+                for (top in 0 until height step TILE) {
+                    signal.throwIfCanceled()
+                    val rows = min(TILE, height - top)
+                    detector.read(bitmap, top, rows, pixels)
+                    images.fill(0L)
+                    for (at in bounds.indices step 4) for (row in maxOf(0, bounds[at + 1] - top) until min(rows, bounds[at + 3] - top))
+                        markBits(images, row * width + bounds[at], row * width + bounds[at + 2])
+                    val plates = if (regions?.masks(top, rows, backdrops, neutral) == true) backdrops else null
+                    for (row in 0 until rows) {
+                        signal.throwIfCanceled()
+                        detector.row(pixels, row * width, top + row, images, plates)
+                        context.append(top + row, detector.sourcePapers)
+                        rejected.append(top + row, detector.sourcePapers, rejections = true)
+                    }
+                }
+            }.withFillSupport(width, height, rejected) { y, row ->
+                signal.throwIfCanceled()
+                bitmap.getPixels(row, 0, width, 0, y, width, 1)
+            }
+        } else null
+        signal.throwIfCanceled()
+        return RegionThemeContext(settings, width, height, sourceRegions, regions?.takeUnless { it.isEmpty }, transparent, bounds, scans, treatments, ink).also {
+            check(it.byteCount <= RegionThemeContext.MAX_BYTE_COUNT) { "Page theme context exceeds its retained-memory limit" }
+        }
+    }
 
     /**
      * Call off the UI thread. ORIGINAL returns [bitmap]; other modes return a new
@@ -15,8 +111,11 @@ object BitmapTheme {
      * optional packed image mask. Scan analysis adds at most 4 MiB of auxiliary memory.
      * Raster classification is heuristic. Use ORIGINAL when exact colors matter.
      */
-    fun apply(bitmap: Bitmap, settings: ThemeSettings, signal: CancellationSignal, rasterRegions: List<RasterRegion>? = null): Bitmap {
+    fun apply(bitmap: Bitmap, settings: ThemeSettings, signal: CancellationSignal, rasterRegions: List<RasterRegion>? = null,
+        context: RegionThemeContext? = null, region: PageRegion? = null): Bitmap {
         signal.throwIfCanceled()
+        require(context == null || context.settings == settings) { "Theme context belongs to different settings" }
+        require(region == null || region.width == bitmap.width && region.height == bitmap.height)
         if (settings.mode == ReadingMode.ORIGINAL) return bitmap
         require(bitmap.config != Bitmap.Config.HARDWARE) { "Theme processing needs a software bitmap" }
         val width = bitmap.width
@@ -24,19 +123,26 @@ object BitmapTheme {
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         try {
             output.density = bitmap.density
+            val pageX = context?.let { IntArray(width) { x -> it.x(x, width, region) } }
+            val pageY = context?.let { IntArray(height) { y -> it.y(y, height, region) } }
+            val hasContextDiagram = context?.treatments?.any { it == PixelTheme.Tile.DIAGRAM } == true
             val pixels = IntArray(Math.multiplyExact(width, min(TILE, height)))
             val tileCount = (width - 1) / TILE + 1
             val treatments = Array(tileCount) { PixelTheme.Tile.KEEP }
             val inkMask = LongArray(tileCount)
             val roughness = if (settings.mode == ReadingMode.SEPIA) settings.paperRoughness.coerceIn(0, 100) else 0
-            val sourceRegions = if (settings.imageTreatment == ImageTreatment.AUTO && settings.mode != ReadingMode.INVERT)
+            val grainX = if (roughness > 0) context?.let { IntArray(width) { x -> it.paperX(x, width, region) } } else null
+            val grainY = if (roughness > 0) context?.let { IntArray(height) { y -> it.paperY(y, height, region) } } else null
+            val sourceRegions = if (context != null) context.sourceRegions else if (settings.imageTreatment == ImageTreatment.AUTO && settings.mode != ReadingMode.INVERT)
                 RasterRegion.snapshot(rasterRegions) else null
             // A full-page image owns every pixel, so inferred backdrop masks cannot affect its output.
             // The existing alpha scan still disables source hints for transparent foreground art.
             val fullCanvasImage = sourceRegions?.singleOrNull()?.let {
                 it.left == 0f && it.top == 0f && it.right == 1f && it.bottom == 1f
             } == true
-            val regions = if (settings.imageTreatment == ImageTreatment.AUTO && settings.mode != ReadingMode.INVERT && !fullCanvasImage) {
+            val regions = if (context != null) context.backdrops?.project(context.height, width, height,
+                region?.left ?: 0f, region?.top ?: 0f, region?.widthFraction ?: 1f, region?.heightFraction ?: 1f)
+                else if (settings.imageTreatment == ImageTreatment.AUTO && settings.mode != ReadingMode.INVERT && !fullCanvasImage) {
                 // Complete image bounds protect photos while neutral dark paper admits colored vector ink.
                 BackdropRegions(width, allowNeutralColoredInk = settings.mode == ReadingMode.ADAPTIVE && sourceRegions != null).also { detector ->
                     for (top in 0 until height step TILE) {
@@ -50,20 +156,20 @@ object BitmapTheme {
                     detector.prepareInk()
                 }
             } else null
-            val transparent = regions?.transparent ?: (settings.mode != ReadingMode.INVERT && hasTransparency(bitmap, pixels, signal))
+            val transparent = context?.transparent ?: regions?.transparent ?: (settings.mode != ReadingMode.INVERT && hasTransparency(bitmap, pixels, signal))
             // Complete image bounds on an opaque canvas replace photographic guesses. Unknown pages retain raster heuristics.
             // Transparent foreground art retains its existing polarity; explicit image policies are unchanged.
             val sourceBounds = if (!transparent)
                 sourceRegions?.let { values -> IntArray(values.size * 4).also { bounds ->
                     values.forEachIndexed { index, value ->
-                        bounds[index * 4] = imageEdge(value.left, width, false)
-                        bounds[index * 4 + 1] = imageEdge(value.top, height, false)
-                        bounds[index * 4 + 2] = imageEdge(value.right, width, true)
-                        bounds[index * 4 + 3] = imageEdge(value.bottom, height, true)
+                        bounds[index * 4] = imageEdge(value.left, width, false, region?.left ?: 0f, region?.widthFraction ?: 1f)
+                        bounds[index * 4 + 1] = imageEdge(value.top, height, false, region?.top ?: 0f, region?.heightFraction ?: 1f)
+                        bounds[index * 4 + 2] = imageEdge(value.right, width, true, region?.left ?: 0f, region?.widthFraction ?: 1f)
+                        bounds[index * 4 + 3] = imageEdge(value.bottom, height, true, region?.top ?: 0f, region?.heightFraction ?: 1f)
                     }
                 } } else null
             val sourceMask = if (sourceBounds != null && sourceBounds.isNotEmpty()) LongArray((pixels.size - 1) / 64 + 1) else null
-            val scans = sourceBounds?.let { scanImages(bitmap, requireNotNull(sourceRegions), it, sourceMask?.size ?: 0, signal) }
+            val scans = if (context != null) context.scans else sourceBounds?.let { scanImages(bitmap, requireNotNull(sourceRegions), it, sourceMask?.size ?: 0, signal) }
             val scanMask = if (scans?.any { it != null } == true) LongArray(requireNotNull(sourceMask).size) else null
             val theme = PixelTheme(settings, transparent)
             val scanInk = if (scanMask != null) ScanInk(theme, settings) else null
@@ -105,7 +211,18 @@ object BitmapTheme {
                         val lastRow = min(rows, bounds[at + 3] - top)
                         for (row in firstRow until lastRow) {
                             val offset = row * width + bounds[at]
-                            if (scan != null) scan.markRow(top + row - bounds[at + 1], scanMask, offset, retain)
+                            if (scan != null && context != null) {
+                                val originalBounds = requireNotNull(context.sourceBounds)
+                                val sy = requireNotNull(pageY)[top + row] - originalBounds[at + 1]
+                                for (x in bounds[at] until bounds[at + 2]) {
+                                    val sx = requireNotNull(pageX)[x] - originalBounds[at]
+                                    val selected = sx in 0 until originalBounds[at + 2] - originalBounds[at] &&
+                                        sy in 0 until originalBounds[at + 3] - originalBounds[at + 1] && scan.contains(sx, sy)
+                                    if (!retain && selected || retain && !selected)
+                                        markBits(scanMask, row * width + x, row * width + x + 1, !retain)
+                                }
+                            }
+                            else if (scan != null) scan.markRow(top + row - bounds[at + 1], scanMask, offset, retain)
                             else markBits(scanMask, offset, row * width + bounds[at + 2], false)
                         }
                     }
@@ -116,7 +233,7 @@ object BitmapTheme {
                 for (tile in 0 until tileCount) {
                     signal.throwIfCanceled()
                     val left = tile * TILE
-                    val treatment = if (sourceBounds != null) PixelTheme.Tile.RECOLOR else
+                    val treatment = if (sourceBounds != null || context != null) PixelTheme.Tile.RECOLOR else
                         theme.tile(pixels, width, left, 0, min(TILE, width - left), rows, if (bandBackdrops != null) neutralBackdrops else null, bandBackdrops)
                     treatments[tile] = treatment
                     if (treatment == PixelTheme.Tile.DIAGRAM) {
@@ -124,28 +241,38 @@ object BitmapTheme {
                         diagramRight = maxOf(diagramRight, min(width, left + TILE))
                     }
                 }
+                if (hasContextDiagram && sourceBounds == null) {
+                    diagramLeft = 0
+                    diagramRight = width
+                }
                 for (row in 0 until rows) {
                     signal.throwIfCanceled()
                     val rowStart = row * width
                     if (diagramLeft < diagramRight) theme.backdropInkMask(pixels, rowStart, width, inkMask, diagramLeft, diagramRight, bandBackdrops)
                     coloredInk?.row(pixels, rowStart, top + row, sourceMask, bandBackdrops)
+                    if (coloredInk != null && context?.ink != null) context.ink.row(requireNotNull(pageX),
+                        requireNotNull(pageY)[top + row], pixels, rowStart, sourceMask, bandBackdrops, coloredInk.colors, coloredInk::ramp)
                     if (bandBackdrops != null) regions?.adaptInk(pixels, rowStart, top + row, sourceMask)
                     for (tile in 0 until tileCount) {
-                        val treatment = treatments[tile]
-                        if (treatment == PixelTheme.Tile.KEEP && bandBackdrops == null && sourceBounds == null) continue
+                        val tileTreatment = treatments[tile]
+                        if (tileTreatment == PixelTheme.Tile.KEEP && bandBackdrops == null && sourceBounds == null) continue
                         val left = tile * TILE
                         val columns = min(TILE, width - left)
-                        val darkPaper = treatment == PixelTheme.Tile.DARK_PAPER
-                        val preserveColor = treatment == PixelTheme.Tile.DIAGRAM
-                        val dim = treatment == PixelTheme.Tile.DIM
                         for (x in left until left + columns) {
+                            val treatment = if (context != null && sourceBounds == null)
+                                context.treatment(requireNotNull(pageX)[x], requireNotNull(pageY)[top + row]) else tileTreatment
+                            val darkPaper = treatment == PixelTheme.Tile.DARK_PAPER
+                            val preserveColor = treatment == PixelTheme.Tile.DIAGRAM
+                            val dim = treatment == PixelTheme.Tile.DIM
+                            val paperX = grainX?.get(x) ?: x
+                            val paperY = grainY?.get(top + row) ?: (top + row)
                             val index = rowStart + x
                             val imagePixel = sourceMask != null && PixelTheme.marked(sourceMask, index)
                             if (imagePixel && (scanMask == null || !PixelTheme.marked(scanMask, index))) continue
                             if (!imagePixel && bandBackdrops != null && PixelTheme.marked(bandBackdrops, index)) {
                                 if (PixelTheme.marked(requireNotNull(neutralBackdrops), index) || mutedBackdrops != null && PixelTheme.marked(mutedBackdrops, index)) {
                                     val mapped = theme.backdropColor(pixels[index])
-                                    pixels[index] = if (roughness > 0) PaperTexture.pixel(mapped, x, top + row, roughness) else mapped
+                                    pixels[index] = if (roughness > 0) PaperTexture.pixel(mapped, paperX, paperY, roughness) else mapped
                                 }
                                 continue
                             }
@@ -164,7 +291,7 @@ object BitmapTheme {
                                     }
                                 }
                                 else if (dim) theme.dim(pixels[index]) else theme.color(pixels[index], darkPaper, preserveColor)
-                            pixels[index] = if (roughness > 0 && !dim) PaperTexture.pixel(mapped, x, top + row, roughness) else mapped
+                            pixels[index] = if (roughness > 0 && !dim) PaperTexture.pixel(mapped, paperX, paperY, roughness) else mapped
                         }
                     }
                 }
@@ -181,6 +308,7 @@ object BitmapTheme {
     /** White vector ink surrounded by a flat colored fill; complete image masks are required. */
     private class ColoredWhiteInk(private val width: Int, private val theme: PixelTheme, private val imageBounds: IntArray) {
         val colors = IntArray(width)
+        val sourcePapers = IntArray(width)
         // Keep context separate from the output band: earlier rows have already been recolored.
         private val context = IntArray(Math.multiplyExact(width, TILE + 16))
         private val contextImages = if (imageBounds.isNotEmpty()) LongArray((context.size - 1) / 64 + 1) else null
@@ -210,6 +338,7 @@ object BitmapTheme {
 
         fun row(pixels: IntArray, offset: Int, y: Int, images: LongArray?, backdrops: LongArray?) {
             colors.fill(0)
+            sourcePapers.fill(0)
             var start = 0
             while (start < width) {
                 val paper = pixels[offset + start]
@@ -251,13 +380,21 @@ object BitmapTheme {
                 }
                 else if (coverage == 0) trailingPaper++
                 if (coverage < 0 || trailingPaper == 2) {
-                    if (hasUncorrectedInk && supported(paper, first, x, step, y) &&
-                        (coverage >= 0 || hasWhiteCore || distance <= 2 || verticallyBounded(paper, first, x - step, y)))
-                        ramp(paper)?.let { ramp ->
+                    if (hasUncorrectedInk && supported(paper, first, x, step, y)) {
+                        val bounded = coverage >= 0 || hasWhiteCore || distance <= 2 || verticallyBounded(paper, first, x - step, y)
+                        val ramp = if (bounded) ramp(paper) else null
                         for (at in 0 until distance) {
                             val ink = first + at * step
                             val amount = DocumentColors.inkCoverage(pixels[offset + ink], paper, -1)
-                            if (amount > 0 && colors[ink] == 0) colors[ink] = ramp[amount]
+                            if (amount > 0 && colors[ink] == 0) {
+                                if (ramp != null) {
+                                    colors[ink] = ramp[amount]
+                                    sourcePapers[ink] = paper
+                                } else if (!bounded) {
+                                    // Neighbor support must not undo the existing partial-panel veto.
+                                    sourcePapers[ink] = RegionInkContext.REJECTED
+                                }
+                            }
                         }
                     }
                     return
@@ -326,7 +463,7 @@ object BitmapTheme {
             return total > 0 && fill * 3 >= total && fill >= white * 2 && exact * 2 >= fill
         }
 
-        private fun ramp(paper: Int): IntArray? {
+        fun ramp(paper: Int): IntArray? {
             for (index in 0 until count) if (papers[index] == paper) return ramps[index]
             val ramp = DocumentColors.inkRamp(theme.color(-1), theme.color(paper))
             // Capacity limits retention, never whether a qualifying glyph is corrected.
@@ -338,7 +475,9 @@ object BitmapTheme {
         }
     }
 
-    private fun imageEdge(value: Float, size: Int, upper: Boolean): Int {
+    private fun imageEdge(value: Float, size: Int, upper: Boolean, start: Float = 0f, fraction: Float = 1f): Int {
+        if (start != 0f || fraction != 1f)
+            return projectRasterEdge(value.toDouble(), Math.ulp(value).toDouble() * .5, start, fraction, size, upper)
         val position = value.toDouble() * size
         val nearest = kotlin.math.round(position)
         // Normalized metadata is Float: only snap when its rounding interval contains an integer.
@@ -348,11 +487,12 @@ object BitmapTheme {
     }
 
     private fun scanImages(bitmap: Bitmap, regions: List<RasterRegion>, bounds: IntArray, bandWords: Int,
-        signal: CancellationSignal): Array<ScanPaperMask?> {
+        signal: CancellationSignal, retainedMaskBytes: Long = ScanPaperMask.MAX_AUXILIARY_BYTES): Array<ScanPaperMask?> {
         val scans = arrayOfNulls<ScanPaperMask>(regions.size)
         var pixelsLeft = ScanPaperMask.MAX_PIXELS.toLong()
         // Shared across all retained masks and the extra band, not a fresh budget per image.
         var bytesLeft = ScanPaperMask.MAX_AUXILIARY_BYTES - bandWords * 8L - RasterRegion.LIMIT * 64L - ScanInk.CACHE_BYTES
+        var storageLeft = retainedMaskBytes
         for (at in bounds.indices step 4) {
             signal.throwIfCanceled()
             val left = bounds[at]; val top = bounds[at + 1]
@@ -375,7 +515,9 @@ object BitmapTheme {
             val mask = ScanPaperMask.detect(width, height, { y, row ->
                 bitmap.getPixels(row, 0, width, left, top + y, width, 1)
             }, signal::throwIfCanceled) ?: continue
+            if (mask.storageBytes > storageLeft || mask.storageBytes > bytesLeft) continue
             bytesLeft -= mask.storageBytes
+            storageLeft -= mask.storageBytes
             scans[at / 4] = mask
         }
         return scans

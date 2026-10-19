@@ -119,8 +119,8 @@ impl WorkbookReader {
 
     pub fn render(&mut self, index: usize, x: f64, y: f64, scale: f64, width: u32, height: u32) -> Result<(Value, Vec<u8>), String> {
         let start = Instant::now();
-        if ![x, y, scale].iter().all(|v| v.is_finite()) || x < 0.0 || y < 0.0 || !(0.0625..=32.0).contains(&scale)
-            || width == 0 || height == 0 || width > super::MAX_SIDE || height > super::MAX_SIDE
+        if ![x, y, scale].iter().all(|v| v.is_finite()) || x < 0.0 || y < 0.0 || !(0.0625..=256.0).contains(&scale)
+            || width == 0 || height == 0 || width > super::REGION_MAX_SIDE || height > super::REGION_MAX_SIDE
             || u64::from(width) * u64::from(height) > super::OUTPUT_PIXELS {
             return Err("Invalid worksheet viewport".into());
         }

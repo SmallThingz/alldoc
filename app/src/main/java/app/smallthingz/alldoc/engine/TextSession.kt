@@ -74,26 +74,69 @@ internal class TextSession(name: String, mime: String, private val document: Doc
     @Synchronized override fun renderPage(index: Int, width: Int, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
         ready(signal)
         require(width in 1..4096) { "Invalid preview width" }
+        val size = PageSize.fit(PAGE_WIDTH, PAGE_HEIGHT, width)
+        return render(index, size.width, size.height, null, settings, signal)
+    }
+    @Synchronized override fun renderRegion(index: Int, region: PageRegion, settings: ThemeSettings, signal: CancellationSignal): Bitmap =
+        render(index, region.width, region.height, region, settings, signal)
+
+    /** Redraw semantic glyphs into the adopted page; base and detail use the same native colors and paper. */
+    @Synchronized override fun themePage(index: Int, bitmap: Bitmap, settings: ThemeSettings, signal: CancellationSignal): Bitmap {
+        var output: Bitmap? = null
+        try {
+            ready(signal)
+            require(index in 0 until pageCount(signal)) { "Invalid page" }
+            if (settings.mode == ReadingMode.ORIGINAL) return bitmap
+            if (settings.mode == ReadingMode.INVERT) return themed(bitmap, settings, signal)
+            require(bitmap.config != Bitmap.Config.HARDWARE) { "Semantic theming needs a software bitmap" }
+            val target = if (bitmap.isMutable && bitmap.config == Bitmap.Config.ARGB_8888) bitmap else
+                requireNotNull(bitmap.copy(Bitmap.Config.ARGB_8888, true))
+            output = target
+            drawInto(target, index, null, settings, signal)
+            if (target !== bitmap) bitmap.recycle()
+            output = null
+            return target
+        } catch (failure: Throwable) {
+            output?.takeIf { it !== bitmap }?.recycle()
+            if (!bitmap.isRecycled) bitmap.recycle()
+            throw failure
+        }
+    }
+
+    private fun render(index: Int, width: Int, height: Int, region: PageRegion?, settings: ThemeSettings,
+        signal: CancellationSignal): Bitmap {
+        ready(signal)
+        require(index in 0 until pageCount(signal)) { "Invalid page" }
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        try { drawInto(bitmap, index, region, settings, signal) }
+        catch (failure: Throwable) { bitmap.recycle(); throw failure }
+        return if (settings.mode == ReadingMode.INVERT) themed(bitmap, settings, signal) else bitmap
+    }
+
+    private fun drawInto(bitmap: Bitmap, index: Int, region: PageRegion?, settings: ThemeSettings,
+        signal: CancellationSignal) {
         val pagination = pages(signal)
         val paint = pagination.paint
         val layout = pagination.layout
         val pages = pagination.pages
         require(index in 0 until pages.size - 1) { "Invalid page" }
-        val size = PageSize.fit(PAGE_WIDTH, PAGE_HEIGHT, width)
-        val actual = size.width
-        val bitmap = Bitmap.createBitmap(actual, size.height, Bitmap.Config.ARGB_8888)
-        val invert = settings.mode == ReadingMode.INVERT
-        try {
-            val colors = DocumentColors.palette(if (invert) settings.copy(mode = ReadingMode.ORIGINAL) else settings)
-            bitmap.eraseColor(colors.background); paint.color = colors.foreground
-            val canvas = Canvas(bitmap)
-            PaperTexture.background(canvas, bitmap.width, bitmap.height, settings)
-            canvas.scale(actual.toFloat() / PAGE_WIDTH, actual.toFloat() / PAGE_WIDTH)
-            canvas.clipRect(MARGIN.toFloat(), MARGIN.toFloat(), (PAGE_WIDTH - MARGIN).toFloat(), (MARGIN + minOf(BODY_HEIGHT, pages[index + 1] - pages[index])).toFloat())
-            canvas.translate(MARGIN.toFloat(), (MARGIN - pages[index]).toFloat()); layout.draw(canvas)
-            ready(signal)
-        } catch (failure: Throwable) { bitmap.recycle(); throw failure }
-        return if (invert) themed(bitmap, settings, signal) else bitmap
+        val width = bitmap.width
+        val height = bitmap.height
+        val colors = DocumentColors.palette(if (settings.mode == ReadingMode.INVERT) settings.copy(mode = ReadingMode.ORIGINAL) else settings)
+        bitmap.eraseColor(colors.background); paint.color = colors.foreground
+        val canvas = Canvas(bitmap)
+        PaperTexture.background(canvas, width, height, settings,
+            originX = (region?.left ?: 0f) * PAGE_WIDTH, originY = (region?.top ?: 0f) * PAGE_HEIGHT,
+            scaleX = (region?.widthFraction ?: 1f) * PAGE_WIDTH / width,
+            scaleY = (region?.heightFraction ?: 1f) * PAGE_HEIGHT / height)
+        if (region == null) canvas.scale(width.toFloat() / PAGE_WIDTH, height.toFloat() / PAGE_HEIGHT)
+        else {
+            canvas.scale(width / (PAGE_WIDTH * region.widthFraction), height / (PAGE_HEIGHT * region.heightFraction))
+            canvas.translate(-region.left * PAGE_WIDTH, -region.top * PAGE_HEIGHT)
+        }
+        canvas.clipRect(MARGIN.toFloat(), MARGIN.toFloat(), (PAGE_WIDTH - MARGIN).toFloat(), (MARGIN + minOf(BODY_HEIGHT, pages[index + 1] - pages[index])).toFloat())
+        canvas.translate(MARGIN.toFloat(), (MARGIN - pages[index]).toFloat()); layout.draw(canvas)
+        ready(signal)
     }
     private fun ready(signal: CancellationSignal) { signal.throwIfCanceled(); check(!closed) { "Document is closed" } }
     @Synchronized override fun close() { closed = true; pagination = null }

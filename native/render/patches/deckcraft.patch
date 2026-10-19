@@ -176,7 +176,42 @@
 -vello_cpu = { workspace = true, features = ["multithreading"] }
 --- a/deckcraft/crates/render/src/lib.rs
 +++ b/deckcraft/crates/render/src/lib.rs
-@@ -962,6 +962,10 @@
+@@ -144,6 +144,8 @@
+     pub threads: u16,
+     /// Translate the slide within the output (pixels) and output size override.
+     pub offset: (f64, f64),
++    /// Exact source-to-output view for bounded region rendering; pair with `size`.
++    pub view: Option<Affine>,
+     pub size: Option<(u32, u32)>,
+     /// Draw a background colour outside the slide (output larger than slide).
+     pub clear: Option<Rgba>,
+@@ -161,6 +163,7 @@
+             skip_text: None,
+             threads: 0,
+             offset: (0.0, 0.0),
++            view: None,
+             size: None,
+             clear: None,
+             date_text: None,
+@@ -385,7 +388,7 @@
+             ctx.set_paint(color(c, 1.0));
+             ctx.fill_rect(&Rect::new(0.0, 0.0, w as f64, h as f64));
+         }
+-        let view = Affine::translate((opts.offset.0, opts.offset.1)) * Affine::scale(opts.scale);
++        let view = opts.view.unwrap_or_else(|| Affine::translate((opts.offset.0, opts.offset.1)) * Affine::scale(opts.scale));
+         let fields = SlideFields {
+             num: pres.slide_number(index),
+             date: opts.date_text.clone().unwrap_or_else(|| pres.header_footer.date_text.clone()),
+@@ -421,7 +424,7 @@
+     fn layout(&mut self, pres: &Presentation, mi: usize, li: Option<usize>, opts: &RenderOpts) -> Image {
+         let (w, h) = output_size(pres, opts);
+         let mut ctx = RenderContext::new_with(w, h, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
+-        let view = Affine::translate((opts.offset.0, opts.offset.1)) * Affine::scale(opts.scale);
++        let view = opts.view.unwrap_or_else(|| Affine::translate((opts.offset.0, opts.offset.1)) * Affine::scale(opts.scale));
+         let f = Frame { pres, opts, fields: SlideFields { num: 1, date: String::new(), footer: String::new() } };
+         if let Some(m) = pres.masters.get(mi) {
+             match li.and_then(|i| m.layouts.get(i)) {
+@@ -962,6 +965,10 @@
      for d in l.decos.iter().filter(|d| d.behind) {
          deco(ctx, d);
      }
@@ -187,7 +222,7 @@
      for run in &l.runs {
          if (run.alpha <= 0.0 || run.color.a == 0) && run.outline.is_none() {
              continue;
-@@ -973,27 +977,36 @@
+@@ -973,27 +980,36 @@
          let m = m * Affine::translate(ps.offset);
          let alpha = run.alpha * ps.opacity;
          let k = run.size / run.face.upem.max(1.0);

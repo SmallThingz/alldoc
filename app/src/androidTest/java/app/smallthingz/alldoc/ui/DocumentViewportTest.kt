@@ -425,6 +425,203 @@ class DocumentViewportTest {
         } } finally { bitmap.recycle() }
     }
 
+    @Test fun resizingPresentationAtZoomCompletionKeepsItsVisibleAnchor() {
+        val bitmap = Bitmap.createBitmap(80, 80, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(android.graphics.Color.WHITE)
+            for (y in 0 until height) for (x in 72..73) setPixel(x, y, android.graphics.Color.MAGENTA)
+        }
+        val pose = mutableStateOf(ViewportState())
+        val narrow = mutableStateOf(false)
+        val armed = AtomicBoolean()
+        val position = AtomicReference(1 to 0f)
+        val beforeResize = AtomicReference<Pair<Int, Float>>()
+        val saved = AtomicReference<Pair<Int, Float>>()
+        val finishes = AtomicInteger()
+        val bounds = AtomicReference<android.graphics.Rect>()
+        val images = (0..2).associateWith { ReaderPageImage(bitmap) }
+        fun await(message: String, test: () -> Boolean) {
+            val deadline = SystemClock.uptimeMillis() + 5000
+            while (!test()) {
+                check(SystemClock.uptimeMillis() < deadline) { "$message: ${position.get()} / ${pose.value}" }
+                SystemClock.sleep(16)
+            }
+        }
+        try { launchReaderTestActivity().use { scenario ->
+            scenario.onActivity { activity -> activity.setContent {
+                CompositionLocalProvider(LocalDensity provides Density(1f)) {
+                    MaterialTheme {
+                        ReaderPages(115L, 3, 1, 0f, pose.value, 0L, images, (0..2).associateWith { 1f }, {},
+                            { page, fraction -> position.set(page to fraction) }, { pose.value = it },
+                            { saved.set(position.get()); finishes.incrementAndGet() },
+                            Modifier.width(if (narrow.value) 160.dp else 240.dp).height(420.dp)
+                                .onGloballyPositioned { layout ->
+                                    val origin = layout.localToWindow(Offset.Zero)
+                                    val left = origin.x.roundToInt(); val top = origin.y.roundToInt()
+                                    bounds.set(android.graphics.Rect(left, top, left + layout.size.width, top + layout.size.height))
+                                }, horizontal = true, onZoomAnimation = { moving ->
+                                if (!moving && armed.compareAndSet(true, false)) {
+                                    // Resize at the real animation-to-settle handoff, without a timing sleep.
+                                    beforeResize.set(position.get())
+                                    narrow.value = true
+                                }
+                            })
+                    }
+                }
+            } }
+            await("Initial presentation did not lay out") { bounds.get()?.width() == 240 }
+            instrumentation.waitForIdleSync()
+            val original = checkNotNull(bounds.get())
+            val beforeFinish = finishes.get()
+            scenario.onActivity { armed.set(true) }
+            fun tap() {
+                val down = SystemClock.uptimeMillis()
+                for (action in intArrayOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                    scenario.onActivity { activity ->
+                        activity.verifyTestDisplay()
+                        val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action,
+                            original.left + 220f, original.top + original.height() / 2f, 0)
+                            .apply { source = android.view.InputDevice.SOURCE_TOUCHSCREEN }
+                        try { assertTrue("Owned reader rejected touch", activity.dispatchTouchEvent(event)) }
+                        finally { event.recycle() }
+                    }
+                    if (action == MotionEvent.ACTION_DOWN) SystemClock.sleep(24)
+                }
+            }
+            tap(); SystemClock.sleep(80); tap()
+            await("Resized zoom did not finish") {
+                beforeResize.get() != null && bounds.get()?.width() == 160 && finishes.get() > beforeFinish &&
+                    kotlin.math.abs(pose.value.zoom - 2f) < .00001f
+            }
+            val retained = checkNotNull(beforeResize.get())
+            assertEquals(1, retained.first)
+            assertTrue("The zoom must reach the far side of the page before resizing", retained.second > .4f && retained.second < .5f)
+            val area = checkNotNull(bounds.get())
+            var columns = emptyList<Int>()
+            await("The authored stripe disappeared after the viewport narrowed") {
+                copyViewport(scenario, area)?.let { image ->
+                    try {
+                        columns = (0 until image.width).filter { x ->
+                            val pixel = image.getPixel(x, image.height / 2)
+                            android.graphics.Color.red(pixel) > 220 && android.graphics.Color.blue(pixel) > 220 &&
+                                android.graphics.Color.green(pixel) < 128
+                        }
+                    } finally { image.recycle() }
+                }
+                columns.size in 7..9
+            }
+            assertEquals("The stripe must remain a contiguous visible feature", columns.size, columns.last() - columns.first() + 1)
+            assertTrue("The authored right-side feature must remain near the right edge", columns.average() in 135.0..150.0)
+            assertEquals("Resizing must retain the same page", retained.first, position.get().first)
+            assertEquals("Resizing must retain its source-relative anchor within one pixel", retained.second, position.get().second, 1f / 320f)
+            assertEquals("The replacement placement must flush the retained reading position", position.get(), saved.get())
+        } } finally { bitmap.recycle() }
+    }
+
+    @Test fun brieflyCoveredPresentationRestoresSemanticPageSnapping() {
+        assertTrue("This cancellation regression requires existing system animations", android.animation.ValueAnimator.areAnimatorsEnabled())
+        val bitmap = Bitmap.createBitmap(80, 40, Bitmap.Config.ARGB_8888)
+        val pose = mutableStateOf(ViewportState())
+        val active = mutableStateOf(true)
+        val armed = AtomicBoolean()
+        val covered = AtomicBoolean()
+        val reactivated = AtomicBoolean()
+        val position = AtomicReference(0 to 0f)
+        val saved = AtomicReference(0 to 0f)
+        val current = AtomicInteger(-1)
+        val root = AtomicReference<ViewRootForTest>()
+        fun node(test: (SemanticsNode) -> Boolean): SemanticsNode? {
+            fun find(value: SemanticsNode): SemanticsNode? {
+                if (test(value)) return value
+                return value.children.firstNotNullOfOrNull(::find)
+            }
+            return root.get()?.semanticsOwner?.unmergedRootSemanticsNode?.let(::find)
+        }
+        fun labelled(value: SemanticsNode, text: String) =
+            value.config.getOrNull(SemanticsProperties.ContentDescription)?.contains(text) == true
+        fun await(message: String, test: () -> Boolean) {
+            val deadline = SystemClock.uptimeMillis() + 5000
+            while (!test()) {
+                check(SystemClock.uptimeMillis() < deadline) { "$message: position=${position.get()}, pose=${pose.value}" }
+                SystemClock.sleep(16)
+            }
+        }
+        try { launchReaderTestActivity().use { scenario ->
+            scenario.onActivity { activity -> activity.setContent {
+                val host = LocalView.current
+                SideEffect { root.set(host as ViewRootForTest) }
+                CompositionLocalProvider(LocalDensity provides Density(1f)) {
+                    MaterialTheme {
+                        ReaderPages(116L, 3, 0, 0f, pose.value, 0L,
+                            (0..2).associateWith { ReaderPageImage(bitmap) }, (0..2).associateWith { .5f }, {},
+                            { page, fraction -> position.set(page to fraction) }, { next ->
+                                pose.value = next
+                                if (armed.get() && next.zoom > 1.05f && next.zoom < 1.5f && covered.compareAndSet(false, true)) active.value = false
+                            }, { saved.set(position.get()) }, Modifier.width(240.dp).height(420.dp),
+                            horizontal = true, active = active.value, onCurrentPage = current::set,
+                            onZoomAnimation = { moving ->
+                                // This callback comes from cancelZoom in the inactive effect. Reactivating
+                                // here proves that effect ran, then cancels its pending two-frame cleanup.
+                                if (!moving && covered.get() && !active.value && pose.value.zoom < 1.5f && reactivated.compareAndSet(false, true))
+                                    active.value = true
+                            })
+                    }
+                }
+            } }
+            await("Initial presentation did not settle") { current.get() == 0 }
+            scenario.onActivity { activity ->
+                activity.verifyTestDisplay()
+                armed.set(true)
+                val zoom = node { value -> value.config.getOrNull(SemanticsActions.CustomActions)?.any { it.label == "Zoom in" } == true }
+                    ?.config?.getOrNull(SemanticsActions.CustomActions)?.first { it.label == "Zoom in" }
+                assertTrue(checkNotNull(zoom).action())
+            }
+            await("The inactive effect did not return ownership") {
+                var available = false
+                scenario.onActivity { available = node { labelled(it, "Document pages") } != null }
+                covered.get() && reactivated.get() && available
+            }
+            instrumentation.waitForIdleSync()
+            // Allow the returned reader's two-frame cleanup plus layout without relying on wall time
+            // or a finish callback, so the old stale-gesture code still reaches the semantic oracle.
+            val frames = CountDownLatch(1)
+            var frameCheck: Runnable? = null
+            try {
+                scenario.onActivity { activity ->
+                    activity.verifyTestDisplay()
+                    val view = activity.window.decorView
+                    frameCheck = object : Runnable {
+                        var remaining = 3
+                        override fun run() {
+                            if (--remaining == 0) frames.countDown() else view.postOnAnimation(this)
+                        }
+                    }.also(view::postOnAnimation)
+                }
+                assertTrue("The returned reader did not produce frames", frames.await(5, TimeUnit.SECONDS))
+            } finally {
+                scenario.onActivity { activity -> frameCheck?.let(activity.window.decorView::removeCallbacks) }
+            }
+            instrumentation.waitForIdleSync()
+            assertTrue("The covered zoom must have moved inside the page", pose.value.zoom > 1.05f && pose.value.zoom < 1.5f && position.get().second > 0f)
+            scenario.onActivity { activity ->
+                activity.verifyTestDisplay()
+                val scroll = checkNotNull(node { it.config.getOrNull(SemanticsActions.ScrollBy)?.action != null })
+                val action = checkNotNull(scroll.config.getOrNull(SemanticsActions.ScrollBy)?.action)
+                // At this fixture's 1.05–1.5x zoom, one viewport enters the gap after page1.
+                // No pointer DOWN or key may clear stale gesture ownership before this semantic step.
+                assertTrue(action(240f, 0f))
+            }
+            await("Present semantic step left the viewport between pages") {
+                var aligned = false
+                scenario.onActivity {
+                    val viewport = node { labelled(it, "Document pages") }?.boundsInRoot
+                    val page = node { labelled(it, "Page 2") }?.boundsInRoot
+                    aligned = viewport != null && page != null && kotlin.math.abs(page.left - viewport.left) < 1f
+                }
+                aligned && current.get() == 1 && position.get().first == 1 && position.get().second == 0f && saved.get() == position.get()
+            }
+        } } finally { bitmap.recycle() }
+    }
+
     @Test fun pinchingInAPresentationLetterboxKeepsItsPageAndZoom() {
         val bitmap = Bitmap.createBitmap(80, 160, Bitmap.Config.ARGB_8888)
         val pose = mutableStateOf(ViewportState())
@@ -805,7 +1002,7 @@ ${runtime.get()}
         val bitmap = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
         try {
             for (action in listOf("Zoom in", "Double tap", "Cross-axis drag", "Scroll", "Keyboard", "No-op zoom", "Resize only")) {
-                val pose = mutableStateOf(ViewportState(zoom = when (action) { "No-op zoom" -> 8f; "Keyboard" -> 1.5f; else -> 3f }, centerY = .8f))
+                val pose = mutableStateOf(ViewportState(zoom = when (action) { "No-op zoom" -> ViewportState.MAX_ZOOM; "Keyboard" -> 1.5f; else -> 3f }, centerY = .8f))
                 val image = mutableStateOf<Bitmap?>(null)
                 val wide = mutableStateOf(false)
                 val point = AtomicReference<Offset>()

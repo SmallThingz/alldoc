@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.LayoutDirection
 import app.smallthingz.alldoc.core.MarkdownBlock
+import kotlinx.coroutines.flow.collect
 import app.smallthingz.alldoc.core.MarkdownKind
 
 /** Only visible blocks are styled; ReaderTextView owns search, selection and durable line anchors. */
@@ -77,10 +78,15 @@ internal fun markdownText(block: MarkdownBlock?, visible: String, ink: Color): A
 internal fun ReaderMarkdownView(block: MarkdownBlock, text: AnnotatedString, ink: Color,
     onTextLayout: (TextLayoutResult) -> Unit, searchMatch: Pair<Long, TextRange>? = null, active: Boolean = true,
     layoutKey: Any? = null,
+    zoom: Float = 1f,
+    horizontalAnchor: ReaderHorizontalAnchor? = null,
+    visibleOffset: Int = block.start,
+    onHorizontalAnchor: (ReaderHorizontalAnchor, Boolean) -> Unit = { _, _ -> },
+    onHorizontalScrollEnd: () -> Unit = {},
 ) {
     val typography = MaterialTheme.typography
     val maximumLine = with(LocalDensity.current) { 8192.toDp() }
-    val style = when (block.kind) {
+    val baseStyle = when (block.kind) {
         MarkdownKind.HEADING -> (when (block.level) {
             1 -> typography.headlineLarge
             2 -> typography.headlineMedium
@@ -90,6 +96,7 @@ internal fun ReaderMarkdownView(block: MarkdownBlock, text: AnnotatedString, ink
         MarkdownKind.CODE, MarkdownKind.TABLE -> typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
         else -> typography.bodyLarge
     }
+    val style = baseStyle.copy(fontSize = baseStyle.fontSize * zoom, lineHeight = baseStyle.lineHeight * zoom)
     var modifier: Modifier = Modifier
     when (block.kind) {
         MarkdownKind.HEADING -> modifier = modifier.semantics { heading() }
@@ -102,10 +109,65 @@ internal fun ReaderMarkdownView(block: MarkdownBlock, text: AnnotatedString, ink
             var layout by remember(layoutKey) { mutableStateOf<TextLayoutResult?>(null) }
             val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
             val inset = with(LocalDensity.current) { 10.dp.toPx() }
-            LaunchedEffect(scroll, active) {
-                if (!active) scroll.stopScroll(MutatePriority.PreventUserInput)
+            val currentHorizontalAnchor by rememberUpdatedState(onHorizontalAnchor)
+            val currentHorizontalScrollEnd by rememberUpdatedState(onHorizontalScrollEnd)
+            var restoringHorizontal by remember { mutableStateOf(false) }
+            var restoreRevision by remember { mutableIntStateOf(0) }
+            var horizontalRestored by remember(layoutKey) { mutableStateOf(false) }
+            val currentLayoutKey by rememberUpdatedState(layoutKey)
+            fun captureHorizontal(sourceOffset: Int, closing: Boolean = false) {
+                val measured = layout ?: return
+                val length = measured.layoutInput.text.length
+                if (length == 0 || viewport <= 0 || scroll.maxValue == Int.MAX_VALUE || measured.layoutInput.text != text) return
+                val line = measured.getLineForOffset((sourceOffset - block.start).coerceIn(0, length - 1))
+                val x = (if (rtl) scroll.maxValue - scroll.value else scroll.value).toFloat() - inset
+                val y = (measured.getLineTop(line) + measured.getLineBottom(line)) / 2f
+                val offset = measured.getOffsetForPosition(Offset(x, y)).coerceIn(0, length - 1)
+                val glyph = measured.getBoundingBox(offset)
+                currentHorizontalAnchor(ReaderHorizontalAnchor(block.start + offset, (x - glyph.left) / glyph.width.coerceAtLeast(1f)), closing)
+            }
+            val captureHorizontalNow by rememberUpdatedState({ closing: Boolean -> captureHorizontal(visibleOffset, closing) })
+            LaunchedEffect(scroll, active, layoutKey) {
+                if (!active) { scroll.stopScroll(MutatePriority.PreventUserInput); return@LaunchedEffect }
+                var moved = false
+                var revision = restoreRevision
+                try {
+                    snapshotFlow { Triple(scroll.value, scroll.isScrollInProgress, restoreRevision to restoringHorizontal) }.collect { (_, scrolling, restore) ->
+                        if (currentLayoutKey != layoutKey) return@collect
+                        if (revision != restore.first) { revision = restore.first; moved = false }
+                        else if (restore.second) moved = false
+                        else if (scrolling) { moved = true; captureHorizontalNow(false) }
+                        else if (moved) {
+                            moved = false
+                            captureHorizontalNow(false)
+                            currentHorizontalScrollEnd()
+                        }
+                    }
+                } finally {
+                    if (moved && currentLayoutKey == layoutKey) {
+                        if (revision == restoreRevision && !restoringHorizontal) captureHorizontalNow(true)
+                        currentHorizontalScrollEnd()
+                    }
+                }
             }
             var revealedVisit by rememberSaveable { mutableStateOf<Long?>(null) }
+            LaunchedEffect(horizontalAnchor, layout, viewport, scroll.maxValue, rtl, inset, searchMatch) {
+                val measured = layout ?: return@LaunchedEffect
+                if (horizontalRestored || viewport <= 0 || scroll.maxValue == Int.MAX_VALUE || measured.layoutInput.text != text) return@LaunchedEffect
+                horizontalRestored = true
+                val anchor = horizontalAnchor ?: return@LaunchedEffect
+                val offset = anchor.offset - block.start
+                if (scroll.isScrollInProgress || offset !in 0 until measured.layoutInput.text.length ||
+                    searchMatch?.let { revealedVisit != it.first } == true) return@LaunchedEffect
+                val glyph = measured.getBoundingBox(offset)
+                val logical = (glyph.left + anchor.fraction * glyph.width.coerceAtLeast(1f) + inset).toInt().coerceIn(0, scroll.maxValue)
+                restoringHorizontal = true
+                restoreRevision++
+                try {
+                    // Default-priority restoration yields to any newly started user drag.
+                    scroll.scrollTo(if (rtl) scroll.maxValue - logical else logical)
+                } finally { restoringHorizontal = false }
+            }
             // Hydration/reflow never replays a completed reveal over the user's horizontal position.
             // The parent visit also changes when an evicted block's result is selected again.
             LaunchedEffect(searchMatch, layout, viewport, scroll.maxValue, rtl, inset, active) {
@@ -135,6 +197,8 @@ internal fun ReaderMarkdownView(block: MarkdownBlock, text: AnnotatedString, ink
                 }.coerceIn(0, scroll.maxValue)
                 scroll.scrollTo(if (rtl) scroll.maxValue - next else next)
                 revealedVisit = selection.first
+                captureHorizontal(block.start + range.start)
+                currentHorizontalScrollEnd()
             }
             // Keep text coordinates inside the scroll node for accessibility character bounds.
             key(layoutKey) {

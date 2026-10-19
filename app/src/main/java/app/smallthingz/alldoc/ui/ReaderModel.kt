@@ -28,6 +28,7 @@ import app.smallthingz.alldoc.engine.WorkbookInfo
 import app.smallthingz.alldoc.state.SheetPosition
 import kotlinx.coroutines.CompletableDeferred
 import app.smallthingz.alldoc.engine.DocumentSession
+import app.smallthingz.alldoc.engine.PageRegion
 import app.smallthingz.alldoc.ipc.DescriptorOutput
 import app.smallthingz.alldoc.pdf.PdfPasswordException
 import app.smallthingz.alldoc.pdf.PdfPasswordUnsupportedException
@@ -51,6 +52,7 @@ import app.smallthingz.alldoc.state.TextPosition
 import app.smallthingz.alldoc.state.ViewportState
 import app.smallthingz.alldoc.theme.ImageTreatment
 import app.smallthingz.alldoc.theme.ReadingMode
+import app.smallthingz.alldoc.theme.RegionThemeContext
 import app.smallthingz.alldoc.theme.ThemeSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -91,6 +93,8 @@ class ReaderModel internal constructor(application: Application, private val sup
     var bitmap by mutableStateOf<Bitmap?>(null)
         private set
     internal var pageImages by mutableStateOf<Map<Int, ReaderPageImage>>(emptyMap())
+        private set
+    internal var pageDetails by mutableStateOf<Map<Int, ReaderPageDetail>>(emptyMap())
         private set
     var pageAspects by mutableStateOf<Map<Int, Float>>(emptyMap())
         private set
@@ -161,7 +165,7 @@ class ReaderModel internal constructor(application: Application, private val sup
             if (bitmap != null || text != null) discoverMetadata()
         } else {
             stopRecentCheck()
-            rendering.cancel(); attemptedPages.clear(); pageLoading = false
+            rendering.cancel(); pausePageDetails(); attemptedPages.clear(); pageLoading = false
             stopTextExtraction()
             pauseMetadata()
             pauseSheets()
@@ -318,13 +322,17 @@ class ReaderModel internal constructor(application: Application, private val sup
     private var textGeneration = 0L
     private val renderLock = Mutex()
     private data class RenderWork(val page: Int, val signal: CancellationSignal, val preview: Boolean = false)
-    private var renderWork: RenderWork? = null
+    private var renderWork by mutableStateOf<RenderWork?>(null)
     private val attemptedPages = HashSet<Int>()
     var failedPages by mutableStateOf<Set<Int>>(emptySet())
         private set
     private var previewSaved = false
     private val opening = Task { loading = false }
     private val rendering = Task { pageLoading = false }
+    private val detailing = Task { }
+    private var detailRequests = emptyMap<Int, PageRegion>()
+    private val attemptedDetails = HashMap<Int, PageRegion>()
+    private var detailGeneration = 0L
     private val extracting = Task { textLoading = false }
     private val saving = Task { exporting = false }
     private val sheetRendering = Task { sheetsLoading = false; sheetsError = "Not enough memory." }
@@ -645,7 +653,7 @@ class ReaderModel internal constructor(application: Application, private val sup
             if (textMode || info?.continuous == true) loadText()
             if (bitmap != null || text != null) discoverMetadata()
         } else {
-            rendering.cancel(); attemptedPages.clear(); pageLoading = false
+            rendering.cancel(); pausePageDetails(); attemptedPages.clear(); pageLoading = false
             stopTextExtraction()
             pauseMetadata()
             pauseSheets()
@@ -666,7 +674,7 @@ class ReaderModel internal constructor(application: Application, private val sup
     fun setZoomAnimation(active: Boolean, identity: Long = documentId) {
         if (identity != documentId || info == null) return
         if (active) {
-            if (zoomAnimationStart == null) zoomAnimationStart = viewport
+            if (zoomAnimationStart == null) { zoomAnimationStart = viewport; pausePageDetails() }
         } else {
             val start = zoomAnimationStart ?: return
             zoomAnimationStart = null
@@ -754,21 +762,47 @@ class ReaderModel internal constructor(application: Application, private val sup
         if (storageBusy) { refreshStorageAgain = true; return }
         storageBusy = true
         viewModelScope.launch {
-            var status: app.smallthingz.alldoc.sources.CopyStatus? = null
-            var referenceWarning: String? = null
+            val warnings = linkedSetOf<String>()
             try {
                 val options = readState { store.copySettings() }
-                try { withContext(Dispatchers.IO) { status = sources.status(options) } }
-                finally { referenceWarning = withContext(NonCancellable + StateDispatcher) { reconcileImports() } }
-                val completed = requireNotNull(status)
-                if (copySettings == options) {
+                val existing = withContext(NonCancellable + StateDispatcher) { reconcileImports() }
+                if (existing != null) {
+                    warnings += existing
+                    // A failed reference write forbids more deletion, not truthful usage observation.
+                    val observed = withContext(Dispatchers.IO) { sources.observeStatus(options) }
+                    if (copySettings == options) {
+                        copyUsageBytes = observed.bytes
+                        copyUsageCount = observed.count
+                        storageLabel = observed.location
+                    } else refreshStorageAgain = true
+                    storageWarning = existing
+                    return@launch
+                }
+                do {
+                    if (copySettings != options) { refreshStorageAgain = true; break }
+                    var status: app.smallthingz.alldoc.sources.CopyStatus? = null
+                    var references: String? = null
+                    try { withContext(Dispatchers.IO) { status = sources.status(options) } }
+                    finally {
+                        // Receipt acknowledgement is a durability boundary, including on cancellation.
+                        references = withContext(NonCancellable + StateDispatcher) { reconcileImports() }
+                        references?.let(warnings::add)
+                    }
+                    val completed = requireNotNull(status)
+                    completed.warning?.let(warnings::add)
+                    if (copySettings != options) { refreshStorageAgain = true; break }
                     copyUsageBytes = completed.bytes
                     copyUsageCount = completed.count
                     storageLabel = completed.location
-                    storageWarning = listOfNotNull(completed.warning, referenceWarning).distinct()
-                        .joinToString(" ").ifBlank { null }
-                } else refreshStorageAgain = true
-            } catch (failure: Exception) { storageWarning = message(failure) }
+                    storageWarning = warnings.takeIf { it.isNotEmpty() }?.joinToString(" ")
+                    if (references != null) break
+                    if (!isActive) throw CancellationException("Storage trimming cancelled")
+                } while (completed.trimPending)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                warnings += message(failure)
+                storageWarning = warnings.joinToString(" ")
+            }
             finally {
                 storageBusy = false
                 if (refreshStorageAgain) { refreshStorageAgain = false; refreshStorageUsage() }
@@ -781,24 +815,39 @@ class ReaderModel internal constructor(application: Application, private val sup
         storageBusy = true
         viewModelScope.launch {
             try {
-                var warning: String? = null
-                try {
-                    withContext(Dispatchers.IO) {
-                        val change = sources.clear()
-                        warning = change.warning
-                        try { previews.clear() }
-                        catch (_: OutOfMemoryError) {
-                            warning = listOfNotNull(warning, "Previews could not be cleared.").joinToString(" ")
+                val warnings = linkedSetOf<String>()
+                val existing = withContext(NonCancellable + StateDispatcher) { reconcileImports() }
+                existing?.let(warnings::add)
+                if (existing == null) {
+                    var after: String? = null
+                    do {
+                        var change: app.smallthingz.alldoc.sources.CopyChange? = null
+                        var references: String? = null
+                        try { withContext(Dispatchers.IO) { change = sources.clear(after) } }
+                        finally {
+                            // A cancelled caller still commits reference invalidations for its durable batch.
+                            references = withContext(NonCancellable + StateDispatcher) { reconcileImports() }
+                            references?.let(warnings::add)
                         }
+                        val completed = requireNotNull(change)
+                        completed.warning?.let(warnings::add)
+                        if (references != null) break // Do not fill the receipt journal after a failed reconciliation.
+                        after = completed.continuation
+                        if (!isActive) throw CancellationException("Storage clearing cancelled")
+                    } while (after != null)
+                }
+                withContext(Dispatchers.IO) {
+                    try { previews.clear() }
+                    catch (_: OutOfMemoryError) {
+                        warnings += "Previews could not be cleared."
                     }
-                } finally {
-                    val references = withContext(NonCancellable + StateDispatcher) { reconcileImports() }
-                    warning = listOfNotNull(warning, references).distinct().joinToString(" ").ifBlank { null }
                 }
                 recentPreviews = emptyMap()
                 updateRecent(readState { store.recentDocuments() })
-                notice = warning ?: "Retained copies cleared. Reading positions were kept."
-            } catch (failure: Exception) { error = message(failure) }
+                notice = warnings.takeIf { it.isNotEmpty() }?.joinToString(" ")
+                    ?: "Retained copies cleared. Reading positions were kept."
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { error = message(failure) }
             finally {
                 storageBusy = false
                 refreshStorageAgain = false
@@ -1166,6 +1215,9 @@ class ReaderModel internal constructor(application: Application, private val sup
     }
 
     private fun render() {
+        pausePageDetails()
+        attemptedDetails.clear()
+        pageDetails = emptyMap()
         renderGeneration++
         rendering.cancel()
         pageImages = emptyMap()
@@ -1181,8 +1233,117 @@ class ReaderModel internal constructor(application: Application, private val sup
         if (range.isEmpty() || count == 0) return
         val first = range.first.coerceIn(0, count - 1)
         val next = first..range.last.coerceIn(first, minOf(count - 1, first + 253))
-        if (visiblePages != next) { visiblePages = next; attemptedPages.clear(); failedPages = failedPages.intersect(pageOrder().toSet()) }
+        if (visiblePages != next) {
+            pausePageDetails()
+            visiblePages = next
+            detailRequests = detailRequests.filterKeys { it in next }
+            attemptedDetails.clear()
+            pageDetails = pageDetails.filterKeys { it in next }
+            attemptedPages.clear()
+            failedPages = failedPages.intersect(pageOrder().toSet())
+        }
         startPageRender()
+    }
+
+    /** At most two viewport-sized patches; never a zoom-sized full-page allocation. */
+    internal fun requestVisibleRegions(regions: Map<Int, PageRegion>, identity: Long = documentId) {
+        if (identity != documentId) return
+        val count = info?.pageCount ?: return
+        val next = regions.entries.asSequence().filter { it.key in 0 until count }
+            .take(2).associateTo(LinkedHashMap()) { it.key to it.value }
+        if (next == detailRequests) { startPageRender(); return }
+        pausePageDetails()
+        if (next.size != detailRequests.size) attemptedDetails.clear()
+        detailRequests = next
+        attemptedDetails.entries.removeAll { next[it.key] != it.value }
+        pageDetails = pageDetails.filter { (index, detail) ->
+            index in next && detail.bitmap.allocationByteCount <= pageDetailBudget(next.size)
+        }
+        next.keys.filter { pageImages[it]?.missingThemeContext == true }.forEach { attemptedPages.remove(it) }
+        startPageRender()
+    }
+
+    private fun pausePageDetails(clear: Boolean = false) {
+        detailGeneration++
+        detailing.cancel()
+        if (clear) {
+            detailRequests = emptyMap()
+            attemptedDetails.clear()
+            pageDetails = emptyMap()
+        }
+    }
+
+    private fun startPageDetails() {
+        if (detailing.running || detailRequests.isEmpty() || zoomAnimationStart != null || exporting ||
+            !foreground || !readerVisible || textMode || sheetMode || info?.continuous == true) return
+        if (visiblePages.any { it !in pageImages && it !in failedPages }) return
+        if (detailRequests.none { (index, region) -> pageImages[index]?.let { !it.missingThemeContext } == true && attemptedDetails[index] != region }) return
+        val owner = current?.borrow() ?: return
+        val identity = documentId
+        val generation = detailGeneration
+        val appearance = effectiveSettings
+        detailing.start { signal ->
+            try {
+                // Coalesce the layout callback and final gesture frame before entering a native engine.
+                delay(100)
+                while (identity == documentId && generation == detailGeneration) {
+                    val request = detailRequests.entries.firstOrNull { (index, region) ->
+                        pageImages[index]?.let { !it.missingThemeContext } == true && attemptedDetails[index] != region
+                    } ?: break
+                    val index = request.key
+                    val wanted = request.value
+                    val upgrading = renderWork?.takeIf { it.page == index && !it.preview }
+                    if (upgrading != null) {
+                        // Await only this page's publication, not adjacent prefetch or the native lock.
+                        snapshotFlow { renderWork }.first { it !== upgrading }
+                        continue
+                    }
+                    val base = pageImages.getValue(index)
+                    val context = base.themeContext
+                    val budget = pageDetailBudget(detailRequests.size)
+                    val region = pageDetailRegion(wanted, detailRequests.size)
+                    var result: Bitmap? = null
+                    var superseded = false
+                    try {
+                        withContext(Dispatchers.IO) {
+                            renderLock.withLock {
+                                signal.throwIfCanceled()
+                                if (pageImages[index] !== base || renderWork?.let { it.page == index && !it.preview } == true) {
+                                    superseded = true
+                                    return@withLock
+                                }
+                                result = owner.session.renderRegionWithContext(index, region, appearance, signal, context)
+                                result?.let { image ->
+                                    check(image.width == region.width && image.height == region.height)
+                                    check(image.allocationByteCount.toLong() <= budget)
+                                    signal.throwIfCanceled()
+                                    image.prepareToDraw()
+                                }
+                            }
+                        }
+                        signal.throwIfCanceled()
+                        if (superseded) continue
+                        // An upgrade begun after native work starts still cannot publish an old-policy patch.
+                        if (identity == documentId && generation == detailGeneration &&
+                            detailRequests[index] == wanted && pageImages[index] === base) {
+                            attemptedDetails[index] = wanted
+                            result?.let { image ->
+                                pageDetails = pageDetails.filterKeys { it in detailRequests } + (index to ReaderPageDetail(image, region))
+                                result = null // Compose may retain the preceding image through a frame.
+                            }
+                        }
+                    } catch (failure: Exception) {
+                        if (cancelled(failure, signal)) throw failure
+                        if (identity == documentId && generation == detailGeneration && pageImages[index] === base)
+                            attemptedDetails[index] = wanted
+                    } catch (_: OutOfMemoryError) {
+                        if (identity == documentId && generation == detailGeneration && pageImages[index] === base)
+                            attemptedDetails[index] = wanted
+                        break // The base page remains usable; do not retry this patch every frame.
+                    } finally { result?.recycle() }
+                }
+            } finally { owner.release() }
+        }
     }
 
     fun retryPage(index: Int, identity: Long = documentId) {
@@ -1211,6 +1372,7 @@ class ReaderModel internal constructor(application: Application, private val sup
     private fun needsPage(index: Int, budget: Long): Boolean {
         if (index in failedPages) return false
         val image = pageImages[index] ?: return true
+        if (image.missingThemeContext && index in detailRequests) return true
         val bytes = image.bitmap.allocationByteCount
         return bytes > budget || bytes < budget * .7 &&
             image.renderWidth < renderWidth(image.bitmap.height.toFloat() / image.bitmap.width, budget, crop = image.crop) * .8
@@ -1222,6 +1384,7 @@ class ReaderModel internal constructor(application: Application, private val sup
     }
 
     private fun startPageRender() {
+        startPageDetails()
         if (info?.supportsSheets == true && info?.pageCount == 0 && horizontalPages && !textMode) {
             if (foreground && readerVisible) choosePageView(true)
             return
@@ -1282,6 +1445,7 @@ class ReaderModel internal constructor(application: Application, private val sup
                     attemptedPages.add(index)
                     renderWork = RenderWork(index, signal)
                     var result: Bitmap? = null
+                    var themeContext: RegionThemeContext? = null
                     val previousImage = pageImages[index]
                     var crop = if (cropMargins) previousImage?.crop else null
                     val discoverCrop = cropMargins && previousImage == null
@@ -1312,7 +1476,7 @@ class ReaderModel internal constructor(application: Application, private val sup
                                 }
                                 val target = renderWidth(aspect, budget, baseWidth, pose, crop)
                                 var image = original(if (discoverCrop) pageMarginProbeWidth(target, aspect) else target)
-                                val regions = try {
+                                try {
                                     if (discoverCrop) {
                                         crop = detectPageMargins(image, signal)
                                         val detail = renderWidth(aspect, budget, baseWidth, pose, crop)
@@ -1322,9 +1486,10 @@ class ReaderModel internal constructor(application: Application, private val sup
                                             image = original(detail)
                                         }
                                     }
-                                    owner.session.rasterRegionsFor(index, appearance, signal)
                                 } catch (failure: Throwable) { image.recycle(); throw failure }
-                                result = themed(image, appearance, signal, regions)
+                                result = try { owner.session.themePage(index, image, appearance, signal) }
+                                catch (failure: Throwable) { if (!image.isRecycled) image.recycle(); throw failure }
+                                themeContext = owner.session.pageThemeContext(index, appearance, signal)
                             }
                             signal.throwIfCanceled()
                             requireNotNull(result).prepareToDraw()
@@ -1334,18 +1499,24 @@ class ReaderModel internal constructor(application: Application, private val sup
                             val image = requireNotNull(result)
                             val bounds = crop
                             rememberAspect(index, image.height.toFloat() / image.width * (bounds?.height() ?: 1f) / (bounds?.width() ?: 1f))
-                            val candidates = pageImages + (index to ReaderPageImage(image, crop, requestedWidth))
+                            val candidates = pageImages + (index to ReaderPageImage(image, crop, requestedWidth, themeContext))
+                            val contextPages = (detailRequests.keys + pageOrder()).distinct().take(2)
+                            if (previousImage?.themeContext !== themeContext) {
+                                pageDetails = pageDetails - index
+                                attemptedDetails.remove(index)
+                            }
                             var bytes = 0L
                             val retained = LinkedHashMap<Int, ReaderPageImage>()
                             for (key in pageOrder()) candidates[key]?.let { candidate ->
                                 val size = candidate.bitmap.allocationByteCount.toLong()
                                 if (retained.isEmpty() || bytes + size <= 48L * 1024 * 1024) {
-                                    retained[key] = candidate
+                                    retained[key] = if (key in contextPages) candidate else candidate.copy(themeContext = null)
                                     bytes += size
                                 }
                             }
                             if (index in retained) result = null // Published images are released by GC after Compose drops them.
                             pageImages = retained
+                            startPageDetails()
                             syncPage()
                             discoverMetadata()
                         }
@@ -1369,6 +1540,7 @@ class ReaderModel internal constructor(application: Application, private val sup
             } finally {
                 if (renderWork?.signal === signal) renderWork = null
                 owner.release()
+                startPageDetails()
             }
         }
     }
@@ -1635,6 +1807,7 @@ class ReaderModel internal constructor(application: Application, private val sup
         if (destination == null) { request.owner.release(); return }
         notice = null
         exporting = true
+        pausePageDetails()
         pauseSheets()
         // Explicit export owns the session before optional covers or adjacent-page work.
         renderWork?.let { attemptedPages.remove(it.page) }
@@ -1701,6 +1874,7 @@ class ReaderModel internal constructor(application: Application, private val sup
         pauseSheets()
         opening.cancel()
         rendering.cancel()
+        pausePageDetails(clear = true)
         stopTextExtraction()
         outlining.cancel()
         annotating.cancel()

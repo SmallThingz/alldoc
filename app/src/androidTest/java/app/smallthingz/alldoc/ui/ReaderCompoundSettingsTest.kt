@@ -6,7 +6,6 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
@@ -49,17 +48,12 @@ class ReaderCompoundSettingsTest {
                 assertTrue(entered.await(5, TimeUnit.SECONDS))
             })
             launchReaderTestActivity().use { scenario ->
-                val limits = mutableStateOf(false)
                 val view = AtomicReference<View>()
                 scenario.onActivity { activity -> activity.setContent {
                     val current = LocalView.current
                     SideEffect { view.set(current) }
                     ReaderTheme {
-                        if (limits.value) {
-                            // Mount the same panel that a saved "limits" overlay restores during cold startup.
-                            ReaderPanels(fixture.reader, fixture.reader.documentId, "limits",
-                                onDismiss = { limits.value = false }, onCloseSearch = {})
-                        } else ReaderScreen(fixture.reader, onOpen = {}, onExport = { _, _ -> })
+                        ReaderScreen(fixture.reader, onOpen = {}, onExport = { _, _ -> })
                     }
                 } }
                 fun choice(label: String, nodes: List<SemanticsNode>) = find(nodes) {
@@ -112,9 +106,8 @@ class ReaderCompoundSettingsTest {
                         try { activity.dispatchTouchEvent(event) } finally { event.recycle() }
                     }
                     assertEquals(ThemeSettings(), fixture.reader.appearanceForControls)
-                    limits.value = true
                 }
-                await("Pending restored storage slider is not disabled") {
+                await("Pending inline storage slider is not disabled") {
                     var disabled = false
                     scenario.onActivity { activity -> disabled = choice("Storage limit", activity.testSemantics(true))?.let {
                         it.config.getOrNull(SemanticsProperties.Disabled) != null
@@ -134,9 +127,9 @@ class ReaderCompoundSettingsTest {
                 }
                 scenario.onActivity { activity ->
                     val slider = requireNotNull(choice("Storage limit", activity.testSemantics(true)))
-                    assertTrue(slider.config.getOrNull(SemanticsActions.SetProgress)?.action?.invoke(512f) == true)
+                    assertTrue(slider.config.getOrNull(SemanticsActions.SetProgress)?.action?.invoke(10f) == true)
                 }
-                val expectedCopies = copies.copy(maxBytes = 512L * 1024 * 1024)
+                val expectedCopies = copies.copy(enabled = true, maxBytes = 512L * 1024 * 1024, maxCount = 1_000_000)
                 await("Storage limit discarded a saved companion field") {
                     var matched = false
                     fixture.act { matched = it.copySettings == expectedCopies }
@@ -144,8 +137,6 @@ class ReaderCompoundSettingsTest {
                 }
                 fixture.stateBarrier()
                 assertEquals(expectedCopies, fixture.store.copySettings())
-                scenario.onActivity { limits.value = false }
-                openSettings()
                 await("Hydrated default appearance did not enable") {
                     var selected = false
                     scenario.onActivity { activity ->

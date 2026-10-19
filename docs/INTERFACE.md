@@ -1,10 +1,10 @@
 # Interface
 
-Home separates **Recents**, limited to six documents, from **Library**, a three-column collage grouped by document type. Each tab keeps its scroll position. Names remain alphabetical within groups; fuzzy search filters names without relevance sorting or searching document contents. The type filter narrows the visible group. Excluded types in Settings persist across launches and subsequent scans.
+Home separates **Recents**, limited to six documents, from **Library**, a three-column collage grouped by document type. Each tab keeps its scroll position. Names remain alphabetical within groups; fuzzy search filters names without relevance sorting or searching document contents. Library’s Docs, Slides, Sheets and Books controls persist across launches and subsequent scans.
 
 The main app header and bottom tabs stay fixed. Library search and type controls collapse while scrolling down and return while scrolling up. Open launches the file picker. Debug builds include Examples with 46 bundled documents; release builds omit them. The centered launcher icon opens a compact top panel with version and repository link. Licenses is the top-left action; Settings is top-right.
 
-Settings contains device access and Add folder. All-files access covers readable shared volumes, not other apps' private storage. Opening one document needs no broad storage access. An empty Library offers a path to these settings; pull down to refresh an existing Library.
+Settings contains device-access repair when permission is missing; there is no Add folder action. All-files access covers readable shared volumes, not other apps' private storage. Opening one document needs no broad storage access. An empty Library offers a path to these settings; pull down to refresh an existing Library.
 
 Known document names appear as candidates before signature checks and complete hashing. Unfamiliar names are probed for supported document signatures during discovery. Bounded package probes retain compatible name/provider hints when inconclusive; unrecognized binary data is excluded. Container contents are validated by the selected reader when opened. Verified equal hashes merge locations. Only visible covers are generated, using document-default colors; unavailable previews retain a fallback icon.
 
@@ -24,7 +24,7 @@ The Read document text accessibility action makes an explicit Text choice withou
 
 Fullscreen draws the document beneath system bars and cutouts, while overlay controls keep safe touch areas. Reader chrome hides on forward/downward scrolling and returns on backward/upward scrolling. A deliberate single tap toggles it; pinching, long presses and cancelled gestures do not count as taps. Fullscreen also uses one five-second timeout, adjusted for accessibility preferences. Search, focus, touch exploration and modal interaction keep controls available. Information/export sheets preserve immersive window flags. Back closes search or Text first, then exits fullscreen; an externally opened document then returns to its caller.
 
-System, Light, Dark and AMOLED app themes are independent of document appearance. Neutral surfaces, dynamic accents and static grain keep the document dominant; AMOLED's main canvas stays pure black. Icon actions expose tooltips on hover/long press and retain accessible names and 48 dp touch targets. Texture is cached, with no animation timer. Paging and bounded image caches limit memory; no claim is made of zero idle CPU or instant parsing.
+System, Light, Dark and AMOLED app themes are independent of document appearance. Material 3 surface and content roles use the system’s dynamic palette on Android 12+, with standard Material fallbacks on older devices; AMOLED's main canvas stays pure black. Icon actions expose tooltips on hover/long press and retain accessible names and 48 dp touch targets. Texture is cached, with no animation timer. Paging and bounded image caches limit memory; no claim is made of zero idle CPU or instant parsing.
 
 ## Design references
 

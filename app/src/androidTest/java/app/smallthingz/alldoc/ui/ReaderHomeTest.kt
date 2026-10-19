@@ -288,16 +288,24 @@ class ReaderHomeTest {
             DocumentMetadata(it.title, it.mimeType, it.sizeBytes), DocumentState(), it.id) }
         val pages = MutableStateFlow(libraryPageData(documents))
         val requested = AtomicReference<Pair<String, LibraryCategory?>>()
+        val hidden = mutableStateOf(emptySet<LibraryCategory>())
         var generation = 0
         ActivityScenario.launch(ReaderTestActivity::class.java).use { scenario ->
             scenario.onActivity { activity -> activity.setContent {
                 MaterialTheme {
                     Box(Modifier.fillMaxSize()) {
                         ReaderHome({}, Modifier.width(360.dp).height(420.dp).clipToBounds(), recent = history,
-                            library = pages.collectAsLazyPagingItems(), onLibraryFilter = { query, category ->
+                            library = pages.collectAsLazyPagingItems(), hiddenLibraryTypes = hidden.value,
+                            onHiddenLibraryTypesChange = { excluded ->
+                                hidden.value = excluded
+                                val query = requested.get()?.first.orEmpty()
+                                val rows = documents.filter { it.category !in excluded &&
+                                    (query.isBlank() || query == "rpt" && it.category == LibraryCategory.DOCUMENTS) }
+                                pages.value = libraryPageData(rows, (++generation).toString())
+                            }, onLibraryFilter = { query, category ->
                                 requested.set(query to category)
                                 // A deterministic backend response keeps this test focused on input, routing and layout.
-                                val rows = documents.filter { (category == null || it.category == category) &&
+                                val rows = documents.filter { it.category !in hidden.value &&
                                     (query.isBlank() || query == "rpt" && it.category == LibraryCategory.DOCUMENTS) }
                                 pages.value = libraryPageData(rows, (++generation).toString())
                             })
@@ -312,34 +320,36 @@ class ReaderHomeTest {
             clickLabel("Library")
             awaitHome { count("Documents") == 1 && count(documents.first().title) == 1 }
             dragList(up = true)
-            awaitHome { count("Library") == 1 && count("Document type") == 0 }
+            awaitHome { count("Library") == 1 && count("Library: Documents") == 0 }
             dragList(up = false)
-            awaitHome { count("Library") == 1 && count("Document type") == 1 }
+            awaitHome { count("Library") == 1 && count("Library: Documents") == 1 }
             assertTrue("Old storage/action strips must not survive", count("Storage") + count("Add folder") + count("Refresh library") == 0)
             awaitHome { visit { it.isVisibleToUser && it.isEditable && it.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,
                 Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "rpt") }) } }
             awaitHome { requested.get() == ("rpt" to null) && count(documents.first().title) == 1 }
-            clickLabel("Document type"); clickLabel("Presentations")
+            clickLabel("Library: Documents")
             awaitHome({ "filter=${requested.get()}, noMatches=${count("No matches")}" }) {
-                requested.get() == ("rpt" to LibraryCategory.PRESENTATIONS) && count("No matches") == 1
+                hidden.value == setOf(LibraryCategory.DOCUMENTS) && count("No matches") == 1
             }
             clickLabel("Clear search")
-            awaitHome { requested.get() == ("" to LibraryCategory.PRESENTATIONS) && count("Presentations") == 1 && count("Deck 37.pptx") == 1 }
-            clickLabel("Document type"); clickLabel("All types")
+            awaitHome { requested.get() == ("" to null) && count("Presentations") == 1 && count("Deck 37.pptx") == 1 }
+            clickLabel("Library: Documents")
             awaitHome { requested.get() == ("" to null) && count("Documents") == 1 && count(documents.first().title) == 1 }
         }
     }
 
-    @Test fun retainedHomeDismissesItsFilterPopupAndDoesNotReopenItOnReturn() {
+    @Test fun retainedHomeKeepsLibraryChoicesWithoutInterceptingItsDestination() {
         val active = mutableStateOf(true)
         val clicked = AtomicBoolean()
         val requested = AtomicReference<Pair<String, LibraryCategory?>>()
+        val hidden = mutableStateOf(emptySet<LibraryCategory>())
         val pages = MutableStateFlow(libraryPageData(emptyList()))
         ActivityScenario.launch(ReaderTestActivity::class.java).use { scenario ->
             scenario.onActivity { activity -> activity.setContent { MaterialTheme {
                 Box(Modifier.fillMaxSize()) {
                     ReaderHome({}, Modifier.fillMaxSize().readerInput(active.value), active = active.value,
-                        library = pages.collectAsLazyPagingItems(),
+                        library = pages.collectAsLazyPagingItems(), hiddenLibraryTypes = hidden.value,
+                        onHiddenLibraryTypesChange = { hidden.value = it },
                         onLibraryFilter = { text, category -> requested.set(text to category) })
                     if (!active.value) androidx.compose.material3.Button(onClick = { clicked.set(true) }) {
                         androidx.compose.material3.Text("Current destination")
@@ -349,20 +359,18 @@ class ReaderHomeTest {
             clickLabel("Library")
             awaitHome { visit { it.isVisibleToUser && it.isEditable && it.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,
                 Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "rpt") }) } }
-            clickLabel("Document type"); clickLabel("Presentations")
-            awaitHome { requested.get() == ("rpt" to LibraryCategory.PRESENTATIONS) }
-            clickLabel("Document type")
-            awaitHome { count("All types") == 1 }
+            clickLabel("Library: Presentations")
+            awaitHome { hidden.value == setOf(LibraryCategory.PRESENTATIONS) }
             instrumentation.runOnMainSync { active.value = false }
-            awaitHome { count("All types") == 0 && count("Current destination") == 1 }
+            awaitHome { count("Library: Documents") == 0 && count("Current destination") == 1 }
             clickLabel("Current destination")
-            assertTrue("The retained menu must not intercept its new destination", clicked.get())
+            assertTrue("Retained controls must not intercept their new destination", clicked.get())
             instrumentation.runOnMainSync { active.value = true }
-            awaitHome { count("Document type") == 1 && count("Current destination") == 0 }
-            assertEquals("Returning Home must not reopen a dismissed menu", 0, count("All types"))
-            assertEquals("Changing destinations preserves filtering", "rpt" to LibraryCategory.PRESENTATIONS, requested.get())
-            clickLabel("Document type"); clickLabel("All types")
-            awaitHome { requested.get() == ("rpt" to null) }
+            awaitHome { count("Library: Documents") == 1 && count("Current destination") == 0 }
+            assertEquals("Changing destinations preserves search", "rpt" to null, requested.get())
+            assertEquals(setOf(LibraryCategory.PRESENTATIONS), hidden.value)
+            clickLabel("Library: Presentations")
+            awaitHome { hidden.value.isEmpty() && requested.get() == ("rpt" to null) }
         }
     }
 
@@ -370,13 +378,15 @@ class ReaderHomeTest {
         val height = mutableStateOf(360.dp)
         val pages = MutableStateFlow(libraryPageData(emptyList()))
         val requested = AtomicReference<Pair<String, LibraryCategory?>>()
+        val hidden = mutableStateOf(emptySet<LibraryCategory>())
         ActivityScenario.launch(ReaderTestActivity::class.java).use { scenario ->
             scenario.onActivity { activity -> activity.setContent {
                 val density = LocalDensity.current
                 CompositionLocalProvider(LocalDensity provides Density(density.density, 1f)) {
                     MaterialTheme {
                         ReaderHome({}, Modifier.width(360.dp).height(height.value).clipToBounds(),
-                            library = pages.collectAsLazyPagingItems(),
+                            library = pages.collectAsLazyPagingItems(), hiddenLibraryTypes = hidden.value,
+                            onHiddenLibraryTypesChange = { hidden.value = it },
                             onLibraryFilter = { text, category -> requested.set(text to category) })
                     }
                 }
@@ -398,13 +408,14 @@ class ReaderHomeTest {
             awaitHome { requested.get() == ("rpt" to null) }
             clickLabel("Clear search")
             awaitHome { requested.get() == ("" to null) }
-            clickLabel("Document type"); clickLabel("Presentations")
-            awaitHome { requested.get() == ("" to LibraryCategory.PRESENTATIONS) }
+            assertEquals("Compact search reserves its row for the focused field", 0, count("Library: Documents"))
             clickLabel("Close library search")
             awaitHome { count("Find documents") == 1 && !visit { it.isVisibleToUser && it.isEditable } }
+            clickLabel("Library: Presentations")
+            awaitHome { hidden.value == setOf(LibraryCategory.PRESENTATIONS) }
             clickLabel("Find documents")
-            awaitHome { count("Document type") == 1 && visit { it.isVisibleToUser && it.isEditable } }
-            assertEquals("Closing search keeps the chosen filter", "" to LibraryCategory.PRESENTATIONS, requested.get())
+            awaitHome { count("Library: Documents") == 0 && visit { it.isVisibleToUser && it.isEditable } }
+            assertEquals("Closing search keeps the chosen filter", setOf(LibraryCategory.PRESENTATIONS), hidden.value)
         }
     }
 
@@ -429,15 +440,15 @@ class ReaderHomeTest {
                 }
             } }
             clickLabel("Library")
-            awaitHome { count(documents.first().title) == 1 && count("Document type") == 1 }
+            awaitHome { count(documents.first().title) == 1 && count("Library: Documents") == 1 }
             dragList(up = true)
-            awaitHome { count("Library") == 1 && count("Open") == 1 && count("Examples") == 1 && count("Document type") == 0 }
+            awaitHome { count("Library") == 1 && count("Open") == 1 && count("Examples") == 1 && count("Library: Documents") == 0 }
             // A scan/filter update can remove the grid's scroll actions. Controls must return
             // without a physical recovery drag, so accessibility users can still reach them.
             pages.value = libraryPageData(documents.take(3), "short")
             awaitHome { documents.take(3).all { count(it.title) == 1 } &&
                 count("Recents") == 1 && count("Library") == 1 && count("Open") == 1 &&
-                count("Examples") == 1 && count("Document type") == 1 }
+                count("Examples") == 1 && count("Library: Documents") == 1 }
             clickLabel("Open")
             awaitHome { opened.get() }
             clickLabel("Examples")

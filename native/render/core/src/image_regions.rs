@@ -54,7 +54,7 @@ impl Regions {
     }
 }
 
-pub fn word(doc: &wordcraft_doc::Document, page: &wordcraft_layout::Page, scale: f32,
+pub fn word_view(doc: &wordcraft_doc::Document, page: &wordcraft_layout::Page, view: Affine,
     width: u32, height: u32, check: &mut impl FnMut() -> Result<(), String>) -> Result<ImageRegions, String> {
     use wordcraft_layout::display::{page_display, DisplayOptions, Draw};
     let mut out = Regions::new(width, height);
@@ -67,7 +67,7 @@ pub fn word(doc: &wordcraft_doc::Document, page: &wordcraft_layout::Page, scale:
             if alpha != 1.0 || !crop.iter().all(|v| v.is_finite())
                 || !doc.media.get(&media).is_some_and(|data| opaque_encoding(data)) { return Ok(None); }
             { out.add(Rect::new(rect.x as f64, rect.y as f64, rect.right() as f64,
-                rect.bottom() as f64), Affine::scale(scale as f64)); }
+                rect.bottom() as f64), view); }
             if out.items.is_none() { break; }
         }
     }
@@ -125,12 +125,11 @@ fn slide_shapes(ctx: &Ctx, shapes: &[Shape], parent: Affine, depth: usize,
     Ok(())
 }
 
-pub fn slide(pres: &Presentation, index: usize, scale: f64, width: u32, height: u32,
+pub fn slide_view(pres: &Presentation, index: usize, view: Affine, width: u32, height: u32,
     check: &mut impl FnMut() -> Result<(), String>) -> Result<ImageRegions, String> {
     let Some(slide) = pres.slides.get(index) else { return Ok(None) };
     let Some(ctx) = Ctx::for_slide(pres, slide) else { return Ok(None) };
     let mut out = Regions::new(width, height);
-    let view = Affine::scale(scale);
     let (background, _) = resolve::background(&ctx, Some(slide));
     if let Fill::Picture(fill) = &background {
         if !opaque_picture(pres, fill) { return Ok(None); }
@@ -154,8 +153,8 @@ pub fn slide(pres: &Presentation, index: usize, scale: f64, width: u32, height: 
     Ok(out.items)
 }
 
-pub fn sheet(wb: &gridcraft_model::Workbook, lay: &gridcraft_engine::cmd::print::SheetLayout,
-    scale: f64, width: u32, height: u32, check: &mut impl FnMut() -> Result<(), String>) -> Result<ImageRegions, String> {
+pub fn sheet_view(wb: &gridcraft_model::Workbook, lay: &gridcraft_engine::cmd::print::SheetLayout,
+    view: Affine, width: u32, height: u32, check: &mut impl FnMut() -> Result<(), String>) -> Result<ImageRegions, String> {
     let Some(sh) = wb.sheet(lay.sheet) else { return Ok(None) };
     let Some(&(ri, ci)) = lay.pages.first() else { return Ok(None) };
     let (Some(&rows), Some(&cols)) = (lay.row_bands.get(ri), lay.col_bands.get(ci)) else { return Ok(None) };
@@ -189,7 +188,7 @@ pub fn sheet(wb: &gridcraft_model::Workbook, lay: &gridcraft_engine::cmd::print:
         let clipped = Rect::new(x.max(bx) as f64, y.max(by) as f64, right.min(ex) as f64, bottom.min(ey) as f64);
         if clipped.width() <= 0.0 || clipped.height() <= 0.0 { continue; }
         if !opaque_encoding(&image.data) { return Ok(None); }
-        out.add(clipped, Affine::scale(scale));
+        out.add(clipped, view);
         if out.items.is_none() { break; }
     }
     Ok(out.items)

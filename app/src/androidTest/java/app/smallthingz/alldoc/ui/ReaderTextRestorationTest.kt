@@ -3,6 +3,7 @@ package app.smallthingz.alldoc.ui
 import android.graphics.RectF
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.CompositionLocalProvider
@@ -35,6 +36,68 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ReaderTextRestorationTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
+
+    @Test fun nativeTextZoomKeepsTheCharacterAnchorAndKeyboardStopsWhenInactive() {
+        val marker = "★"
+        val text = "Before this paragraph.\n".repeat(200) + marker + " Enlarged native text.\n" + "Following paragraph.\n".repeat(200)
+        val position = mutableStateOf(TextPosition(text.indexOf(marker)))
+        val active = mutableStateOf(true)
+        val viewport = AtomicReference<Pair<Int, RectF>>()
+        val compositions = AtomicInteger()
+        ActivityScenario.launch(ReaderTestActivity::class.java).use { scenario ->
+            scenario.onActivity { activity -> activity.setContent {
+                DisposableEffect(Unit) { compositions.incrementAndGet(); onDispose { } }
+                ReaderTheme(dark = false) {
+                    ReaderTextView(text, false, ThemeSettings(ReadingMode.ORIGINAL), false, rememberTextFieldState(), {},
+                        Modifier.size(260.dp, 220.dp).semantics { contentDescription = generationLabel(0) }
+                            .onGloballyPositioned {
+                                val top = it.localToScreen(Offset.Zero)
+                                viewport.set(0 to RectF(top.x, top.y, top.x + it.size.width, top.y + it.size.height))
+                            }, 1L, position.value, { position.value = it }, {}, active = active.value)
+                }
+            } }
+            val initial = visibleCharacter(marker, viewport, compositions)
+            assertTrue("Native text exposes accessible zoom", textAction("Zoom in"))
+            val enlarged = visibleCharacter(marker, viewport, compositions, minimumHeight = initial.height() * 1.1f)
+            assertTrue(enlarged.height() > initial.height() * 1.1f)
+            val deadline = SystemClock.uptimeMillis() + 3000
+            while (position.value.zoom < 1.249f && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(20)
+            assertEquals(1.25f, position.value.zoom, .001f)
+            assertEquals("Reflow keeps the authored character", text.indexOf(marker), position.value.offset)
+            fun key(code: Int) = scenario.onActivity { activity ->
+                val now = SystemClock.uptimeMillis()
+                activity.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0, KeyEvent.META_CTRL_ON))
+                activity.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0, KeyEvent.META_CTRL_ON))
+            }
+            key(KeyEvent.KEYCODE_0)
+            val resetDeadline = SystemClock.uptimeMillis() + 3000
+            while (position.value.zoom != 1f && SystemClock.uptimeMillis() < resetDeadline) SystemClock.sleep(20)
+            assertEquals(1f, position.value.zoom, 0f)
+            scenario.onActivity { active.value = false }
+            SystemClock.sleep(100)
+            instrumentation.waitForIdleSync()
+            key(KeyEvent.KEYCODE_EQUALS)
+            assertFalse("Covered text must not expose working zoom actions", textAction("Zoom in"))
+            assertEquals(1f, position.value.zoom, 0f)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun textAction(label: String): Boolean {
+        val root = instrumentation.uiAutomation.rootInActiveWindow ?: return false
+        var visited = 0
+        fun walk(node: AccessibilityNodeInfo, depth: Int): Boolean {
+            if (depth > 24 || visited++ > 512) return false
+            node.actionList.firstOrNull { node.isVisibleToUser && it.label?.toString() == label }
+                ?.let { return node.performAction(it.id) }
+            for (index in 0 until minOf(node.childCount, 64)) {
+                val child = node.getChild(index) ?: continue
+                try { if (walk(child, depth + 1)) return true } finally { child.recycle() }
+            }
+            return false
+        }
+        return try { walk(root, 0) } finally { root.recycle() }
+    }
 
     @Test fun nearEndAnchorRemainsVisibleAcrossReflowAndFreshCompositionWithoutSavingClamps() {
         val marker = "TARGET final line."

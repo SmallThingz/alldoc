@@ -3,17 +3,22 @@ package app.smallthingz.alldoc.ui
 import java.text.BreakIterator
 import java.text.StringCharacterIterator
 import java.util.Locale
+import app.smallthingz.alldoc.core.MarkdownBlock
+import app.smallthingz.alldoc.core.MarkdownDocument
+import app.smallthingz.alldoc.core.MarkdownKind
+import app.smallthingz.alldoc.core.MarkdownText
 
 internal const val MAX_TEXT_CHUNK = 8192
 
-internal fun splitText(text: String, checkCancellation: () -> Unit = {}): List<String> {
+internal fun splitText(text: String, target: Int = 2400, checkCancellation: () -> Unit = {}): List<String> {
+    require(target in 8..2400)
     checkCancellation()
     val chunks = ArrayList<String>()
     val boundaries = BreakIterator.getCharacterInstance(Locale.ROOT)
     var start = 0
     while (start < text.length) {
         checkCancellation()
-        var end = minOf(start + 2400, text.length)
+        var end = minOf(start + target, text.length)
         if (end < text.length) {
             var limit = start + minOf(MAX_TEXT_CHUNK, text.length - start)
             if (limit < text.length && text[limit - 1].isHighSurrogate() && text[limit].isLowSurrogate()) limit--
@@ -35,6 +40,37 @@ internal fun splitText(text: String, checkCancellation: () -> Unit = {}): List<S
         start = end
     }
     return chunks
+}
+
+internal data class ReaderTextChunk(val text: String, val start: Int, val block: MarkdownBlock? = null)
+
+/** One transient source glyph at the left edge of the last panned Markdown block. */
+internal data class ReaderHorizontalAnchor(val offset: Int, val fraction: Float)
+
+/** Smaller layout units keep deeply enlarged text inside Compose's measured-size limits. */
+internal fun readerTextChunks(text: String, markdown: MarkdownDocument?, target: Int,
+    checkCancellation: () -> Unit = {}): List<ReaderTextChunk> = buildList {
+    fun append(value: String, start: Int, block: MarkdownBlock?) {
+        var offset = 0
+        for (part in splitText(value, target, checkCancellation)) {
+            checkCancellation()
+            val end = offset + part.length
+            val styled = block?.copy(start = start + offset,
+                content = MarkdownText(part, block.content.spans.mapNotNull { span ->
+                    val from = maxOf(offset, span.start); val to = minOf(end, span.end)
+                    if (from < to) span.copy(start = from - offset, end = to - offset) else null
+                }), marker = if (offset == 0) block.marker else "", rows = emptyList(),
+                level = if (offset > 0 && block.kind == MarkdownKind.TABLE) 0 else block.level)
+            add(ReaderTextChunk(part, start + offset, styled))
+            offset = end
+        }
+    }
+    if (markdown == null) append(text, 0, null)
+    else markdown.blocks.forEachIndexed { index, block ->
+        checkCancellation()
+        append(markdown.plainText.substring(block.start,
+            markdown.blocks.getOrNull(index + 1)?.start ?: markdown.plainText.length), block.start, block)
+    }
 }
 
 // The next LazyColumn item already starts a new visual line. Keep the source newline

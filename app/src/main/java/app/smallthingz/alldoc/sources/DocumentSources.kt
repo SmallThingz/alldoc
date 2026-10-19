@@ -275,8 +275,10 @@ class DocumentSources internal constructor(context: Context, private val persist
         worker(); signal.throwIfCanceled()
         return copies.importUri(hash, signal.takeIf { settings != null })
     }
+    /** One bounded trim pass; reconcile eviction receipts before following trimPending. */
     fun status(settings: CopySettings): CopyStatus { worker(); return copies.status(settings) }
-    fun clear(): CopyChange { worker(); return copies.clear() }
+    fun observeStatus(settings: CopySettings): CopyStatus { worker(); return copies.observeStatus(settings) }
+    fun clear(after: String? = null): CopyChange { worker(); return copies.clear(after) }
     fun pendingEvictions(): List<CopyEviction> { worker(); return copies.pendingEvictions() }
     fun hasPendingEviction(hash: String, importUri: String): Boolean { worker(); return copies.hasPendingEviction(hash, importUri) }
     fun acknowledgeEvictions(ids: List<Long>) { worker(); copies.acknowledgeEvictions(ids) }
